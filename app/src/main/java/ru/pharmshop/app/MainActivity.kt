@@ -35,6 +35,7 @@ import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -485,6 +486,16 @@ class MainActivity : AppCompatActivity() {
         return if (r.isNotEmpty()) "$r ₽/шт" else "Покупка за рубли"
     }
 
+    /** Новогоднее оформление включено с 15 ноября по 20 января. */
+    private fun isNewYear(): Boolean {
+        val c = java.util.Calendar.getInstance()
+        val m = c.get(java.util.Calendar.MONTH)
+        val d = c.get(java.util.Calendar.DAY_OF_MONTH)
+        return m == java.util.Calendar.DECEMBER ||
+            (m == java.util.Calendar.JANUARY && d <= 20) ||
+            (m == java.util.Calendar.NOVEMBER && d >= 15)
+    }
+
     private fun showHome() {
         onHome = true
         val col = screen()
@@ -546,6 +557,16 @@ class MainActivity : AppCompatActivity() {
             addView(profileBtn)
         }
         col.addView(head)
+        if (isNewYear()) {
+            col.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = gradient(Color.parseColor("#C62F3E"), Color.parseColor("#1F7A4D"), 18)
+                setPadding(dp(18), dp(14), dp(18), dp(14))
+                layoutParams = lp(16)
+                addView(txt("🎄 С наступающим Новым годом!", 17f, Color.WHITE, true))
+                addView(txt("Пусть в новом году будет больше звёзд ⭐", 13f, Color.parseColor("#E8F5EC")))
+            })
+        }
         col.addView(tv("Выберите, что вам нужно", 15f, MUTE))
 
         val soon = { toast("Скоро будет доступно") }
@@ -598,6 +619,14 @@ class MainActivity : AppCompatActivity() {
 
         floatForever(logo)
         riseIn(col)
+
+        // новогодний снегопад (снимается сам при переходе на другой экран)
+        if (isNewYear()) {
+            findViewById<ViewGroup>(android.R.id.content).addView(
+                SnowView(this),
+                FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            )
+        }
 
         // один раз за запуск тихо проверяем обновления
         if (!updateChecked) {
