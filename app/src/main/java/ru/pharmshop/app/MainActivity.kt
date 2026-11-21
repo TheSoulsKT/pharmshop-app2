@@ -56,6 +56,8 @@ class MainActivity : AppCompatActivity() {
     private val RED = Color.parseColor("#FF5A52")
 
     private val BOT_URL = "https://t.me/pharmaishop_bot"
+    /** Единая высота всех карточек главного меню */
+    private val CARD_H get() = dp(96)
 
     private val io = Executors.newFixedThreadPool(3)
     private val main = Handler(Looper.getMainLooper())
@@ -63,6 +65,7 @@ class MainActivity : AppCompatActivity() {
     private var busy = false
     private var onHome = true
     private var screenId = 0
+    private var polling = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -206,8 +209,8 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             background = ripple(CARD, 18, LINE)
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            layoutParams = lp(10)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            layoutParams = lp(10).apply { height = CARD_H }
             isClickable = true
             setOnClickListener { onClick() }
         }
@@ -226,8 +229,7 @@ class MainActivity : AppCompatActivity() {
         val t = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = ripple(CARD, 18, LINE)
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            minimumHeight = dp(112)
+            setPadding(dp(16), dp(14), dp(16), dp(14))
             isClickable = true
             setOnClickListener { onClick() }
         }
@@ -239,9 +241,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun gridRow(a: View, b: View): LinearLayout {
-        a.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+        a.layoutParams = LinearLayout.LayoutParams(0, CARD_H, 1f)
             .apply { rightMargin = dp(5) }
-        b.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+        b.layoutParams = LinearLayout.LayoutParams(0, CARD_H, 1f)
             .apply { leftMargin = dp(5) }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -378,7 +380,7 @@ class MainActivity : AppCompatActivity() {
         col.addView(tv("${c.optString("stars_rate")} ₽ за звезду · от $min до $max шт.", 14f, MUTE))
 
         val user = input("Имя пользователя в Telegram, без @", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
-        user.setText(Store.lastUser)
+        user.setText(Store.lastUser.ifEmpty { Store.tgUsername })
         val qty = input("Сколько звёзд", InputType.TYPE_CLASS_NUMBER)
         col.addView(user)
         col.addView(qty)
@@ -510,6 +512,9 @@ class MainActivity : AppCompatActivity() {
                     o.put("method_name", methodName)
                     Store.add(o)
                     Store.lastUser = username
+                    if (Store.loggedIn && Api.authConfigured) {
+                        try { Api.linkOrder(Store.session, o.optString("id")) } catch (e: Exception) { /* не критично */ }
+                    }
                     val url = o.optString("payment_url")
                     val num = o.optString("order_number")
                     ui {
@@ -592,6 +597,8 @@ class MainActivity : AppCompatActivity() {
         col.addView(body)
         renderProfile(body, sid)
         refreshOrders(body, sid, false)
+        val pending = Store.pendingToken
+        if (pending.isNotEmpty() && !Store.loggedIn) pollLogin(body, sid, pending)
     }
 
     private fun statTile(value: String, label: String): LinearLayout {
@@ -609,25 +616,46 @@ class MainActivity : AppCompatActivity() {
     private fun renderProfile(body: LinearLayout, sid: Int) {
         body.removeAllViews()
         val orders = Store.orders()
-        val user = Store.lastUser
 
         // карточка пользователя
-        val first = user.firstOrNull()
+        val loggedIn = Store.loggedIn
+        val waiting = !loggedIn && Store.pendingToken.isNotEmpty()
+        val shownName = when {
+            loggedIn -> Store.tgName.ifEmpty { if (Store.tgUsername.isNotEmpty()) "@${Store.tgUsername}" else "Пользователь" }
+            else -> ""
+        }
+        val first = (shownName.ifEmpty { Store.tgUsername }).trimStart('@').firstOrNull()
         val avatarDrawable = GradientDrawable()
         avatarDrawable.setShape(GradientDrawable.OVAL)
-        avatarDrawable.setColor(BLUE)
+        avatarDrawable.setColor(if (loggedIn) BLUE else LINE)
         val avatar = TextView(this).apply {
             text = if (first != null) first.uppercaseChar().toString() else "?"
             textSize = 22f
-            setTextColor(Color.BLACK)
+            setTextColor(if (loggedIn) Color.BLACK else MUTE)
             gravity = Gravity.CENTER
             setTypeface(typeface, Typeface.BOLD)
             background = avatarDrawable
             layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply { rightMargin = dp(14) }
         }
-        val who = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        who.addView(txt(if (user.isEmpty()) "Telegram не указан" else "@$user", 18f, TEXT, true))
-        who.addView(txt(if (user.isEmpty()) "Укажите ник — он подставится в заказы" else "Ник указан вручную, ботом не подтверждён", 12f, MUTE))
+        val who = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        when {
+            loggedIn -> {
+                who.addView(txt(shownName, 18f, TEXT, true))
+                val sub = if (Store.tgUsername.isNotEmpty()) "@${Store.tgUsername} · вход через бота" else "Вход через бота"
+                who.addView(txt(sub, 12f, GREEN))
+            }
+            waiting -> {
+                who.addView(txt("Ждём подтверждение…", 18f, TEXT, true))
+                who.addView(txt("Откройте бота и нажмите «Старт»", 12f, MUTE))
+            }
+            else -> {
+                who.addView(txt("Вы не вошли", 18f, TEXT, true))
+                who.addView(txt("Войдите через бота, чтобы видеть свои заказы", 12f, MUTE))
+            }
+        }
         val userCard = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -640,8 +668,23 @@ class MainActivity : AppCompatActivity() {
         body.addView(userCard)
 
         val tgActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        tgActions.addView(chip(if (user.isEmpty()) "Указать Telegram" else "Изменить ник", true) { editUsername(body, sid) })
-        tgActions.addView(chip("Открыть @pharmaishop_bot", false) { openUrl("$BOT_URL?start=app") })
+        when {
+            loggedIn -> {
+                tgActions.addView(chip("Открыть @pharmaishop_bot", false) { openUrl(BOT_URL) })
+            }
+            waiting -> {
+                tgActions.addView(chip("Открыть бота снова", true) { startLogin(body, sid) })
+                tgActions.addView(chip("Отмена", false) {
+                    Store.pendingToken = ""
+                    polling = false
+                    renderProfile(body, sid)
+                })
+            }
+            else -> {
+                tgActions.addView(chip("Войти через Telegram", true) { startLogin(body, sid) })
+                tgActions.addView(chip("Указать ник", false) { editUsername(body, sid) })
+            }
+        }
         body.addView(HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             layoutParams = lp(16)
@@ -687,8 +730,28 @@ class MainActivity : AppCompatActivity() {
             for (o in orders) body.addView(orderCard(o, body, sid))
         }
 
-        body.addView(tv("История хранится только на этом устройстве: заказы с сайта и из бота здесь не видны.", 12f, MUTE))
+        body.addView(tv(
+            if (loggedIn) "Заказы синхронизируются с вашим аккаунтом в боте."
+            else "Войдите через Telegram, чтобы видеть заказы из бота. Без входа история хранится только на этом устройстве.",
+            12f, MUTE
+        ))
         body.addView(btn("Поддержка в боте  @pharmaishop_bot") { openUrl(BOT_URL) })
+        if (loggedIn) {
+            body.addView(btn("Выйти из аккаунта") {
+                AlertDialog.Builder(this)
+                    .setTitle("Выйти из аккаунта?")
+                    .setMessage("Список заказов на этом устройстве будет очищен. Сами заказы останутся на сервере.")
+                    .setPositiveButton("Выйти") { _, _ ->
+                        val ses = Store.session
+                        Store.logout()
+                        polling = false
+                        if (Api.authConfigured) io.execute { try { Api.logout(ses) } catch (e: Exception) {} }
+                        if (sid == screenId) renderProfile(body, sid)
+                    }
+                    .setNegativeButton("Отмена", null)
+                    .show()
+            })
+        }
         if (orders.isNotEmpty()) {
             body.addView(btn("Очистить историю") {
                 AlertDialog.Builder(this)
@@ -702,6 +765,88 @@ class MainActivity : AppCompatActivity() {
                     .show()
             })
         }
+    }
+
+    // ---------- вход через Telegram-бота ----------
+    private fun startLogin(body: LinearLayout, sid: Int) {
+        if (!Api.authConfigured) {
+            toast("Сервер входа не настроен (Api.AUTH_BASE)")
+            return
+        }
+        // если вход уже начат — просто открываем бота ещё раз
+        val existing = Store.pendingToken
+        if (existing.isNotEmpty()) {
+            openUrl("$BOT_URL?start=login_$existing")
+            if (!polling) pollLogin(body, sid, existing)
+            return
+        }
+        io.execute {
+            try {
+                val r = Api.authStart()
+                val token = r.getString("token")
+                var link = r.optString("bot_url")
+                if (!link.startsWith("https://t.me/")) link = "$BOT_URL?start=login_$token"
+                Store.pendingToken = token
+                ui {
+                    if (sid == screenId) renderProfile(body, sid)
+                    openUrl(link)
+                    pollLogin(body, sid, token)
+                }
+            } catch (e: Exception) {
+                ui { toast("Не удалось начать вход: ${e.message}") }
+            }
+        }
+    }
+
+    private fun pollLogin(body: LinearLayout, sid: Int, token: String) {
+        if (polling) return
+        polling = true
+        val startedAt = System.currentTimeMillis()
+        val step = object : Runnable {
+            override fun run() {
+                // ушли с экрана или отменили — прекращаем
+                if (sid != screenId || Store.pendingToken != token) { polling = false; return }
+                if (System.currentTimeMillis() - startedAt > 5 * 60 * 1000L) {
+                    polling = false
+                    Store.pendingToken = ""
+                    renderProfile(body, sid)
+                    toast("Время ожидания вышло. Попробуйте ещё раз")
+                    return
+                }
+                io.execute {
+                    try {
+                        val r = Api.authPoll(token)
+                        when (r.optString("status")) {
+                            "ok" -> {
+                                val u = r.getJSONObject("user")
+                                Store.login(
+                                    r.getString("session"), u.optLong("id"),
+                                    u.optString("username"), u.optString("first_name")
+                                )
+                                ui {
+                                    polling = false
+                                    if (sid == screenId) {
+                                        renderProfile(body, sid)
+                                        refreshOrders(body, sid, true)
+                                    }
+                                    toast("Вы вошли через Telegram")
+                                }
+                            }
+                            "expired" -> ui {
+                                polling = false
+                                Store.pendingToken = ""
+                                if (sid == screenId) renderProfile(body, sid)
+                                toast("Ссылка входа устарела. Попробуйте ещё раз")
+                            }
+                            else -> ui { main.postDelayed(this, 2000L) }
+                        }
+                    } catch (e: Exception) {
+                        ui { main.postDelayed(this, 3000L) }
+                    }
+                }
+            }
+        }
+        main.postDelayed(step, 1500L)
     }
 
     private fun editUsername(body: LinearLayout, sid: Int) {
@@ -779,34 +924,58 @@ class MainActivity : AppCompatActivity() {
         return card
     }
 
-    /** Подтягивает свежие статусы заказов с сервера. force — обновить и завершённые. */
+    /** Подтягивает заказы и статусы. force — обновить и завершённые. */
     private fun refreshOrders(body: LinearLayout, sid: Int, force: Boolean) {
-        val targets = Store.orders()
-            .filter { o ->
-                val k = statusKind(o.optString("status"))
-                force || (k != 2 && k != 3)
+        val loggedIn = Store.loggedIn && Api.authConfigured
+        if (!loggedIn) {
+            val has = Store.orders().any { it.optString("id").isNotEmpty() }
+            if (!has) {
+                if (force) toast("Нет заказов для обновления")
+                return
             }
-            .filter { it.optString("id").isNotEmpty() }
-            .take(10)
-        if (targets.isEmpty()) {
-            if (force) toast("Нет заказов для обновления")
-            return
         }
         io.execute {
             var ok = 0
-            for (o in targets) {
-                val id = o.optString("id")
+            var expired = false
+            var syncedFromBot = false
+            if (loggedIn) {
                 try {
-                    Store.update(id, Api.order(id))
-                    ok++
+                    val arr = Api.myOrders(Store.session).optJSONArray("orders")
+                    val list = ArrayList<JSONObject>()
+                    if (arr != null) for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { list.add(it) }
+                    Store.merge(list)
+                    syncedFromBot = true
+                    ok = list.size
+                } catch (e: AuthExpired) {
+                    expired = true
+                    Store.logout()
                 } catch (e: Exception) {
-                    // пропускаем этот заказ
+                    // нет связи с сервером — ниже обновим статусы через витрину
+                }
+            }
+            if (!syncedFromBot && !expired) {
+                val targets = Store.orders()
+                    .filter { o ->
+                        val k = statusKind(o.optString("status"))
+                        force || (k != 2 && k != 3)
+                    }
+                    .filter { it.optString("id").isNotEmpty() }
+                    .take(10)
+                for (o in targets) {
+                    val id = o.optString("id")
+                    try {
+                        Store.update(id, Api.order(id))
+                        ok++
+                    } catch (e: Exception) {
+                        // пропускаем этот заказ
+                    }
                 }
             }
             ui {
                 if (sid == screenId) {
                     renderProfile(body, sid)
-                    if (force) toast(if (ok > 0) "Статусы обновлены" else "Не удалось обновить")
+                    if (expired) toast("Сессия истекла, войдите заново")
+                    else if (force) toast(if (ok > 0) "Заказы обновлены" else "Не удалось обновить")
                 }
             }
         }
