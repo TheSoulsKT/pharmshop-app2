@@ -26,6 +26,7 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import com.hcaptcha.sdk.HCaptcha
+import com.hcaptcha.sdk.HCaptchaConfig
 import com.hcaptcha.sdk.HCaptchaException
 import com.hcaptcha.sdk.HCaptchaTokenResponse
 import org.json.JSONObject
@@ -284,7 +285,12 @@ class MainActivity : AppCompatActivity() {
             busy = false
             info.text = "Проверка не пройдена: ${e.message}"
         }
-        h.setup(siteKey).verifyWithHCaptcha()
+        // Сервер сайта проверяет домен токена, поэтому подписываемся его доменом, а не hcaptcha.com
+        val config = HCaptchaConfig.builder()
+            .siteKey(siteKey)
+            .host("pharmshop.tgstars.tg")
+            .build()
+        h.setup(config).verifyWithHCaptcha()
     }
 
     private fun openPay(url: String, info: TextView) {
