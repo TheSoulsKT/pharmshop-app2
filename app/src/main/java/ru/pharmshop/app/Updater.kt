@@ -10,6 +10,7 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 /**
  * Обновление приложения через GitHub Releases.
@@ -17,7 +18,11 @@ import java.net.URL
  * Приложение смотрит последний релиз и, если versionCode больше текущего, скачивает APK и запускает установку.
  */
 object Updater {
-    class Info(val versionCode: Int, val versionName: String, val notes: String, val apkUrl: String, val size: Long)
+    class Info(
+        val versionCode: Int, val versionName: String, val notes: String, val apkUrl: String, val size: Long,
+        /** SHA-256 файла из релиза (hex). Без него обновление не ставится. */
+        val sha256: String
+    )
 
     /** Репозиторий подставляется сборкой на GitHub (GITHUB_REPOSITORY), например "user/pharmshop-app2". */
     private val repo: String get() = BuildConfig.GITHUB_REPO
@@ -60,13 +65,18 @@ object Updater {
             for (i in 0 until assets.length()) {
                 val a = assets.getJSONObject(i)
                 if (a.optString("name").endsWith(".apk")) {
-                    return Info(
-                        remote,
-                        r.optString("name").ifEmpty { "сборка $remote" },
-                        r.optString("body").trim(),
-                        a.optString("browser_download_url"),
-                        a.optLong("size")
-                    )
+                    val apkUrl = a.optString("browser_download_url")
+                    if (!apkUrl.startsWith("https://github.com/$repo/releases/download/")) {
+                        lastNote = "Адрес файла в релизе $tag выглядит подозрительно, обновление пропущено."
+                        return null
+                    }
+                    val body = r.optString("body").trim()
+                    val sum = checksum(assets, a.optString("name"), body)
+                    if (sum.isEmpty()) {
+                        lastNote = "В релизе $tag нет контрольной суммы SHA-256, обновление пропущено."
+                        return null
+                    }
+                    return Info(remote, r.optString("name").ifEmpty { "сборка $remote" }, body, apkUrl, a.optLong("size"), sum)
                 }
             }
             lastNote = "В релизе $tag нет файла .apk."
@@ -74,6 +84,30 @@ object Updater {
         } finally {
             c.disconnect()
         }
+    }
+
+    private val HEX64 = Regex("[0-9a-fA-F]{64}")
+
+    /** Контрольная сумма APK: файл «<имя>.apk.sha256» из релиза, а если его нет — строка «SHA-256: …» в описании. */
+    private fun checksum(assets: org.json.JSONArray, apkName: String, body: String): String {
+        for (i in 0 until assets.length()) {
+            val a = assets.getJSONObject(i)
+            if (a.optString("name") == "$apkName.sha256" && a.optLong("size") in 1L..1024L) {
+                try {
+                    val u = a.optString("browser_download_url")
+                    if (!u.startsWith("https://github.com/$repo/releases/download/")) continue
+                    val c = URL(u).openConnection() as HttpURLConnection
+                    try {
+                        c.connectTimeout = 15000; c.readTimeout = 20000
+                        c.setRequestProperty("User-Agent", "PharmShopApp")
+                        if (c.responseCode in 200..299) {
+                            HEX64.find(c.inputStream.bufferedReader().use { it.readText() })?.let { return it.value.lowercase() }
+                        }
+                    } finally { c.disconnect() }
+                } catch (e: Exception) { /* пробуем описание релиза */ }
+            }
+        }
+        return Regex("SHA-256:\\s*(" + HEX64.pattern + ")").find(body)?.groupValues?.get(1)?.lowercase() ?: ""
     }
 
     /** Скачивает APK в кэш приложения. onProgress получает проценты 0..100. */
@@ -90,6 +124,7 @@ object Updater {
             val total = c.contentLengthLong.takeIf { it > 0 } ?: info.size
             var done = 0L
             var lastPct = -1
+            val md = MessageDigest.getInstance("SHA-256")
             c.inputStream.use { input ->
                 out.outputStream().use { o ->
                     val buf = ByteArray(32 * 1024)
@@ -97,6 +132,7 @@ object Updater {
                         val n = input.read(buf)
                         if (n < 0) break
                         o.write(buf, 0, n)
+                        md.update(buf, 0, n)
                         done += n
                         if (total > 0) {
                             val pct = (done * 100 / total).toInt().coerceIn(0, 100)
@@ -105,7 +141,12 @@ object Updater {
                     }
                 }
             }
-            if (total > 0 && done < total) throw Exception("Файл скачался не полностью, попробуйте ещё раз")
+            if (total > 0 && done < total) { out.delete(); throw Exception("Файл скачался не полностью, попробуйте ещё раз") }
+            val got = md.digest().joinToString("") { "%02x".format(it) }
+            if (got != info.sha256) {
+                out.delete()
+                throw Exception("Контрольная сумма файла не совпала — обновление отменено. Попробуйте позже.")
+            }
             return out
         } finally {
             c.disconnect()

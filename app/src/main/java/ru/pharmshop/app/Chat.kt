@@ -19,7 +19,7 @@ object ChatApi {
     /** Время, до которого собеседник прочитал наши сообщения (из последнего ответа сервера). */
     @Volatile var lastReadTs = 0L
 
-    private fun post(path: String, body: JSONObject, adminCode: String = ""): JSONObject {
+    private fun post(path: String, body: JSONObject, adminToken: String = "", adminCode: String = ""): JSONObject {
         if (BASE_URL.isEmpty()) throw IllegalStateException("not_configured")
         val c = URL(BASE_URL + path).openConnection() as HttpURLConnection
         try {
@@ -29,6 +29,7 @@ object ChatApi {
             c.doOutput = true
             c.setRequestProperty("Content-Type", "application/json")
             c.setRequestProperty("Accept", "application/json")
+            if (adminToken.isNotEmpty()) c.setRequestProperty("X-Admin-Token", adminToken)
             if (adminCode.isNotEmpty()) c.setRequestProperty("X-Admin-Code", adminCode)
             c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val code = c.responseCode
@@ -59,7 +60,12 @@ object ChatApi {
             .put("order", order).put("version", version).put("text", text).put("info", deviceInfo())
         if (image.isNotEmpty()) body.put("image", image)
         post("/api/chat/send", body)
+        Store.chatStarted = true
     }
+
+    /** Фоновый опрос: {unread, last_id, text} — непрочитанные ответы поддержки. Ничего не помечает прочитанным. */
+    fun userPoll(device: String, secret: String): JSONObject =
+        post("/api/chat/poll", JSONObject().put("device", device).put("secret", secret))
 
     fun userImage(device: String, secret: String, id: Long): String =
         post("/api/chat/image", JSONObject().put("device", device).put("secret", secret).put("id", id))
@@ -76,6 +82,16 @@ object ChatApi {
         post("/api/app/config", JSONObject().put("version_code", versionCode))
 
     // ----- администратор -----
+    /** Вход по коду: сервер возвращает токен сессии (30 дней). Сам код дальше нигде не хранится и не пересылается. */
+    fun adminLogin(code: String): String =
+        post("/api/admin/login", JSONObject(), adminCode = code).optString("token")
+            .ifEmpty { throw Exception("Сервер не выдал токен") }
+
+    /** Завершает сессию на сервере (ошибки сети не важны — токен всё равно стирается на устройстве). */
+    fun adminLogout(token: String) {
+        try { post("/api/admin/logout", JSONObject(), token) } catch (e: Exception) { /* не критично */ }
+    }
+
     /** Ответ: {threads: [...], counts: {new, work, done, unread}}. status: "", "new", "work", "done". */
     fun adminThreads(code: String, status: String = "", unread: Boolean = false, query: String = ""): JSONObject {
         val body = JSONObject()
@@ -84,6 +100,9 @@ object ChatApi {
         if (query.isNotEmpty()) body.put("q", query)
         return post("/api/admin/threads", body, code)
     }
+
+    /** Фоновый опрос админа: {unread, last_ts, nick, text} — чаты с непрочитанными сообщениями. */
+    fun adminPoll(token: String): JSONObject = post("/api/admin/poll", JSONObject(), token)
 
     fun adminMessages(code: String, device: String, after: Long): JSONArray {
         val r = post("/api/admin/messages", JSONObject().put("device", device).put("after", after), code)

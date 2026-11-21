@@ -26,25 +26,27 @@ android {
             versionNameSuffix '-test'
         }
     }
-    // Постоянный ключ подписи: без него новая версия не встанет поверх старой.
+    // Ключ подписи ТОЛЬКО из переменных окружения (в GitHub Actions — из секретов, см. server/README.md → «Ключ подписи»).
+    // В репозитории ключа нет. Без переменных (локальная сборка) подписываем стандартным debug-ключом Android.
+    def ksFile = System.getenv('KEYSTORE_FILE')
     signingConfigs {
-        ci {
-            def ksFile = System.getenv('KEYSTORE_FILE')
-            if (ksFile) {   // свой ключ из секретов GitHub (необязательно)
+        if (ksFile) {
+            ci {
                 storeFile file(ksFile)
                 storePassword System.getenv('KEYSTORE_PASSWORD')
                 keyAlias System.getenv('KEY_ALIAS')
                 keyPassword System.getenv('KEY_PASSWORD')
-            } else {        // ключ, лежащий в репозитории: app/release.keystore
-                storeFile file('release.keystore')
-                storePassword 'pharmshop123'
-                keyAlias 'pharmshop'
-                keyPassword 'pharmshop123'
             }
         }
     }
     buildTypes {
-        debug { signingConfig signingConfigs.ci }
+        debug { signingConfig ksFile ? signingConfigs.ci : signingConfigs.debug }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig ksFile ? signingConfigs.ci : signingConfigs.debug
+        }
     }
     buildFeatures { buildConfig true }
     compileOptions {
@@ -56,5 +58,6 @@ android {
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.work:work-runtime:2.9.1'   // фоновые уведомления (PollWorker)
     implementation 'com.github.hCaptcha.hcaptcha-android-sdk:sdk:5.0.0'
 }

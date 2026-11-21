@@ -16,6 +16,9 @@ const SCHEMA = [
      kind TEXT NOT NULL, value TEXT NOT NULL, reason TEXT DEFAULT '', ts INTEGER NOT NULL, PRIMARY KEY (kind, value))`,
   // удалённые настройки приложения (одна запись k='app' с JSON)
   `CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
+  // сессии админа: хранится только хэш токена; code_fp — отпечаток ADMIN_CODE (смена кода гасит все сессии)
+  `CREATE TABLE IF NOT EXISTS sessions (
+     hash TEXT PRIMARY KEY, code_fp TEXT NOT NULL, created INTEGER NOT NULL, exp INTEGER NOT NULL)`,
 ];
 // Новые колонки для уже существующей базы (ошибка «колонка уже есть» игнорируется).
 const MIGRATIONS = [
@@ -29,6 +32,7 @@ const MIGRATIONS = [
   `ALTER TABLE threads ADD COLUMN admin_read_ts INTEGER DEFAULT 0`,    // админ прочитал сообщения пользователя до этого времени
   `ALTER TABLE threads ADD COLUMN user_read_ts INTEGER DEFAULT 0`,     // пользователь прочитал ответы админа до этого времени
   `CREATE INDEX IF NOT EXISTS idx_messages_ip ON messages (ip)`,
+  `CREATE INDEX IF NOT EXISTS idx_threads_ip ON threads (last_ip, created)`,
 ];
 const MAX_IMAGE = 1_400_000; // символов base64 (~1 МБ картинки); лимит строки в D1 — 2 МБ
 const B64 = /^[A-Za-z0-9+/=]+$/;
@@ -45,6 +49,14 @@ const LOCK_MS = 15 * 60 * 1000;
 const STATUSES = ['new', 'work', 'done'];
 const IP_RE = /^[0-9a-fA-F:.]{3,64}$/;
 const DAY = 24 * 60 * 60 * 1000;
+const SESSION_MS = 30 * DAY;
+const MAX_BODY = 2_000_000;           // байт; фото ≤ ~1,4 МБ в base64
+// Лимиты чата: окно 10 минут. IP может быть общим (мобильный интернет, Wi-Fi), поэтому для него лимит щедрее.
+const RATE_WINDOW = 10 * 60 * 1000;
+const RATE_DEVICE_MSGS = 20;
+const RATE_DEVICE_IMAGES = 5;
+const RATE_IP_MSGS = 60;
+const RATE_IP_NEW_THREADS = 5;        // новых чатов с одного IP за час
 
 async function sha256(s) {
   const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -60,14 +72,26 @@ async function ensureSchema(db) {
   ready = true;
 }
 
-// Проверка кода админа: после 5 неверных попыток с одного адреса — блокировка на 15 минут.
-async function adminAuth(request, env) {
+// Проверка доступа админа. Приложение входит по коду один раз (/api/admin/login), получает токен сессии
+// и дальше шлёт только его (X-Admin-Token). Старые версии приложения шлют код в X-Admin-Code — это пока работает
+// (чтобы отключить, задайте переменную LEGACY_ADMIN_CODE = off).
+// После 5 неверных попыток с одного адреса — блокировка на 15 минут.
+async function adminAuth(request, env, path) {
   const ip = request.headers.get('cf-connecting-ip') || 'unknown';
   const now = Date.now();
   const row = await env.DB.prepare('SELECT n, ts FROM fails WHERE ip = ?').bind(ip).first();
   if (row && row.n >= 5 && now - row.ts < LOCK_MS) return 'locked';
-  const given = request.headers.get('x-admin-code') || '';
-  const ok = given.length > 0 && !!env.ADMIN_CODE && (await sha256(given)) === (await sha256(env.ADMIN_CODE));
+
+  const fp = env.ADMIN_CODE ? await sha256('fp:' + env.ADMIN_CODE) : '';
+  const code = request.headers.get('x-admin-code') || '';
+  const token = request.headers.get('x-admin-token') || '';
+  let ok = false;
+  if (path !== '/api/admin/login' && token.length >= 32 && fp) {
+    const s = await env.DB.prepare('SELECT code_fp, exp FROM sessions WHERE hash = ?').bind(await sha256(token)).first();
+    ok = !!s && s.exp > now && s.code_fp === fp;
+  } else if (code.length > 0 && !!env.ADMIN_CODE && (path === '/api/admin/login' || env.LEGACY_ADMIN_CODE !== 'off')) {
+    ok = (await sha256(code)) === (await sha256(env.ADMIN_CODE));
+  }
   if (!ok) {
     const n = row && now - row.ts < LOCK_MS ? row.n + 1 : 1;
     await env.DB.prepare(
@@ -77,6 +101,46 @@ async function adminAuth(request, env) {
   }
   if (row) await env.DB.prepare('DELETE FROM fails WHERE ip = ?').bind(ip).run();
   return true;
+}
+
+// Вход по коду: выдаёт токен сессии на 30 дней. Токен — 32 случайных байта, в базе только его SHA-256.
+async function adminLogin(env) {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const token = [...bytes].map((x) => x.toString(16).padStart(2, '0')).join('');
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM sessions WHERE exp < ?').bind(now),
+    env.DB.prepare('INSERT INTO sessions (hash, code_fp, created, exp) VALUES (?, ?, ?, ?)')
+      .bind(await sha256(token), await sha256('fp:' + env.ADMIN_CODE), now, now + SESSION_MS),
+  ]);
+  return json({ token, expires: now + SESSION_MS });
+}
+
+async function adminLogout(request, env) {
+  const token = request.headers.get('x-admin-token') || '';
+  if (token) await env.DB.prepare('DELETE FROM sessions WHERE hash = ?').bind(await sha256(token)).run();
+  return json({ ok: true });
+}
+
+// Лимиты на отправку в чат. Возвращает текст ошибки или '' (можно писать).
+async function chatRateLimit(env, device, ip, hasImage, isNewThread) {
+  const since = Date.now() - RATE_WINDOW;
+  if (isNewThread && ip && ip !== 'unknown') {
+    const r = await env.DB.prepare('SELECT COUNT(*) AS n FROM threads WHERE last_ip = ? AND created > ?')
+      .bind(ip, Date.now() - 60 * 60 * 1000).first();
+    if (r && r.n >= RATE_IP_NEW_THREADS) return 'Слишком много новых обращений с вашего адреса. Попробуйте позже';
+  }
+  const d = await env.DB.prepare(
+    `SELECT COUNT(*) AS n, COALESCE(SUM(image != ''), 0) AS imgs FROM messages WHERE device = ? AND sender = 'user' AND ts > ?`
+  ).bind(device, since).first();
+  if (d && d.n >= RATE_DEVICE_MSGS) return 'Слишком много сообщений. Подождите несколько минут';
+  if (hasImage && d && d.imgs >= RATE_DEVICE_IMAGES) return 'Слишком много фото. Подождите несколько минут';
+  if (ip && ip !== 'unknown') {
+    const i = await env.DB.prepare(`SELECT COUNT(*) AS n FROM messages WHERE ip = ? AND sender = 'user' AND ts > ?`)
+      .bind(ip, since).first();
+    if (i && i.n >= RATE_IP_MSGS) return 'Слишком много сообщений с вашего адреса. Подождите несколько минут';
+  }
+  return '';
 }
 
 // Пользователь видит только сообщения; админ — ещё IP, устройство и страну отправителя.
@@ -132,6 +196,10 @@ async function userSend(body, env, ctx, request) {
   const shown = text || '📷 Фото';
 
   let t = await env.DB.prepare('SELECT secret_hash, last_user_ts FROM threads WHERE device = ?').bind(device).first();
+  // чужому устройству отказываем до подсчёта лимитов; новый чат и частота сообщений проверяются здесь
+  if (t && t.secret_hash !== hash) return err('Нет доступа', 403);
+  const limited = await chatRateLimit(env, device, ip, !!image, !t);
+  if (limited) return err(limited, 429);
   if (!t) {
     await env.DB.prepare(
       `INSERT INTO threads (device, secret_hash, nick, last_order, last_text, last_ts, last_user_ts, unread, created)
@@ -179,6 +247,26 @@ async function userMessages(body, env) {
        AND user_read_ts < (SELECT COALESCE(MAX(ts), 0) FROM messages WHERE device = ? AND sender = 'admin')`
   ).bind(Date.now(), device, device).run();
   return json({ messages: results, read_ts: t.admin_read_ts || 0 });
+}
+
+// Лёгкий опрос для фоновых уведомлений: сколько ответов админа пользователь ещё не прочитал.
+// Ничего не помечает прочитанным (в отличие от /api/chat/messages).
+async function userPoll(body, env) {
+  const device = String(body.device || '');
+  const secret = String(body.secret || '');
+  if (!UUID.test(device) || secret.length < 16) return err('Некорректный запрос');
+  const t = await env.DB.prepare('SELECT secret_hash, user_read_ts FROM threads WHERE device = ?').bind(device).first();
+  if (!t) return json({ unread: 0, last_id: 0, text: '' });
+  if (t.secret_hash !== (await sha256(secret))) return err('Нет доступа', 403);
+  const n = await env.DB.prepare(
+    `SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS last_id FROM messages WHERE device = ? AND sender = 'admin' AND ts > ?`
+  ).bind(device, t.user_read_ts || 0).first();
+  let text = '';
+  if (n && n.n > 0) {
+    const m = await env.DB.prepare(`SELECT text, (image != '') AS has_image FROM messages WHERE id = ?`).bind(n.last_id).first();
+    text = m ? (m.text || (m.has_image ? '📷 Фото' : '')).slice(0, 160) : '';
+  }
+  return json({ unread: n ? n.n : 0, last_id: n ? n.last_id : 0, text });
 }
 
 async function userImage(body, env) {
@@ -267,6 +355,20 @@ async function adminRelated(body, env) {
       GROUP BY m.device, m.ip ORDER BY ts DESC LIMIT 20`
   ).bind(...ips, device, since).all();
   return json({ related: results });
+}
+
+// Для уведомлений админу: сколько чатов с непрочитанными сообщениями и какой писал последним.
+async function adminPoll(env) {
+  const c = await env.DB.prepare('SELECT COUNT(*) AS n FROM threads WHERE unread > 0').first();
+  const last = await env.DB.prepare(
+    'SELECT nick, last_text, last_ts FROM threads WHERE unread > 0 ORDER BY last_ts DESC LIMIT 1'
+  ).first();
+  return json({
+    unread: c ? c.n : 0,
+    last_ts: last ? last.last_ts : 0,
+    nick: last ? last.nick || '' : '',
+    text: last ? String(last.last_text || '').slice(0, 160) : '',
+  });
 }
 
 async function adminSetStatus(body, env) {
@@ -419,6 +521,7 @@ export default {
     if (request.method === 'GET') return new Response('PharmShop chat OK');
     if (request.method !== 'POST') return err('Not found', 404);
     if (!env.DB) return err('База данных не подключена (переменная DB)', 500);
+    if (Number(request.headers.get('content-length') || 0) > MAX_BODY) return err('Слишком большой запрос', 413);
     await ensureSchema(env.DB);
     const path = new URL(request.url).pathname;
     let body = {};
@@ -427,13 +530,17 @@ export default {
     if (path === '/api/chat/send') return userSend(body, env, ctx, request);
     if (path === '/api/chat/messages') return userMessages(body, env);
     if (path === '/api/chat/image') return userImage(body, env);
+    if (path === '/api/chat/poll') return userPoll(body, env);
     if (path === '/api/app/config') return appConfig(env);
 
     if (path.startsWith('/api/admin/')) {
-      const a = await adminAuth(request, env);
+      const a = await adminAuth(request, env, path);
       if (a === 'locked') return err('Слишком много попыток. Попробуйте через 15 минут', 429);
       if (!a) return err('Неверный код', 401);
+      if (path === '/api/admin/login') return adminLogin(env);
+      if (path === '/api/admin/logout') return adminLogout(request, env);
       if (path === '/api/admin/threads') return adminThreads(body, env);
+      if (path === '/api/admin/poll') return adminPoll(env);
       if (path === '/api/admin/related') return adminRelated(body, env);
       if (path === '/api/admin/status') return adminSetStatus(body, env);
       if (path === '/api/admin/block') return adminBlock(body, env);
