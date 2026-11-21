@@ -17,6 +17,11 @@ object Store {
         get() = sp.getString("last_user", "") ?: ""
         set(v) { sp.edit().putString("last_user", v).apply() }
 
+    /** Имена способов оплаты {id: имя} — как они показаны в форме (для подписи заказов). */
+    var methodNames: String
+        get() = sp.getString("method_names", "{}") ?: "{}"
+        set(v) { sp.edit().putString("method_names", v).apply() }
+
     @Synchronized
     fun orders(): List<JSONObject> {
         val arr = try { JSONArray(sp.getString("orders", "[]")) } catch (e: Exception) { JSONArray() }

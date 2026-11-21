@@ -64,10 +64,48 @@ object Api {
     fun config(): JSONObject = call("GET", "/api/storefront/config", null)
 
     /** Текущий статус заказа (так же делает сам сайт). */
-    fun order(id: String): JSONObject {
-        val r = call("GET", "/api/storefront/orders/$id", null)
-        // на случай, если заказ завёрнут в {"order": {...}} или {"data": {...}}
-        return r.optJSONObject("order") ?: r.optJSONObject("data") ?: r
+    @Volatile private var tokenMode = 0
+
+    /**
+     * Статус заказа. Сайт скрывает заказ без access_token (отвечает 404 «Заказ не найден»),
+     * поэтому передаём токен. Как именно сайт его ждёт — неизвестно, пробуем несколько способов
+     * и запоминаем тот, что сработал.
+     */
+    fun order(id: String, token: String = ""): JSONObject {
+        val path = "/api/storefront/orders/$id"
+        fun unwrap(r: JSONObject) = r.optJSONObject("order") ?: r.optJSONObject("data") ?: r
+        if (token.isEmpty()) return unwrap(call("GET", path, null))
+
+        val enc = java.net.URLEncoder.encode(token, "UTF-8")
+        val modes = listOf<Pair<String, Map<String, String>>>(
+            // 0: токен и в заголовках, и в адресе
+            "$path?access_token=$enc&token=$enc" to mapOf(
+                "Authorization" to "Bearer $token",
+                "X-Access-Token" to token,
+                "X-Order-Token" to token
+            ),
+            // 1: только в адресе
+            "$path?access_token=$enc&token=$enc" to emptyMap(),
+            // 2: только в заголовках, без Authorization
+            path to mapOf("X-Access-Token" to token, "X-Order-Token" to token),
+            // 3: только Bearer
+            path to mapOf("Authorization" to "Bearer $token")
+        )
+        val start = tokenMode.coerceIn(0, modes.size - 1)
+        val sequence = listOf(start) + modes.indices.filter { it != start }
+        var last: Exception? = null
+        for (i in sequence) {
+            try {
+                val r = unwrap(call("GET", modes[i].first, null, modes[i].second))
+                tokenMode = i
+                return r
+            } catch (e: java.io.IOException) {
+                throw e   // нет сети — перебирать способы бессмысленно
+            } catch (e: Exception) {
+                last = e
+            }
+        }
+        throw last ?: Exception("Не удалось получить статус")
     }
 
     fun quote(quantity: Int, methodId: String): JSONObject =

@@ -459,19 +459,26 @@ class MainActivity : AppCompatActivity() {
 
         val methods = c.optJSONArray("methods")
         if (methods != null) {
-            // 1) меняем первый и второй способы оплаты местами (в списке с сайта)
+            // 1) меняем первый и второй способы оплаты местами (в списке с сайта),
+            //    а ИМЕНА оставляем по позициям: первая кнопка = «СБП 1», вторая = «СБП 2»
             val all = (0 until methods.length()).toMutableList()
             if (all.size >= 2) { val t = all[0]; all[0] = all[1]; all[1] = t }
             // 2) убираем способы оплаты через сеть TON (прямой перевод TON и USDT в сети TON)
             val tonRe = Regex("(^|[^a-z])ton([^a-z]|$)|тон", RegexOption.IGNORE_CASE)
-            val order = all.filter { i ->
-                val m = methods.getJSONObject(i)
-                !(tonRe.containsMatchIn(m.optString("name")) || tonRe.containsMatchIn(m.optString("id")))
+            val shown = ArrayList<Pair<Int, String>>()   // (индекс способа, отображаемое имя)
+            for (pos in all.indices) {
+                val m = methods.getJSONObject(all[pos])
+                if (tonRe.containsMatchIn(m.optString("name")) || tonRe.containsMatchIn(m.optString("id"))) continue
+                shown.add(Pair(all[pos], methods.getJSONObject(pos).getString("name")))
             }
-            for (i in order) {
+            // запоминаем имена, чтобы старые заказы подписывались так же
+            val names = JSONObject()
+            for ((i, nm) in shown) names.put(methods.getJSONObject(i).getString("id"), nm)
+            Store.methodNames = names.toString()
+            for ((i, displayName) in shown) {
                 val m = methods.getJSONObject(i)
                 val mid = m.getString("id")
-                val mname = m.getString("name")
+                val mname = displayName
                 val dotView = View(this).apply {
                     layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { rightMargin = dp(14) }
                 }
@@ -840,7 +847,10 @@ class MainActivity : AppCompatActivity() {
             addView(badge)
         }
 
-        val method = o.optString("method_name").ifEmpty { o.optString("method_id") }
+        val savedNames = try { JSONObject(Store.methodNames) } catch (e: Exception) { JSONObject() }
+        val method = savedNames.optString(o.optString("method_id"))
+            .ifEmpty { o.optString("method_name") }
+            .ifEmpty { o.optString("method_id") }
         val line1 = tv("${o.optInt("quantity")} ★  →  @${o.optString("username")}", 15f, TEXT)
         val line2 = tv(
             listOf(money(o.optString("total"), o.optString("currency")), method, fmtDate(o.optString("created_at")))
@@ -907,7 +917,7 @@ class MainActivity : AppCompatActivity() {
             val jobs = targets.map { o ->
                 val id = o.optString("id")
                 net.submit<String> {
-                    try { Store.update(id, Api.order(id)); "" } catch (e: Exception) { e.message ?: "ошибка" }
+                    try { Store.update(id, Api.order(id, o.optString("access_token"))); "" } catch (e: Exception) { e.message ?: "ошибка" }
                 }
             }
             val results = jobs.map { try { it.get() } catch (e: Exception) { e.message ?: "ошибка" } }
