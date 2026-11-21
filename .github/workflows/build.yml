@@ -19,23 +19,54 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - run: gradle assembleDebug --no-daemon --stacktrace
+      # Ключ подписи берём из секретов. Без него не собираем: APK с другой подписью не встанет поверх установленного.
+      - name: Prepare signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::Не заданы секреты KEYSTORE_B64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD (см. server/README.md)"
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+      - run: gradle assembleRelease --no-daemon --stacktrace
         env:
           SUPPORT_BOT_TOKEN: ${{ secrets.SUPPORT_BOT_TOKEN }}
           SUPPORT_CHAT_ID: ${{ secrets.SUPPORT_CHAT_ID }}
+      - name: Check APK signature
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
       - uses: actions/upload-artifact@v4
         with:
           name: PharmShop-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/release/app-release.apk
+      # mapping.txt нужен, чтобы расшифровывать стектрейсы из релизной сборки
+      - uses: actions/upload-artifact@v4
+        with:
+          name: R8-mapping
+          path: app/build/outputs/mapping/release/mapping.txt
       - name: Publish release (for in-app updates)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           CODE=$((GITHUB_RUN_NUMBER + 100))
           VERSION=$(grep '^appVersion=' gradle.properties | cut -d= -f2)
-          cp app/build/outputs/apk/debug/app-debug.apk "PharmShop-${VERSION}.apk"
-          NOTES=$(git log -1 --pretty=%B)
-          gh release create "build-${CODE}" "PharmShop-${VERSION}.apk" \
+          cp app/build/outputs/apk/release/app-release.apk "PharmShop-${VERSION}.apk"
+          # контрольная сумма: приложение сверяет её после скачивания и не ставит файл, если она не совпала
+          HASH=$(sha256sum "PharmShop-${VERSION}.apk" | cut -d' ' -f1)
+          echo "$HASH" > "PharmShop-${VERSION}.apk.sha256"
+          NOTES="$(git log -1 --pretty=%B)
+
+          SHA-256: ${HASH}"
+          gh release create "build-${CODE}" "PharmShop-${VERSION}.apk" "PharmShop-${VERSION}.apk.sha256" \
             --title "Версия ${VERSION}" \
             --notes "$NOTES" \
             --latest
