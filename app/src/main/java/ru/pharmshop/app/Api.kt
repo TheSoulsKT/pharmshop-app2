@@ -28,9 +28,9 @@ object Api {
                 throw Exception("Сервер вернул не JSON (код $code). Возможно, сайт не пустил приложение.")
             }
             val json = JSONObject(text)
-            if (code !in 200..299) {
-                val msg = json.optString("detail", json.optString("error", json.optString("message", "")))
-                throw Exception(if (msg.isNotEmpty()) msg else "Ошибка $code")
+                 if (code !in 200..299) {
+                throw Exception("HTTP $code: " + text.take(300))
+            }
             }
             return json
         } finally {
