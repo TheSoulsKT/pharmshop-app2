@@ -113,6 +113,16 @@ object Store {
         get() = sp.getLong("n_admin", 0L)
         set(v) { sp.edit().putLong("n_admin", v).apply() }
 
+    /** Токен FCM этого устройства (пусто, если Firebase не настроен). */
+    var fcmToken: String
+        get() = sp.getString("fcm_token", "") ?: ""
+        set(v) { sp.edit().putString("fcm_token", v).apply() }
+
+    /** Токен, который уже передан серверу как токен пользователя (чтобы не слать повторно). */
+    var fcmUserSent: String
+        get() = sp.getString("fcm_user_sent", "") ?: ""
+        set(v) { sp.edit().putString("fcm_user_sent", v).apply() }
+
     /** Имена способов оплаты {id: имя} — как они показаны в форме (для подписи заказов). */
     var methodNames: String
         get() = sp.getString("method_names", "{}") ?: "{}"

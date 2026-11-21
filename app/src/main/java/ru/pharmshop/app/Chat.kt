@@ -61,6 +61,20 @@ object ChatApi {
         if (image.isNotEmpty()) body.put("image", image)
         post("/api/chat/send", body)
         Store.chatStarted = true
+        Push.registerUser()   // после первого сообщения серверу уже есть кому слать ответы
+    }
+
+    /** Передаёт серверу токен FCM этого устройства (подтверждается секретом устройства). */
+    fun pushRegister(device: String, secret: String, token: String) {
+        post("/api/push/register", JSONObject().put("device", device).put("secret", secret).put("token", token))
+    }
+
+    fun adminPushRegister(adminToken: String, fcmToken: String) {
+        post("/api/admin/push_register", JSONObject().put("token", fcmToken), adminToken)
+    }
+
+    fun adminPushUnregister(adminToken: String, fcmToken: String) {
+        post("/api/admin/push_unregister", JSONObject().put("token", fcmToken), adminToken)
     }
 
     /** Фоновый опрос: {unread, last_id, text} — непрочитанные ответы поддержки. Ничего не помечает прочитанным. */

@@ -44,6 +44,7 @@ internal fun MainActivity.showAdminLogin() {
             try {
                 Store.adminToken = ChatApi.adminLogin(c)
                 if (Store.adminToken.isEmpty()) throw Exception("Не удалось сохранить сессию на этом устройстве")
+                Push.registerAdmin()
                 ui { working = false; if (sid == screenId) showAdminThreads() }
             } catch (e: Exception) {
                 ui { working = false; if (sid == screenId) info.text = errText(e) }
@@ -104,7 +105,7 @@ internal fun MainActivity.showAdminThreads() {
     col.addView(btn("Выйти из админ-панели") {
         val old = Store.adminToken
         Store.adminToken = ""
-        if (old.isNotEmpty()) io.execute { ChatApi.adminLogout(old) }
+        if (old.isNotEmpty()) io.execute { Push.unregisterAdmin(old); ChatApi.adminLogout(old) }
         navBack = true
         showHome()
     })

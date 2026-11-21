@@ -3,6 +3,12 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Push через Firebase включаются, только если рядом лежит app/google-services.json (см. server/README.md → «Мгновенные push»).
+// Без этого файла приложение собирается как обычно и получает уведомления фоновым опросом.
+if (file('google-services.json').exists()) {
+    apply plugin: 'com.google.gms.google-services'
+}
+
 // Сборка из ветки test (APP_VARIANT=test) — отдельное приложение «PharmShop Test» без автообновления.
 def isTest = System.getenv('APP_VARIANT') == 'test'
 
@@ -65,5 +71,6 @@ android {
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
     implementation 'androidx.work:work-runtime:2.9.1'   // фоновые уведомления (PollWorker)
+    implementation 'com.google.firebase:firebase-messaging:24.1.0'   // мгновенные push (FCM), если есть google-services.json
     implementation 'com.github.hCaptcha.hcaptcha-android-sdk:sdk:5.0.0'
 }

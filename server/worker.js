@@ -1,5 +1,6 @@
 // Сервер чата поддержки PharmShop — Cloudflare Workers + D1.
-// Настройки (Variables and Secrets): ADMIN_CODE (обязательно), BOT_TOKEN и CHAT_ID (по желанию, для уведомлений в Telegram).
+// Настройки (Variables and Secrets): ADMIN_CODE (обязательно), BOT_TOKEN и CHAT_ID (по желанию, для уведомлений в Telegram),
+// FCM_SERVICE_ACCOUNT (по желанию, JSON ключа сервисного аккаунта Firebase — включает мгновенные push).
 // Привязка базы: переменная DB -> ваша D1-база.
 
 const SCHEMA = [
@@ -10,6 +11,9 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS messages (
      id INTEGER PRIMARY KEY AUTOINCREMENT, device TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_messages_device ON messages (device, id)`,
+  // токены FCM: у пользователя один на устройство (с проверкой секрета), у админа — по числу его устройств
+  `CREATE TABLE IF NOT EXISTS push_user (device TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, token TEXT NOT NULL, ts INTEGER NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS push_admin (token TEXT PRIMARY KEY, code_fp TEXT NOT NULL, ts INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS fails (ip TEXT PRIMARY KEY, n INTEGER, ts INTEGER)`,
   // блокировки спамеров: kind = 'device' | 'ip'
   `CREATE TABLE IF NOT EXISTS blocks (
@@ -171,6 +175,111 @@ async function telegramNote(env, note, image) {
   });
 }
 
+// ---------- push через Firebase Cloud Messaging (HTTP v1) ----------
+// Включается секретом FCM_SERVICE_ACCOUNT (JSON ключа сервисного аккаунта Firebase). Без него push просто не отправляются,
+// а приложение продолжает получать уведомления опросом.
+const b64url = (buf) =>
+  btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const b64urlStr = (str) => b64url(new TextEncoder().encode(str));
+let fcmCache = null;   // { token, exp } — токен доступа живёт час, переиспользуем
+
+async function fcmAccessToken(sa) {
+  if (fcmCache && fcmCache.exp > Date.now() + 60_000) return fcmCache.token;
+  const now = Math.floor(Date.now() / 1000);
+  const unsigned =
+    b64urlStr(JSON.stringify({ alg: 'RS256', typ: 'JWT' })) + '.' +
+    b64urlStr(JSON.stringify({
+      iss: sa.client_email, scope: 'https://www.googleapis.com/auth/firebase.messaging',
+      aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600,
+    }));
+  const der = Uint8Array.from(atob(sa.private_key.replace(/-----[^-]+-----|\s/g, '')), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('pkcs8', der, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(unsigned));
+  const r = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=' + encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer') + '&assertion=' + unsigned + '.' + b64url(sig),
+  });
+  const j = await r.json();
+  if (!j.access_token) throw new Error('FCM auth failed');
+  fcmCache = { token: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 };
+  return fcmCache.token;
+}
+
+// Отправляет data-сообщение на один токен. Возвращает 'ok' | 'dead' (токен недействителен) | 'fail'.
+async function fcmSend(env, token, data) {
+  if (!env.FCM_SERVICE_ACCOUNT) return 'fail';
+  try {
+    const sa = JSON.parse(env.FCM_SERVICE_ACCOUNT);
+    const at = await fcmAccessToken(sa);
+    const strData = {};
+    for (const k of Object.keys(data)) strData[k] = String(data[k]);   // FCM принимает только строки
+    const r = await fetch(`https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`, {
+      method: 'POST',
+      headers: { authorization: 'Bearer ' + at, 'content-type': 'application/json' },
+      body: JSON.stringify({ message: { token, data: strData, android: { priority: 'HIGH' } } }),
+    });
+    if (r.ok) return 'ok';
+    if (r.status === 401) fcmCache = null;
+    if (r.status === 404) return 'dead';
+    const j = await r.json().catch(() => ({}));
+    return JSON.stringify(j).includes('UNREGISTERED') ? 'dead' : 'fail';
+  } catch (e) {
+    return 'fail';
+  }
+}
+
+async function pushToAdmins(env, data) {
+  if (!env.FCM_SERVICE_ACCOUNT || !env.ADMIN_CODE) return;
+  const fp = await sha256('fp:' + env.ADMIN_CODE);
+  const { results } = await env.DB.prepare('SELECT token FROM push_admin WHERE code_fp = ? LIMIT 20').bind(fp).all();
+  for (const row of results) {
+    if ((await fcmSend(env, row.token, data)) === 'dead') {
+      await env.DB.prepare('DELETE FROM push_admin WHERE token = ?').bind(row.token).run();
+    }
+  }
+}
+
+async function pushToUser(env, device, data) {
+  if (!env.FCM_SERVICE_ACCOUNT) return;
+  const row = await env.DB.prepare('SELECT token FROM push_user WHERE device = ?').bind(device).first();
+  if (!row) return;
+  if ((await fcmSend(env, row.token, data)) === 'dead') {
+    await env.DB.prepare('DELETE FROM push_user WHERE device = ?').bind(device).run();
+  }
+}
+
+// Приложение сообщает свой токен FCM. Пользователь подтверждает секретом устройства — чужой токен подставить нельзя.
+async function pushRegister(body, env) {
+  const device = String(body.device || '');
+  const secret = String(body.secret || '');
+  const token = String(body.token || '');
+  if (!UUID.test(device) || secret.length < 16 || token.length < 20 || token.length > 4096) return err('Некорректный запрос');
+  const hash = await sha256(secret);
+  const row = await env.DB.prepare('SELECT secret_hash FROM push_user WHERE device = ?').bind(device).first();
+  const th = await env.DB.prepare('SELECT secret_hash FROM threads WHERE device = ?').bind(device).first();
+  if ((row && row.secret_hash !== hash) || (th && th.secret_hash !== hash)) return err('Нет доступа', 403);
+  await env.DB.prepare(
+    'INSERT INTO push_user (device, secret_hash, token, ts) VALUES (?, ?, ?, ?) ON CONFLICT(device) DO UPDATE SET token = excluded.token, ts = excluded.ts'
+  ).bind(device, hash, token, Date.now()).run();
+  return json({ ok: true });
+}
+
+async function adminPushRegister(body, env) {
+  const token = String(body.token || '');
+  if (token.length < 20 || token.length > 4096) return err('Некорректный запрос');
+  const fp = await sha256('fp:' + env.ADMIN_CODE);
+  await env.DB.prepare(
+    'INSERT INTO push_admin (token, code_fp, ts) VALUES (?, ?, ?) ON CONFLICT(token) DO UPDATE SET code_fp = excluded.code_fp, ts = excluded.ts'
+  ).bind(token, fp, Date.now()).run();
+  return json({ ok: true });
+}
+
+async function adminPushUnregister(body, env) {
+  await env.DB.prepare('DELETE FROM push_admin WHERE token = ?').bind(String(body.token || '')).run();
+  return json({ ok: true });
+}
+
 // ---------- клиент ----------
 async function userSend(body, env, ctx, request) {
   const device = String(body.device || '');
@@ -230,6 +339,8 @@ async function userSend(body, env, ctx, request) {
       `\n\n${text || '📷 Фото'}\n\nОтветьте в приложении (админ-панель).`;
     ctx.waitUntil(telegramNote(env, note, image).catch(() => {}));
   }
+  // push админу (если настроен FCM)
+  ctx.waitUntil(pushToAdmins(env, { type: 'admin', nick, text: shown.slice(0, 160), ts: now }).catch(() => {}));
   return json({ ok: true });
 }
 
@@ -496,7 +607,7 @@ async function adminImage(body, env) {
   return json({ image: m.image });
 }
 
-async function adminReply(body, env) {
+async function adminReply(body, env, ctx) {
   const device = String(body.device || '');
   const text = String(body.text || '').trim().slice(0, 1000);
   const image = cleanImage(body.image);
@@ -513,6 +624,11 @@ async function adminReply(body, env) {
          status = CASE WHEN status = 'new' THEN 'work' ELSE status END WHERE device = ?`
     ).bind(text || '📷 Фото', now, now, device),
   ]);
+  // push пользователю (если настроен FCM): id нужен, чтобы фоновый опрос не показал то же уведомление второй раз
+  ctx.waitUntil((async () => {
+    const m = await env.DB.prepare(`SELECT id FROM messages WHERE device = ? AND sender = 'admin' ORDER BY id DESC LIMIT 1`).bind(device).first();
+    await pushToUser(env, device, { type: 'support', id: m ? m.id : 0, text: (text || '📷 Фото').slice(0, 160) });
+  })().catch(() => {}));
   return json({ ok: true });
 }
 
@@ -531,6 +647,7 @@ export default {
     if (path === '/api/chat/messages') return userMessages(body, env);
     if (path === '/api/chat/image') return userImage(body, env);
     if (path === '/api/chat/poll') return userPoll(body, env);
+    if (path === '/api/push/register') return pushRegister(body, env);
     if (path === '/api/app/config') return appConfig(env);
 
     if (path.startsWith('/api/admin/')) {
@@ -541,6 +658,8 @@ export default {
       if (path === '/api/admin/logout') return adminLogout(request, env);
       if (path === '/api/admin/threads') return adminThreads(body, env);
       if (path === '/api/admin/poll') return adminPoll(env);
+      if (path === '/api/admin/push_register') return adminPushRegister(body, env);
+      if (path === '/api/admin/push_unregister') return adminPushUnregister(body, env);
       if (path === '/api/admin/related') return adminRelated(body, env);
       if (path === '/api/admin/status') return adminSetStatus(body, env);
       if (path === '/api/admin/block') return adminBlock(body, env);
@@ -549,7 +668,7 @@ export default {
       if (path === '/api/admin/settings') return adminSettings(env);
       if (path === '/api/admin/settings_save') return adminSaveSettings(body, env);
       if (path === '/api/admin/messages') return adminMessages(body, env);
-      if (path === '/api/admin/reply') return adminReply(body, env);
+      if (path === '/api/admin/reply') return adminReply(body, env, ctx);
       if (path === '/api/admin/image') return adminImage(body, env);
     }
     return err('Not found', 404);

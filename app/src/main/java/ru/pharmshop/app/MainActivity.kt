@@ -84,6 +84,7 @@ class MainActivity : AppCompatActivity() {
         }
         Reminders.ensureScheduled(this)
         if (Store.pushEnabled) PollWorker.schedule(this)
+        Push.init(this)
         if (enforceUpdate()) return
         if (!openFromIntent(intent)) showHome()
     }
