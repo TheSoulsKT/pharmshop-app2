@@ -42,14 +42,25 @@ object ChatApi {
         }
     }
 
+    /** Модель, Android и версия приложения — уходит вместе с каждым обращением в поддержку. */
+    fun deviceInfo(): String =
+        "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, Android ${android.os.Build.VERSION.RELEASE} " +
+            "(API ${android.os.Build.VERSION.SDK_INT}), приложение ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+
     // ----- клиент -----
-    fun userSend(device: String, secret: String, nick: String, order: String, version: String, text: String) {
-        post(
-            "/api/chat/send",
-            JSONObject().put("device", device).put("secret", secret).put("nick", nick)
-                .put("order", order).put("version", version).put("text", text)
-        )
+    fun userSend(
+        device: String, secret: String, nick: String, order: String, version: String,
+        text: String, image: String = ""
+    ) {
+        val body = JSONObject().put("device", device).put("secret", secret).put("nick", nick)
+            .put("order", order).put("version", version).put("text", text).put("info", deviceInfo())
+        if (image.isNotEmpty()) body.put("image", image)
+        post("/api/chat/send", body)
     }
+
+    fun userImage(device: String, secret: String, id: Long): String =
+        post("/api/chat/image", JSONObject().put("device", device).put("secret", secret).put("id", id))
+            .optString("image")
 
     fun userMessages(device: String, secret: String, after: Long): JSONArray =
         post("/api/chat/messages", JSONObject().put("device", device).put("secret", secret).put("after", after))
@@ -63,7 +74,12 @@ object ChatApi {
         post("/api/admin/messages", JSONObject().put("device", device).put("after", after), code)
             .optJSONArray("messages") ?: JSONArray()
 
-    fun adminReply(code: String, device: String, text: String) {
-        post("/api/admin/reply", JSONObject().put("device", device).put("text", text), code)
+    fun adminReply(code: String, device: String, text: String, image: String = "") {
+        val body = JSONObject().put("device", device).put("text", text)
+        if (image.isNotEmpty()) body.put("image", image)
+        post("/api/admin/reply", body, code)
     }
+
+    fun adminImage(code: String, device: String, id: Long): String =
+        post("/api/admin/image", JSONObject().put("device", device).put("id", id), code).optString("image")
 }

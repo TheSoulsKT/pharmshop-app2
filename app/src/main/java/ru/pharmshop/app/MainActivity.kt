@@ -7,7 +7,10 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
@@ -33,6 +36,7 @@ import android.view.animation.OvershootInterpolator
 import android.widget.Button
 import android.widget.EditText
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -100,6 +104,11 @@ class MainActivity : AppCompatActivity() {
     private var navBack = false        // возврат назад: экран выезжает слева
     private var firstScreen = true     // первый экран после запуска — только плавное появление
     private val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private var onImagePicked: ((Uri) -> Unit)? = null
+    private val imagePicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) onImagePicked?.invoke(uri)
+    }
+    private var updateChecked = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -575,13 +584,26 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
             layoutParams = lp(0)
         })
-        col.addView(txt("Приложение в активной разработке\nВерсия 1.0.1 beta", 12f, MUTE).apply {
+        col.addView(txt("Приложение в активной разработке\nВерсия ${BuildConfig.VERSION_NAME}", 12f, MUTE).apply {
             gravity = Gravity.CENTER
             layoutParams = lp(0).apply { topMargin = dp(14) }
+        })
+        col.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            layoutParams = lp(0).apply { topMargin = dp(10) }
+            addView(chip("Проверить обновления", false) { checkForUpdate(false) }.apply {
+                (layoutParams as LinearLayout.LayoutParams).rightMargin = 0
+            })
         })
 
         floatForever(logo)
         riseIn(col)
+
+        // один раз за запуск тихо проверяем обновления
+        if (!updateChecked) {
+            updateChecked = true
+            checkForUpdate(true)
+        }
 
         // подтягиваем курс для карточки «Звёзды»
         if (cfg == null) {
@@ -593,6 +615,68 @@ class MainActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     // оставляем текст по умолчанию
                 }
+            }
+        }
+    }
+
+    // ---------- обновление приложения ----------
+
+    /** silent = проверка при запуске: сообщаем только если есть новая версия. */
+    private fun checkForUpdate(silent: Boolean) {
+        if (!Updater.configured) {
+            if (!silent) toast("Обновления работают в версии, собранной на GitHub")
+            return
+        }
+        if (!silent) toast("Проверяем обновления…")
+        io.execute {
+            try {
+                val info = Updater.check()
+                ui {
+                    if (isFinishing || isDestroyed) return@ui
+                    if (info == null) { if (!silent) toast("У вас последняя версия") }
+                    else offerUpdate(info)
+                }
+            } catch (e: Exception) {
+                ui { if (!silent) toast(e.message ?: "Не удалось проверить обновления") }
+            }
+        }
+    }
+
+    private fun offerUpdate(info: Updater.Info) {
+        val mb = if (info.size > 0) " (%.1f МБ)".format(info.size / 1048576.0) else ""
+        val notes = if (info.notes.isNotEmpty()) "\n\n${info.notes.take(600)}" else ""
+        AlertDialog.Builder(this)
+            .setTitle("Доступно обновление")
+            .setMessage("${info.versionName}$mb$notes")
+            .setPositiveButton("Обновить") { _, _ -> startUpdate(info) }
+            .setNegativeButton("Позже", null)
+            .show()
+    }
+
+    private fun startUpdate(info: Updater.Info) {
+        if (!Updater.canInstall(this)) {
+            AlertDialog.Builder(this)
+                .setTitle("Нужно разрешение")
+                .setMessage("Разрешите приложению устанавливать обновления, затем вернитесь и нажмите «Проверить обновления» ещё раз.")
+                .setPositiveButton("Открыть настройки") { _, _ -> Updater.openInstallPermissionSettings(this) }
+                .setNegativeButton("Отмена", null)
+                .show()
+            return
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Скачиваем обновление")
+            .setMessage("0%")
+            .setCancelable(false)
+            .show()
+        io.execute {
+            try {
+                val apk = Updater.download(this, info) { pct -> ui { dialog.setMessage("$pct%") } }
+                ui {
+                    dialog.dismiss()
+                    try { Updater.install(this, apk) } catch (e: Exception) { toast("Не удалось запустить установку") }
+                }
+            } catch (e: Exception) {
+                ui { dialog.dismiss(); toast(e.message ?: "Не удалось скачать обновление") }
             }
         }
     }
@@ -629,13 +713,68 @@ class MainActivity : AppCompatActivity() {
     private fun errText(e: Exception) =
         if (e is IllegalStateException) "Чат пока не настроен" else (e.message ?: "Нет связи")
 
+    /** Сжимает фото: учитывает поворот, сторона до 1280 px, JPEG ≤ ~700 КБ. Возвращает base64. */
+    private fun prepareImage(uri: Uri): String? {
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            if (bounds.outWidth <= 0) return null
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 2560) sample *= 2
+            var bmp = contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
+            } ?: return null
+            val rotation = try {
+                contentResolver.openInputStream(uri)?.use {
+                    when (android.media.ExifInterface(it).getAttributeInt(
+                        android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL
+                    )) {
+                        android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                        android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                        android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                        else -> 0f
+                    }
+                } ?: 0f
+            } catch (e: Exception) { 0f }
+            val scale = 1280f / maxOf(bmp.width, bmp.height)
+            val m = Matrix()
+            if (scale < 1f) m.postScale(scale, scale)
+            if (rotation != 0f) m.postRotate(rotation)
+            if (!m.isIdentity) bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+            var q = 82
+            var bytes: ByteArray
+            do {
+                val o = java.io.ByteArrayOutputStream()
+                bmp.compress(Bitmap.CompressFormat.JPEG, q, o)
+                bytes = o.toByteArray()
+                q -= 12
+            } while (bytes.size > 700_000 && q > 30)
+            if (bytes.size > 1_000_000) null
+            else android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun showFullImage(bmp: Bitmap) {
+        val iv = ImageView(this).apply {
+            setImageBitmap(bmp)
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        AlertDialog.Builder(this).setView(iv).setPositiveButton("Закрыть", null).show()
+    }
+
     /**
      * Лента сообщений + поле ввода. mine — чьи сообщения показывать справа ("user" или "admin").
-     * fetch(after) возвращает новые сообщения, send(text) отправляет сообщение.
+     * fetch(after) возвращает новые сообщения, send(text, imageBase64) отправляет сообщение (фото — по желанию),
+     * fetchImage(id) загружает фото сообщения. showMeta — показывать под сообщениями клиента IP и устройство (админ).
      */
     private fun chatPane(
         sid: Int, mine: String, hint: String,
-        fetch: (Long) -> JSONArray, send: (String) -> Unit
+        fetch: (Long) -> JSONArray, send: (String, String) -> Unit,
+        fetchImage: (Long) -> String, showMeta: Boolean = false
     ): LinearLayout {
         val pane = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -663,7 +802,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         var lastId = 0L
+        var pendingImage = ""   // прикреплённое фото (base64), уходит со следующим сообщением
         val timeFmt = SimpleDateFormat("d MMM, HH:mm", Locale.getDefault())
+
+        // строка «Фото прикреплено» с кнопкой убрать
+        val attachInfo = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            layoutParams = lp(6)
+        }
 
         fun add(m: JSONObject) {
             val id = m.optLong("id")
@@ -671,21 +819,57 @@ class MainActivity : AppCompatActivity() {
             lastId = id
             if (emptyHint.parent != null) list.removeView(emptyHint)
             val own = m.optString("from") == mine
-            val bubble = TextView(this).apply {
-                text = m.optString("text")
-                textSize = 15f
-                setTextColor(if (own) Color.BLACK else TEXT)
-                background = shape(if (own) BLUE else CARD, 16, if (own) BLUE else LINE)
-                setPadding(dp(12), dp(8), dp(12), dp(8))
-                maxWidth = (resources.displayMetrics.widthPixels * 0.78f).toInt()
-            }
-            val time = txt(timeFmt.format(java.util.Date(m.optLong("ts"))), 10f, MUTE)
             val wrap = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = if (own) Gravity.END else Gravity.START
                 layoutParams = lp(8)
-                addView(bubble)
-                addView(time)
+            }
+            val body = m.optString("text")
+            if (body.isNotEmpty()) {
+                wrap.addView(TextView(this).apply {
+                    text = body
+                    textSize = 15f
+                    setTextColor(if (own) Color.BLACK else TEXT)
+                    background = shape(if (own) BLUE else CARD, 16, if (own) BLUE else LINE)
+                    setPadding(dp(12), dp(8), dp(12), dp(8))
+                    maxWidth = (resources.displayMetrics.widthPixels * 0.78f).toInt()
+                })
+            }
+            if (m.optInt("has_image") == 1) {
+                val size = (resources.displayMetrics.widthPixels * 0.6f).toInt()
+                val iv = ImageView(this).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    background = shape(CARD, 16, LINE)
+                    clipToOutline = true
+                    layoutParams = LinearLayout.LayoutParams(size, size * 3 / 4).apply { topMargin = dp(4) }
+                }
+                var full: Bitmap? = null
+                iv.setOnClickListener { full?.let { showFullImage(it) } }
+                wrap.addView(iv)
+                io.execute {
+                    try {
+                        val bytes = android.util.Base64.decode(fetchImage(id), android.util.Base64.DEFAULT)
+                        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        if (bmp != null) ui { full = bmp; iv.setImageBitmap(bmp) }
+                    } catch (e: Exception) {
+                        // оставляем пустую рамку; при следующем открытии чата загрузится снова
+                    }
+                }
+            }
+            wrap.addView(txt(timeFmt.format(java.util.Date(m.optLong("ts"))), 10f, MUTE))
+            // для администратора: откуда пришло сообщение
+            if (showMeta && m.optString("from") == "user") {
+                val ip = m.optString("ip")
+                val dev = m.optString("dev")
+                val geo = m.optString("geo")
+                if (ip.isNotEmpty() || dev.isNotEmpty()) {
+                    val line = buildString {
+                        if (ip.isNotEmpty()) append("IP ").append(ip)
+                        if (geo.isNotEmpty()) append(" • ").append(geo)
+                        if (dev.isNotEmpty()) append("\n").append(dev)
+                    }
+                    wrap.addView(txt(line, 10f, MUTE).apply { setTextIsSelectable(true) })
+                }
             }
             list.addView(wrap)
         }
@@ -714,18 +898,34 @@ class MainActivity : AppCompatActivity() {
             main.postDelayed({ loop() }, 4000L)
         }
 
+        fun setAttachment(b64: String) {
+            pendingImage = b64
+            attachInfo.removeAllViews()
+            if (b64.isEmpty()) { attachInfo.visibility = View.GONE; return }
+            attachInfo.visibility = View.VISIBLE
+            attachInfo.addView(txt("📷 Фото прикреплено", 13f, TEXT).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            attachInfo.addView(chip("Убрать", false) { setAttachment("") }.apply {
+                (layoutParams as LinearLayout.LayoutParams).rightMargin = 0
+            })
+        }
+
         fun sendNow() {
             val text = field.text.toString().trim()
-            if (text.isEmpty()) return
+            val image = pendingImage
+            if (text.isEmpty() && image.isEmpty()) return
             field.setText("")
+            setAttachment("")
             io.execute {
                 try {
-                    send(text)
+                    send(text, image)
                     ui { fetchOnce() }
                 } catch (e: Exception) {
                     ui {
                         if (sid == screenId) {
                             field.setText(text)
+                            setAttachment(image)
                             toast(errText(e))
                         }
                     }
@@ -733,17 +933,42 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        val attachBtn = TextView(this).apply {
+            text = "📎"
+            textSize = 20f
+            gravity = Gravity.CENTER
+            contentDescription = "Прикрепить фото"
+            background = ripple(CARD, 12, LINE)
+            isClickable = true
+            setOnClickListener {
+                onImagePicked = { uri ->
+                    toast("Обрабатываем фото…")
+                    io.execute {
+                        val b64 = prepareImage(uri)
+                        ui {
+                            if (sid != screenId) return@ui
+                            if (b64 == null) toast("Не удалось подготовить фото") else setAttachment(b64)
+                        }
+                    }
+                }
+                try { imagePicker.launch("image/*") } catch (e: Exception) { toast("Не удалось открыть галерею") }
+            }
+            pressable(this)
+            layoutParams = LinearLayout.LayoutParams(dp(50), dp(50)).apply { rightMargin = dp(8) }
+        }
         val sendBtn = chip("Отправить", true) { sendNow() }.apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(50))
         }
         val composer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.BOTTOM
+            addView(attachBtn)
             addView(field)
             addView(sendBtn)
         }
         pane.addView(scroll)
         pane.addView(status)
+        pane.addView(attachInfo)
         pane.addView(composer)
         loop()
         return pane
@@ -787,9 +1012,12 @@ class MainActivity : AppCompatActivity() {
         val order = Store.orders().firstOrNull()?.optString("order_number").orEmpty()
         val chat = chatPane(
             sid, "user",
-            "Напишите нам, ответ придёт сюда, в чат. Если вопрос по заказу, укажите его номер.",
+            "Напишите нам, ответ придёт сюда, в чат. Если вопрос по заказу, укажите его номер. " +
+                "Можно прикрепить фото (скрин ошибки, чек) кнопкой 📎.\n\n" +
+                "Вместе с обращением мы получаем ваш IP-адрес и модель устройства — это помогает разобраться с проблемой.",
             { after -> ChatApi.userMessages(Store.deviceId, Store.deviceSecret, after) },
-            { text -> ChatApi.userSend(Store.deviceId, Store.deviceSecret, nick, order, BuildConfig.VERSION_NAME, text) }
+            { text, image -> ChatApi.userSend(Store.deviceId, Store.deviceSecret, nick, order, BuildConfig.VERSION_NAME, text, image) },
+            { id -> ChatApi.userImage(Store.deviceId, Store.deviceSecret, id) }
         )
         val faq = faqView()
         val tabs = LinearLayout(this).apply {
@@ -898,8 +1126,10 @@ class MainActivity : AppCompatActivity() {
                     ellipsize = TextUtils.TruncateAt.END
                 })
                 val order = t.optString("last_order")
+                val ip = t.optString("last_ip")
                 val meta = timeFmt.format(java.util.Date(t.optLong("last_ts"))) +
-                    (if (order.isNotEmpty()) "  •  заказ $order" else "")
+                    (if (order.isNotEmpty()) "  •  заказ $order" else "") +
+                    (if (ip.isNotEmpty()) "  •  IP $ip" else "")
                 card.addView(txt(meta, 11f, MUTE))
                 list.addView(card)
             }
@@ -934,10 +1164,19 @@ class MainActivity : AppCompatActivity() {
         backRow(root, title) { showAdminThreads() }
         val order = t.optString("last_order")
         if (order.isNotEmpty()) root.addView(tv("Последний заказ: $order", 12f, MUTE))
+        val lastIp = t.optString("last_ip")
+        val lastDev = t.optString("last_dev")
+        if (lastIp.isNotEmpty() || lastDev.isNotEmpty()) {
+            root.addView(tv("IP: ${lastIp.ifEmpty { "—" }}\n${lastDev.ifEmpty { "устройство неизвестно" }}", 12f, MUTE).apply {
+                setTextIsSelectable(true)
+            })
+        }
         root.addView(chatPane(
             sid, "admin", "Сообщений пока нет.",
             { after -> ChatApi.adminMessages(Store.adminCode, device, after) },
-            { text -> ChatApi.adminReply(Store.adminCode, device, text) }
+            { text, image -> ChatApi.adminReply(Store.adminCode, device, text, image) },
+            { id -> ChatApi.adminImage(Store.adminCode, device, id) },
+            showMeta = true
         ))
     }
 

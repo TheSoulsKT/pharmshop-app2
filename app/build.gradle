@@ -11,8 +11,32 @@ android {
         applicationId 'ru.pharmshop.app'
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName '1.0.1-beta'
+        // В GitHub Actions versionCode растёт сам (номер запуска + 100), локально — 2.
+        def run = System.getenv('GITHUB_RUN_NUMBER')
+        versionCode run ? run.toInteger() + 100 : 2
+        versionName run ? "1.0.${run.toInteger()}-beta" : '1.0.1-beta'
+        // Репозиторий для проверки обновлений («владелец/имя»); GitHub подставляет его сам при сборке.
+        buildConfigField 'String', 'GITHUB_REPO', "\"${System.getenv('GITHUB_REPOSITORY') ?: ''}\""
+    }
+    // Постоянный ключ подписи: без него новая версия не встанет поверх старой.
+    signingConfigs {
+        ci {
+            def ksFile = System.getenv('KEYSTORE_FILE')
+            if (ksFile) {   // свой ключ из секретов GitHub (необязательно)
+                storeFile file(ksFile)
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias System.getenv('KEY_ALIAS')
+                keyPassword System.getenv('KEY_PASSWORD')
+            } else {        // ключ, лежащий в репозитории: app/release.keystore
+                storeFile file('release.keystore')
+                storePassword 'pharmshop123'
+                keyAlias 'pharmshop'
+                keyPassword 'pharmshop123'
+            }
+        }
+    }
+    buildTypes {
+        debug { signingConfig signingConfigs.ci }
     }
     buildFeatures { buildConfig true }
     compileOptions {
