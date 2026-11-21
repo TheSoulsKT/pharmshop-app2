@@ -496,6 +496,10 @@ class MainActivity : AppCompatActivity() {
             (m == java.util.Calendar.NOVEMBER && d >= 15)
     }
 
+    /** Заголовок раздела главного меню («Купить», «Скоро»). */
+    private fun sectionTitle(t: String, top: Int): TextView =
+        txt(t, 20f, TEXT, true).apply { layoutParams = lp(10).apply { topMargin = dp(top) } }
+
     private fun showHome() {
         onHome = true
         val col = screen()
@@ -570,16 +574,19 @@ class MainActivity : AppCompatActivity() {
         col.addView(tv("Выберите, что вам нужно", 15f, MUTE))
 
         val soon = { toast("Скоро будет доступно") }
+        col.addView(sectionTitle("Купить", 4))
         val (starsCard, starsSub) = menuWide(Ic.STAR, "Звёзды", rateText()) { showStars() }
         col.addView(starsCard)
-        col.addView(menuWide(Ic.GIFT, "Обычные подарки", "Покупка за рубли") { soon() }.first)
         col.addView(menuWide(Ic.CROWN, "Купить Premium", "Покупка подписки") { showPremium() }.first)
+
+        col.addView(sectionTitle("Скоро", 10))
+        col.addView(menuWide(Ic.GIFT, "Обычные подарки", "Покупка за рубли") { soon() }.first)
         col.addView(gridRow(
             tile(Ic.BOX, "Купить NFT", "") { soon() },
             tile(Ic.KEY, "Аренда NFT", "") { soon() }
         ))
         col.addView(gridRow(
-            tile(Ic.DB, "Продать звёзды", "Скоро") { soon() },
+            tile(Ic.DB, "Продать звёзды", "") { soon() },
             tile(Ic.AT, "Скупка NFT", "") { soon() }
         ))
 
