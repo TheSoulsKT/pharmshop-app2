@@ -197,7 +197,7 @@ class MainActivity : AppCompatActivity() {
     private fun menuWide(icon: Ic, title: String, sub: String, onClick: () -> Unit): Pair<LinearLayout, TextView> {
         val subView = txt(sub, 13f, MUTE)
         val ic = IconView(this, icon, BLUE).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).apply { rightMargin = dp(14) }
+            layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply { rightMargin = dp(14) }
         }
         val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         texts.addView(txt(title, 17f, TEXT, true))
@@ -218,7 +218,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun tile(icon: Ic, title: String, sub: String, onClick: () -> Unit): LinearLayout {
         val ic = IconView(this, icon, BLUE).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(26), dp(26))
+            layoutParams = LinearLayout.LayoutParams(dp(24), dp(24))
         }
         val spacer = View(this).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
@@ -626,8 +626,8 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply { rightMargin = dp(14) }
         }
         val who = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        who.addView(txt(if (user.isEmpty()) "Гость" else "@$user", 18f, TEXT, true))
-        who.addView(txt("Профиль на этом устройстве", 12f, MUTE))
+        who.addView(txt(if (user.isEmpty()) "Telegram не указан" else "@$user", 18f, TEXT, true))
+        who.addView(txt(if (user.isEmpty()) "Укажите ник — он подставится в заказы" else "Ник указан вручную, ботом не подтверждён", 12f, MUTE))
         val userCard = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -638,6 +638,15 @@ class MainActivity : AppCompatActivity() {
         userCard.addView(avatar)
         userCard.addView(who)
         body.addView(userCard)
+
+        val tgActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        tgActions.addView(chip(if (user.isEmpty()) "Указать Telegram" else "Изменить ник", true) { editUsername(body, sid) })
+        tgActions.addView(chip("Открыть @pharmaishop_bot", false) { openUrl("$BOT_URL?start=app") })
+        body.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = lp(16)
+            addView(tgActions)
+        })
 
         // статистика
         val paid = orders.filter { val k = statusKind(it.optString("status")); k == 1 || k == 2 }
@@ -693,6 +702,22 @@ class MainActivity : AppCompatActivity() {
                     .show()
             })
         }
+    }
+
+    private fun editUsername(body: LinearLayout, sid: Int) {
+        val et = EditText(this)
+        et.setText(Store.lastUser)
+        et.hint = "Ник без @"
+        et.setSingleLine()
+        AlertDialog.Builder(this)
+            .setTitle("Ваш Telegram")
+            .setView(et)
+            .setPositiveButton("Сохранить") { _, _ ->
+                Store.lastUser = et.text.toString().trim().removePrefix("@")
+                if (sid == screenId) renderProfile(body, sid)
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     private fun orderCard(o: JSONObject, body: LinearLayout, sid: Int): LinearLayout {

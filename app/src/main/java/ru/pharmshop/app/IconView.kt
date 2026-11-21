@@ -31,12 +31,30 @@ class IconView(ctx: Context, private val kind: Ic, private val tint: Int) : View
         typeface = Typeface.DEFAULT_BOLD
     }
 
+    /** Иконка никогда не бывает больше 28dp, что бы ни пришло от родителя. */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val cap = (28 * resources.displayMetrics.density).toInt()
+        setMeasuredDimension(clamp(widthMeasureSpec, cap), clamp(heightMeasureSpec, cap))
+    }
+
+    private fun clamp(spec: Int, cap: Int): Int {
+        val size = MeasureSpec.getSize(spec)
+        return when (MeasureSpec.getMode(spec)) {
+            MeasureSpec.UNSPECIFIED -> cap
+            else -> minOf(size, cap)
+        }
+    }
+
     override fun onDraw(c: Canvas) {
         val s = minOf(width, height).toFloat()
         if (s <= 0f) return
         c.save()
         c.translate((width - s) / 2f, (height - s) / 2f)
         c.scale(s / 24f, s / 24f)
+        // внутренние поля: рисунок занимает ~84% рамки, как у иконок референса
+        c.translate(12f, 12f)
+        c.scale(0.84f, 0.84f)
+        c.translate(-12f, -12f)
         when (kind) {
             Ic.STAR -> {
                 val p = Path()
@@ -75,15 +93,15 @@ class IconView(ctx: Context, private val kind: Ic, private val tint: Int) : View
                 c.drawLine(4f, 21f, 20f, 21f, stroke)
             }
             Ic.BOX -> {
-                c.drawRoundRect(RectF(3f, 7f, 21f, 11f), 1.5f, 1.5f, stroke)
-                c.drawRoundRect(RectF(4.5f, 11f, 19.5f, 21f), 1.5f, 1.5f, stroke)
-                c.drawLine(12f, 7f, 12f, 21f, stroke)
+                c.drawRoundRect(RectF(4f, 8f, 20f, 12f), 1.2f, 1.2f, stroke)
+                c.drawRoundRect(RectF(5.5f, 12f, 18.5f, 20.5f), 1.2f, 1.2f, stroke)
+                c.drawLine(12f, 8f, 12f, 20.5f, stroke)
             }
             Ic.KEY -> {
-                c.drawCircle(7.5f, 12f, 3.7f, stroke)
-                c.drawLine(11.2f, 12f, 21f, 12f, stroke)
-                c.drawLine(17.5f, 12f, 17.5f, 15.5f, stroke)
-                c.drawLine(20.5f, 12f, 20.5f, 14.5f, stroke)
+                c.drawCircle(8f, 12f, 3.5f, stroke)
+                c.drawLine(11.5f, 12f, 20f, 12f, stroke)
+                c.drawLine(17f, 12f, 17f, 15f, stroke)
+                c.drawLine(20f, 12f, 20f, 14.5f, stroke)
             }
             Ic.DB -> {
                 c.drawOval(RectF(5f, 3.5f, 19f, 9.5f), stroke)
