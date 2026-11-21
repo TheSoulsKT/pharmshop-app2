@@ -24,6 +24,9 @@ object Updater {
 
     val configured: Boolean get() = repo.isNotEmpty()
 
+    /** Пояснение к последней проверке (для диагностики, когда обновлений не нашлось). */
+    @Volatile var lastNote = ""
+
     /** null — установлена последняя версия. */
     fun check(): Info? {
         if (!configured) throw IllegalStateException("Обновления доступны только в сборке с GitHub")
@@ -34,14 +37,26 @@ object Updater {
             c.setRequestProperty("Accept", "application/vnd.github+json")
             c.setRequestProperty("User-Agent", "PharmShopApp")
             val code = c.responseCode
-            if (code == 404) return null   // релизов ещё нет
+            if (code == 404) {   // релизов ещё нет (или репозиторий закрыт)
+                lastNote = "В репозитории $repo не найдено ни одного релиза (или репозиторий закрыт)."
+                return null
+            }
             val text = (if (code in 200..299) c.inputStream else c.errorStream)
                 ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
             if (code !in 200..299) throw Exception("GitHub ответил кодом $code")
             val r = JSONObject(text)
-            val remote = r.optString("tag_name").removePrefix("build-").toIntOrNull() ?: return null
-            if (remote <= BuildConfig.VERSION_CODE) return null
-            val assets = r.optJSONArray("assets") ?: return null
+            val tag = r.optString("tag_name")
+            val remote = tag.removePrefix("build-").toIntOrNull()
+            if (remote == null) {
+                lastNote = "Последний релиз называется «$tag», а нужен тег вида build-107."
+                return null
+            }
+            if (remote <= BuildConfig.VERSION_CODE) {
+                lastNote = "Последний релиз на GitHub: сборка $remote, у вас: сборка ${BuildConfig.VERSION_CODE}."
+                return null
+            }
+            val assets = r.optJSONArray("assets")
+            if (assets == null) { lastNote = "В релизе $tag нет файлов."; return null }
             for (i in 0 until assets.length()) {
                 val a = assets.getJSONObject(i)
                 if (a.optString("name").endsWith(".apk")) {
@@ -54,6 +69,7 @@ object Updater {
                     )
                 }
             }
+            lastNote = "В релизе $tag нет файла .apk."
             return null
         } finally {
             c.disconnect()

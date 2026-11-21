@@ -3,6 +3,9 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Сборка из ветки test (APP_VARIANT=test) — отдельное приложение «PharmShop Test» без автообновления.
+def isTest = System.getenv('APP_VARIANT') == 'test'
+
 android {
     namespace 'ru.pharmshop.app'
     compileSdk 35
@@ -16,7 +19,12 @@ android {
         versionCode run ? run.toInteger() + 100 : 2
         versionName project.findProperty('appVersion') ?: '1.0.3-beta'   // название версии задаётся в gradle.properties
         // Репозиторий для проверки обновлений («владелец/имя»); GitHub подставляет его сам при сборке.
-        buildConfigField 'String', 'GITHUB_REPO', "\"${System.getenv('GITHUB_REPOSITORY') ?: ''}\""
+        buildConfigField 'String', 'GITHUB_REPO', "\"${isTest ? '' : (System.getenv('GITHUB_REPOSITORY') ?: '')}\""
+        manifestPlaceholders = [appLabel: isTest ? 'PharmShop Test' : 'PharmShop']
+        if (isTest) {
+            applicationIdSuffix '.test'
+            versionNameSuffix '-test'
+        }
     }
     // Постоянный ключ подписи: без него новая версия не встанет поверх старой.
     signingConfigs {

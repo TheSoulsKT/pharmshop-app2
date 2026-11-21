@@ -612,7 +612,7 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
             layoutParams = lp(0)
         })
-        col.addView(txt("Приложение в активной разработке\nВерсия ${BuildConfig.VERSION_NAME}", 12f, MUTE).apply {
+        col.addView(txt("Приложение в активной разработке\nВерсия ${BuildConfig.VERSION_NAME} (сборка ${BuildConfig.VERSION_CODE})", 12f, MUTE).apply {
             gravity = Gravity.CENTER
             layoutParams = lp(0).apply { topMargin = dp(14) }
         })
@@ -669,7 +669,15 @@ class MainActivity : AppCompatActivity() {
                 val info = Updater.check()
                 ui {
                     if (isFinishing || isDestroyed) return@ui
-                    if (info == null) { if (!silent) toast("У вас последняя версия") }
+                    if (info == null) {
+                        if (!silent) {
+                            AlertDialog.Builder(this)
+                                .setTitle("Обновлений нет")
+                                .setMessage(Updater.lastNote.ifEmpty { "У вас последняя версия." })
+                                .setPositiveButton("Ок", null)
+                                .show()
+                        }
+                    }
                     else offerUpdate(info)
                 }
             } catch (e: Exception) {
