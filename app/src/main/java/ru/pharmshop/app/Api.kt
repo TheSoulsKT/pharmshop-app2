@@ -28,9 +28,8 @@ object Api {
                 throw Exception("Сервер вернул не JSON (код $code). Возможно, сайт не пустил приложение.")
             }
             val json = JSONObject(text)
-                 if (code !in 200..299) {
+            if (code !in 200..299) {
                 throw Exception("HTTP $code: " + text.take(300))
-            }
             }
             return json
         } finally {
@@ -50,3 +49,4 @@ object Api {
                 .put("method_id", methodId).put("captcha_token", captchaToken)
         )
 }
+
