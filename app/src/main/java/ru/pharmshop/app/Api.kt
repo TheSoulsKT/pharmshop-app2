@@ -3,12 +3,16 @@ package ru.pharmshop.app
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 
 /** Запросы к витрине pharmshop.tgstars.tg (те же, что делает сам сайт). */
 object Api {
     private const val BASE = "https://pharmshop.tgstars.tg"
 
-    private fun call(method: String, path: String, body: JSONObject?): JSONObject {
+    private fun call(
+        method: String, path: String, body: JSONObject?,
+        headers: Map<String, String> = emptyMap()
+    ): JSONObject {
         var url = URL(BASE + path)
         var redirects = 0
         while (true) {
@@ -23,6 +27,7 @@ object Api {
                 c.setRequestProperty("User-Agent", "PharmShopApp/1.0")
                 c.setRequestProperty("Origin", BASE)
                 c.setRequestProperty("Referer", "$BASE/")
+                for ((k, v) in headers) c.setRequestProperty(k, v)
                 if (body != null) {
                     c.doOutput = true
                     c.setRequestProperty("Content-Type", "application/json")
@@ -65,6 +70,8 @@ object Api {
         call(
             "POST", "/api/storefront/orders",
             JSONObject().put("username", username).put("quantity", quantity)
-                .put("method_id", methodId).put("captcha_token", captchaToken)
+                .put("method_id", methodId).put("captcha_token", captchaToken),
+            // сайт шлёт этот заголовок с UUID — без него сервер отвечает 422
+            mapOf("Idempotency-Key" to UUID.randomUUID().toString())
         )
 }
