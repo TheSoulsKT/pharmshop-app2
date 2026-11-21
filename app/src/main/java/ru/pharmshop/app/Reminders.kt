@@ -55,11 +55,12 @@ object Reminders {
     fun shouldAskPermission(c: Context): Boolean {
         if (Build.VERSION.SDK_INT < 33) return false
         if (ContextCompat.checkSelfPermission(c, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return false
-        return !prefs(c).getBoolean("asked", false)
+        // не более 3 запросов (Android сам перестаёт показывать диалог после двух отказов)
+        return prefs(c).getInt("asked_n", 0) < 3
     }
 
     fun markAsked(c: Context) {
-        prefs(c).edit().putBoolean("asked", true).apply()
+        prefs(c).edit().putInt("asked_n", prefs(c).getInt("asked_n", 0) + 1).apply()
     }
 
     // ---------- планирование ----------
@@ -120,7 +121,7 @@ object Reminders {
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             nm.createNotificationChannel(
-                NotificationChannel(CHANNEL, "Напоминания", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                NotificationChannel(CHANNEL, "Напоминания", NotificationManager.IMPORTANCE_HIGH).apply {
                     description = "Напоминания о покупке звёзд и Telegram Premium"
                 }
             )
