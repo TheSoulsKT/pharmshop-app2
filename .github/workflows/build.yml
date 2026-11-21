@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -25,3 +27,15 @@ jobs:
         with:
           name: PharmShop-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish release (for in-app updates)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CODE=$((GITHUB_RUN_NUMBER + 100))
+          VERSION=$(grep '^appVersion=' gradle.properties | cut -d= -f2)
+          cp app/build/outputs/apk/debug/app-debug.apk "PharmShop-${VERSION}.apk"
+          NOTES=$(git log -1 --pretty=%B)
+          gh release create "build-${CODE}" "PharmShop-${VERSION}.apk" \
+            --title "Версия ${VERSION}" \
+            --notes "$NOTES" \
+            --latest
