@@ -11,9 +11,13 @@ android {
         applicationId 'ru.pharmshop.app'
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName '1.0'
+        versionCode 2
+        versionName '1.0.1-beta'
+        // Поддержка: токен бота и chat id берутся из секретов сборки / gradle.properties, в репозиторий не попадают
+        buildConfigField 'String', 'SUPPORT_BOT_TOKEN', "\"${System.getenv('SUPPORT_BOT_TOKEN') ?: (project.findProperty('SUPPORT_BOT_TOKEN') ?: '')}\""
+        buildConfigField 'String', 'SUPPORT_CHAT_ID', "\"${System.getenv('SUPPORT_CHAT_ID') ?: (project.findProperty('SUPPORT_CHAT_ID') ?: '')}\""
     }
+    buildFeatures { buildConfig true }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17

@@ -1,5 +1,7 @@
 package ru.pharmshop.app
 
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -14,14 +16,19 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
+import android.text.InputFilter
 import android.text.InputType
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextWatcher
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.Button
 import android.widget.EditText
 import android.widget.HorizontalScrollView
@@ -30,8 +37,10 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.graphics.ColorUtils
 import com.hcaptcha.sdk.HCaptcha
 import com.hcaptcha.sdk.HCaptchaConfig
 import com.hcaptcha.sdk.HCaptchaException
@@ -42,7 +51,7 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.Executors
 
-private class MethodRow(val id: String, val name: String, val row: LinearLayout, val dot: View)
+private class MethodRow(val id: String, val name: String, val row: LinearLayout, val dot: View, val tint: Int = 0)
 
 class MainActivity : AppCompatActivity() {
     private val BG = Color.parseColor("#121214")
@@ -54,6 +63,18 @@ class MainActivity : AppCompatActivity() {
     private val GREEN = Color.parseColor("#34C759")
     private val AMBER = Color.parseColor("#E0A030")
     private val RED = Color.parseColor("#FF5A52")
+
+    // палитра экранов покупки (главный экран остаётся синим)
+    private val GOLD = Color.parseColor("#FFB020")
+    private val GOLD_A = Color.parseColor("#FFC83D")
+    private val GOLD_B = Color.parseColor("#FF8A3D")
+    private val ORANGE = Color.parseColor("#FF7A3D")
+    private val PINK = Color.parseColor("#EC4899")
+    private val VIOLET = Color.parseColor("#8B5CF6")
+    private val VIOLET_A = Color.parseColor("#7C3AED")
+    private val VIOLET_L = Color.parseColor("#B794F6")
+    private val CYAN = Color.parseColor("#22C1DC")
+    private val DARK_ON = Color.parseColor("#231400")
 
     private val BOT_URL = "https://t.me/pharmaishop_bot"
     /** Единая высота всех карточек главного меню */
@@ -72,6 +93,9 @@ class MainActivity : AppCompatActivity() {
     private var hc: HCaptcha? = null
     private var hcOk: ((String) -> Unit)? = null
     private var hcFail: ((String) -> Unit)? = null
+    private var navBack = false        // возврат назад: экран выезжает слева
+    private var firstScreen = true     // первый экран после запуска — только плавное появление
+    private val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,10 +104,33 @@ class MainActivity : AppCompatActivity() {
         window.navigationBarColor = BG
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (onHome) finish() else showHome()
+                if (onHome) finish() else { navBack = true; showHome() }
             }
         })
-        showHome()
+        // напоминания: разрешение спрашиваем один раз, будильник ставим при каждом запуске
+        if (Reminders.shouldAskPermission(this)) {
+            Reminders.markAsked(this)
+            notifPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+        Reminders.ensureScheduled(this)
+        if (!openFromIntent(intent)) showHome()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openFromIntent(intent)
+    }
+
+    /** Нажатие на уведомление открывает экран покупки звёзд или Premium. */
+    private fun openFromIntent(i: Intent?): Boolean {
+        val target = i?.getStringExtra(Reminders.EXTRA_OPEN) ?: return false
+        i.removeExtra(Reminders.EXTRA_OPEN)
+        return when (target) {
+            "stars" -> { showStars(); true }
+            "premium" -> { showPremium(); true }
+            else -> false
+        }
     }
 
     override fun onResume() {
@@ -91,6 +138,82 @@ class MainActivity : AppCompatActivity() {
         if (returnFromPay) {
             returnFromPay = false
             showProfile()
+        }
+    }
+
+    // ---------- анимации ----------
+    /** Лёгкое «вдавливание» при касании. Клики не перехватывает (возвращает false). */
+    private fun pressable(v: View) {
+        v.setOnTouchListener { view, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> view.animate().scaleX(0.97f).scaleY(0.97f)
+                    .setStartDelay(0).setDuration(110).setInterpolator(DecelerateInterpolator()).start()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> view.animate().scaleX(1f).scaleY(1f)
+                    .setStartDelay(0).setDuration(240).setInterpolator(OvershootInterpolator(2.5f)).start()
+            }
+            false
+        }
+    }
+
+    /** Поочерёдное появление дочерних элементов (снизу вверх с проявлением), начиная с индекса from. */
+    private fun riseIn(col: LinearLayout, from: Int = 0) {
+        var n = 0
+        for (i in from until col.childCount) {
+            val v = col.getChildAt(i)
+            v.alpha = 0f
+            v.translationY = dp(14).toFloat()
+            v.animate().alpha(1f).translationY(0f)
+                .setStartDelay(minOf(n, 10) * 55L).setDuration(420)
+                .setInterpolator(DecelerateInterpolator(2f)).start()
+            n++
+        }
+    }
+
+    /** Бесконечная анимация, которая живёт, пока вид на экране, и останавливается при его удалении. */
+    private fun loopWhileAttached(v: View, a: ObjectAnimator) {
+        a.repeatMode = ValueAnimator.REVERSE
+        a.repeatCount = ValueAnimator.INFINITE
+        v.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(x: View) { if (!a.isStarted) a.start() }
+            override fun onViewDetachedFromWindow(x: View) { a.cancel() }
+        })
+    }
+
+    /** Логотип слегка «парит». */
+    private fun floatForever(v: View) {
+        loopWhileAttached(v, ObjectAnimator.ofFloat(v, View.TRANSLATION_Y, 0f, -dp(3).toFloat()).apply {
+            duration = 2200
+            interpolator = AccelerateDecelerateInterpolator()
+        })
+    }
+
+    /** Мягкое мигание бейджа заказа, который ещё не завершён. */
+    private fun pulse(v: View) {
+        loopWhileAttached(v, ObjectAnimator.ofFloat(v, View.ALPHA, 1f, 0.55f).apply {
+            duration = 900
+            interpolator = AccelerateDecelerateInterpolator()
+        })
+    }
+
+    /** Смена текста с небольшим «всплеском» (для суммы к оплате). */
+    private fun popText(t: TextView, s: String) {
+        if (t.text.toString() == s) return
+        t.text = s
+        t.pivotX = 0f
+        t.pivotY = t.height / 2f
+        t.scaleX = 0.94f; t.scaleY = 0.94f; t.alpha = 0.4f
+        t.animate().scaleX(1f).scaleY(1f).alpha(1f)
+            .setStartDelay(0).setDuration(280).setInterpolator(OvershootInterpolator(2f)).start()
+    }
+
+    /** Радио-точка «выскакивает» в момент выбора. */
+    private fun dotState(dot: View, selected: Boolean) {
+        val was = dot.tag == "on"
+        dot.tag = if (selected) "on" else null
+        if (selected && !was) {
+            dot.scaleX = 0.5f; dot.scaleY = 0.5f
+            dot.animate().scaleX(1f).scaleY(1f)
+                .setStartDelay(0).setDuration(320).setInterpolator(OvershootInterpolator(3f)).start()
         }
     }
 
@@ -137,6 +260,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(18), dp(16), dp(18), dp(16))
             layoutParams = lp()
             setOnClickListener { onClick() }
+            pressable(this)
         }
 
     private fun chip(t: String, primary: Boolean, onClick: () -> Unit): TextView =
@@ -149,9 +273,71 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(14), dp(9), dp(14), dp(9))
             isClickable = true
             setOnClickListener { onClick() }
+            pressable(this)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { rightMargin = dp(8) }
+        }
+
+    /** Цвет, подмешанный к фону карточки (для выбранных строк). */
+    private fun mix(c: Int, amount: Float) = ColorUtils.blendARGB(CARD, c, amount)
+
+    private fun edge(accent: Int) = ColorUtils.blendARGB(LINE, accent, 0.55f)
+
+    private fun gradient(c1: Int, c2: Int, radius: Int) =
+        GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(c1, c2)).apply {
+            cornerRadius = dp(radius).toFloat()
+        }
+
+    /** Цветная плашка-заголовок экрана покупки. */
+    private fun banner(ic: Ic, title: String, sub: String, c1: Int, c2: Int, on: Int): LinearLayout {
+        val iconBox = LinearLayout(this).apply {
+            gravity = Gravity.CENTER
+            background = shape(ColorUtils.setAlphaComponent(on, 40), 14)
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { rightMargin = dp(14) }
+            addView(IconView(this@MainActivity, ic, on).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(26), dp(26))
+            })
+        }
+        val texts = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(txt(title, 20f, on, true))
+            addView(txt(sub, 13f, ColorUtils.setAlphaComponent(on, 205)))
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = gradient(c1, c2, 20)
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            layoutParams = lp(16)
+            addView(iconBox)
+            addView(texts)
+        }
+    }
+
+    /** Кнопка «Оплатить» с градиентом. */
+    private fun gradBtn(t: String, c1: Int, c2: Int, textColor: Int, onClick: () -> Unit): Button =
+        Button(this).apply {
+            text = t
+            setAllCaps(false)
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setTextColor(textColor)
+            background = RippleDrawable(
+                ColorStateList.valueOf(0x33FFFFFF), gradient(c1, c2, 18), shape(Color.WHITE, 18)
+            )
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            layoutParams = lp()
+            setOnClickListener { onClick() }
+            pressable(this)
+        }
+
+    /** Чип с цветной обводкой и тонировкой. */
+    private fun chipTint(t: String, color: Int, onClick: () -> Unit): TextView =
+        chip(t, false, onClick).apply {
+            setTextColor(color)
+            background = ripple(mix(color, 0.16f), 12, color)
+            setPadding(dp(14), dp(9), dp(14), dp(9))
         }
 
     private fun input(hintText: String, type: Int): EditText = EditText(this).apply {
@@ -177,6 +363,13 @@ class MainActivity : AppCompatActivity() {
             addView(col)
         }
         setContentView(sv)
+        // переход между экранами: вперёд — выезд справа, назад — слева
+        sv.alpha = 0f
+        sv.translationX = if (firstScreen) 0f else dp(28).toFloat() * (if (navBack) -1 else 1)
+        sv.animate().alpha(1f).translationX(0f).setDuration(320)
+            .setInterpolator(DecelerateInterpolator(2f)).start()
+        firstScreen = false
+        navBack = false
         return col
     }
 
@@ -193,7 +386,8 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
             background = ripple(CARD, 22, LINE)
             isClickable = true
-            setOnClickListener { showHome() }
+            setOnClickListener { navBack = true; showHome() }
+            pressable(this)
             layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)).apply { rightMargin = dp(14) }
             addView(icon)
         }
@@ -227,6 +421,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = lp(10).apply { height = CARD_H }
             isClickable = true
             setOnClickListener { onClick() }
+            pressable(this)
         }
         row.addView(ic)
         row.addView(texts)
@@ -246,6 +441,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(16), dp(14), dp(16), dp(14))
             isClickable = true
             setOnClickListener { onClick() }
+            pressable(this)
         }
         t.addView(ic)
         t.addView(spacer)
@@ -306,8 +502,22 @@ class MainActivity : AppCompatActivity() {
             background = ripple(CARD, 22, LINE)
             isClickable = true
             setOnClickListener { showProfile() }
+            pressable(this)
             layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
             addView(userIcon)
+        }
+        val helpBtn = TextView(this).apply {
+            text = "?"
+            textSize = 20f
+            setTextColor(TEXT)
+            setTypeface(typeface, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            contentDescription = "Частые вопросы"
+            background = ripple(CARD, 22, LINE)
+            isClickable = true
+            setOnClickListener { showFaq() }
+            pressable(this)
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)).apply { rightMargin = dp(8) }
         }
         val head = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -315,6 +525,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = lp(22)
             addView(logo)
             addView(titles)
+            addView(helpBtn)
             addView(profileBtn)
         }
         col.addView(head)
@@ -345,6 +556,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = lp(14)
             isClickable = true
             setOnClickListener { openUrl(BOT_URL) }
+            pressable(this)
         }
         bot.addView(botIcon)
         bot.addView(txt("Заказать в боте", 13f, Color.BLACK))
@@ -355,6 +567,13 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
             layoutParams = lp(0)
         })
+        col.addView(txt("Приложение в активной разработке\nВерсия 1.0.1 beta", 12f, MUTE).apply {
+            gravity = Gravity.CENTER
+            layoutParams = lp(0).apply { topMargin = dp(14) }
+        })
+
+        floatForever(logo)
+        riseIn(col)
 
         // подтягиваем курс для карточки «Звёзды»
         if (cfg == null) {
@@ -370,6 +589,121 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ---------- частые вопросы ----------
+    private fun faqCard(title: String, body: String, color: Int): LinearLayout {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = shape(CARD, 18, LINE)
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            layoutParams = lp(10)
+        }
+        card.addView(txt(title, 16f, color, true).apply { layoutParams = lp(6) })
+        card.addView(txt(body, 14f, TEXT))
+        return card
+    }
+
+    private fun showFaq() {
+        onHome = false
+        val col = screen()
+        backRow(col, "Частые вопросы")
+        col.addView(tv("Часто задаваемые вопросы:", 15f, MUTE))
+        col.addView(faqCard(
+            "Как быстро приходят звезды?",
+            "Заказы отправляются автоматически и, приходят в течение 15 секунд.", BLUE
+        ))
+        col.addView(faqCard(
+            "Могу ли я покупать звезды только для себя?",
+            "Нет, вы можете отправлять подарки любым пользователям, у которых есть @username.", CYAN
+        ))
+        col.addView(faqCard(
+            "Есть ли риск блокировки моего аккаунта или рефаунда звезд?",
+            "Нет, риск отсутствует, так как мы используем официальную платформу Telegram для покупки звёзд. " +
+                "Блокировка или потеря звёзд невозможны", GREEN
+        ))
+        col.addView(faqCard(
+            "Продажа звезд",
+            "Для продажи звезд требуется подтвердить их, или ждать 21 день. После оплаты заявки бот выдаст вам " +
+                "всю информацию. Необходимо скинуть номер заявки и транзакции по звездам, все просто", AMBER
+        ))
+        col.addView(btn("Связаться с поддержкой", true) { showSupport() })
+        riseIn(col)
+    }
+
+    // ---------- поддержка ----------
+    private var lastSupportAt = 0L
+    private var supportBusy = false
+
+    private fun showSupport() {
+        onHome = false
+        val col = screen()
+        val sid = screenId
+        backRow(col, "Поддержка")
+        col.addView(tv("Опишите вопрос или проблему — сообщение получит поддержка. Мы ответим вам в Telegram.", 14f, MUTE))
+
+        val contact = input("Ваш Telegram, без @", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
+        contact.setText(Store.lastUser)
+        val msg = input(
+            "Сообщение",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        ).apply {
+            minLines = 5
+            gravity = Gravity.TOP or Gravity.START
+            filters = arrayOf(InputFilter.LengthFilter(1000))
+        }
+        col.addView(contact)
+        col.addView(msg)
+        col.addView(tv("Вместе с сообщением отправляются ваш ник, номер последнего заказа и версия приложения.", 12f, MUTE))
+
+        val info = tv("", 14f, MUTE)
+        val sendBtn = btn("Отправить", true) {
+            if (supportBusy) return@btn
+            val nick = contact.text.toString().trim().removePrefix("@")
+            val text = msg.text.toString().trim()
+            if (nick.length < 4) { toast("Укажите ваш Telegram, чтобы мы могли ответить"); return@btn }
+            if (text.length < 5) { toast("Напишите сообщение"); return@btn }
+            val wait = 30_000L - (System.currentTimeMillis() - lastSupportAt)
+            if (wait > 0) { toast("Подождите ${(wait + 999) / 1000} сек. перед следующим сообщением"); return@btn }
+
+            supportBusy = true
+            info.text = "Отправляем…"
+            val lastOrder = Store.orders().firstOrNull()?.optString("order_number").orEmpty()
+            val full = buildString {
+                append("Сообщение из приложения PharmShop\n")
+                append("От: @").append(nick).append('\n')
+                if (lastOrder.isNotEmpty()) append("Последний заказ: ").append(lastOrder).append('\n')
+                append("Версия: ").append(BuildConfig.VERSION_NAME).append("\n\n")
+                append(text)
+            }
+            io.execute {
+                try {
+                    Api.sendSupport(full)
+                    Store.lastUser = nick
+                    lastSupportAt = System.currentTimeMillis()
+                    ui {
+                        supportBusy = false
+                        if (sid == screenId) {
+                            msg.setText("")
+                            info.text = "Сообщение отправлено. Ответим вам в Telegram: @$nick"
+                        }
+                        toast("Сообщение отправлено")
+                    }
+                } catch (e: Exception) {
+                    val m = when (e) {
+                        is IllegalStateException -> "Поддержка в приложении пока не настроена. Напишите в бота @pharmaishop_bot"
+                        is java.io.IOException -> "Нет связи. Проверьте интернет и попробуйте ещё раз"
+                        else -> e.message ?: "Не удалось отправить"
+                    }
+                    ui { supportBusy = false; if (sid == screenId) info.text = m }
+                }
+            }
+        }
+        sendBtn.gravity = Gravity.CENTER
+        col.addView(sendBtn)
+        col.addView(info)
+        col.addView(btn("Открыть бота  @pharmaishop_bot") { openUrl(BOT_URL) })
+        riseIn(col)
+    }
+
     // ---------- покупка звёзд ----------
     private fun showStars() {
         onHome = false
@@ -378,6 +712,7 @@ class MainActivity : AppCompatActivity() {
         backRow(col, "Купить звёзды")
         val status = tv("Загружаем данные…", 14f, MUTE)
         col.addView(status)
+        riseIn(col)
         io.execute {
             try {
                 val c = cfg ?: Api.config().also { cfg = it }
@@ -389,14 +724,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildForm(col: LinearLayout, c: JSONObject) {
+        val firstNew = col.childCount
         val min = c.optInt("min", 50)
         val max = c.optInt("max", 10000)
         c.optString("hcaptcha_sitekey").takeIf { it.isNotEmpty() }?.let { captcha(it) }
+        col.addView(banner(Ic.STAR, "Telegram Stars", "Доставка в течение 15 секунд", GOLD_A, GOLD_B, DARK_ON))
         col.addView(tv("${c.optString("stars_rate")} ₽ за звезду · от $min до $max шт.", 14f, MUTE))
 
         val user = input("Имя пользователя в Telegram, без @", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
         user.setText(Store.lastUser)
         val qty = input("Сколько звёзд", InputType.TYPE_CLASS_NUMBER)
+        user.background = shape(CARD, 14, edge(GOLD))
+        qty.background = shape(CARD, 14, edge(ORANGE))
         col.addView(user)
         col.addView(qty)
 
@@ -405,7 +744,7 @@ class MainActivity : AppCompatActivity() {
         if (presets != null) {
             for (i in 0 until presets.length()) {
                 val v = presets.getInt(i)
-                chips.addView(chip(v.toString(), false) { qty.setText(v.toString()) })
+                chips.addView(chipTint(v.toString(), listOf(GOLD, ORANGE, PINK, VIOLET)[i % 4]) { qty.setText(v.toString()) })
             }
         }
         col.addView(HorizontalScrollView(this).apply {
@@ -414,7 +753,7 @@ class MainActivity : AppCompatActivity() {
             layoutParams = lp(16)
         })
 
-        col.addView(tv("Способ оплаты", 15f, TEXT, true))
+        col.addView(tv("Способ оплаты", 15f, GOLD, true))
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = lp(10)
@@ -424,18 +763,19 @@ class MainActivity : AppCompatActivity() {
         var method = c.optString("default_method")
         var methodName = ""
         val rows = ArrayList<MethodRow>()
-        val total = tv("К оплате: —", 18f, TEXT, true)
+        val total = tv("К оплате: —", 18f, GOLD, true)
         var token = 0
 
         fun paint() {
             for (r in rows) {
                 val sel = r.id == method
-                r.row.background = shape(if (sel) Color.parseColor("#1A2A42") else CARD, 14, if (sel) BLUE else LINE)
+                r.row.background = shape(if (sel) mix(r.tint, 0.2f) else CARD, 14, if (sel) r.tint else LINE)
                 val dot = GradientDrawable()
                 dot.setShape(GradientDrawable.OVAL)
-                dot.setColor(if (sel) BLUE else Color.TRANSPARENT)
-                dot.setStroke(dp(2), if (sel) BLUE else MUTE)
+                dot.setColor(if (sel) r.tint else Color.TRANSPARENT)
+                dot.setStroke(dp(2), if (sel) r.tint else MUTE)
                 r.dot.background = dot
+                dotState(r.dot, sel)
             }
         }
 
@@ -443,15 +783,15 @@ class MainActivity : AppCompatActivity() {
             val q = qty.text.toString().toIntOrNull() ?: 0
             token++
             val my = token
-            if (q < min || q > max) { total.text = "К оплате: —"; return }
+            if (q < min || q > max) { popText(total, "К оплате: —"); return }
             main.postDelayed({
                 if (my != token) return@postDelayed
                 io.execute {
                     try {
                         val r = Api.quote(q, method)
-                        ui { if (my == token) total.text = "К оплате: ${r.optString("total")} ${r.optString("currency", "RUB")}" }
+                        ui { if (my == token) popText(total, "К оплате: ${r.optString("total")} ${r.optString("currency", "RUB")}") }
                     } catch (e: Exception) {
-                        ui { if (my == token) total.text = "Не удалось рассчитать цену" }
+                        ui { if (my == token) popText(total, "Не удалось рассчитать цену") }
                     }
                 }
             }, 400L)
@@ -475,11 +815,12 @@ class MainActivity : AppCompatActivity() {
                         paint()
                         requestQuote()
                     }
+                    pressable(this)
                 }
                 row.addView(dotView)
                 row.addView(txt(mname, 16f, TEXT))
                 box.addView(row)
-                rows.add(MethodRow(mid, mname, row, dotView))
+                rows.add(MethodRow(mid, mname, row, dotView, listOf(GOLD, ORANGE, PINK, VIOLET)[rows.size % 4]))
             }
         }
         // по умолчанию выбран первый способ — «СБП 1»
@@ -494,14 +835,14 @@ class MainActivity : AppCompatActivity() {
         })
 
         val info = tv("", 14f, MUTE)
-        val payBtn = btn("Оплатить", true) {
+        val payBtn = gradBtn("Оплатить", GOLD_A, GOLD_B, DARK_ON) {
             pay(user.text.toString(), qty.text.toString().toIntOrNull() ?: 0, method, methodName, c, info)
         }
-        payBtn.gravity = Gravity.CENTER
         col.addView(total)
         col.addView(payBtn)
         col.addView(info)
         col.addView(btn("Мои заказы") { showProfile() })
+        riseIn(col, firstNew)
     }
 
     /**
@@ -529,6 +870,7 @@ class MainActivity : AppCompatActivity() {
     /** Список с радио-точками: один выбранный пункт. */
     private fun selectList(
         box: LinearLayout, items: List<Pair<String, String>>, initial: String,
+        palette: List<Int> = listOf(BLUE),
         onSelect: (String, String) -> Unit
     ) {
         val rows = ArrayList<MethodRow>()
@@ -536,12 +878,13 @@ class MainActivity : AppCompatActivity() {
         fun paint() {
             for (r in rows) {
                 val sel = r.id == cur
-                r.row.background = shape(if (sel) Color.parseColor("#1A2A42") else CARD, 14, if (sel) BLUE else LINE)
+                r.row.background = shape(if (sel) mix(r.tint, 0.2f) else CARD, 14, if (sel) r.tint else LINE)
                 val dot = GradientDrawable()
                 dot.setShape(GradientDrawable.OVAL)
-                dot.setColor(if (sel) BLUE else Color.TRANSPARENT)
-                dot.setStroke(dp(2), if (sel) BLUE else MUTE)
+                dot.setColor(if (sel) r.tint else Color.TRANSPARENT)
+                dot.setStroke(dp(2), if (sel) r.tint else MUTE)
                 r.dot.background = dot
+                dotState(r.dot, sel)
             }
         }
         for ((id, name) in items) {
@@ -555,11 +898,12 @@ class MainActivity : AppCompatActivity() {
                 layoutParams = lp(8)
                 isClickable = true
                 setOnClickListener { cur = id; paint(); onSelect(id, name) }
+                pressable(this)
             }
             row.addView(dotView)
             row.addView(txt(name, 16f, TEXT))
             box.addView(row)
-            rows.add(MethodRow(id, name, row, dotView))
+            rows.add(MethodRow(id, name, row, dotView, palette[rows.size % palette.size]))
         }
         paint()
     }
@@ -572,6 +916,7 @@ class MainActivity : AppCompatActivity() {
         backRow(col, "Купить Premium")
         val status = tv("Загружаем данные…", 14f, MUTE)
         col.addView(status)
+        riseIn(col)
         io.execute {
             try {
                 val c = cfg ?: Api.config().also { cfg = it }
@@ -583,6 +928,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildPremiumForm(col: LinearLayout, c: JSONObject) {
+        val firstNew = col.childCount
         // доступные сроки: (месяцев, цена от)
         val plans = ArrayList<Pair<Int, String>>()
         val arr = c.optJSONArray("premium")
@@ -597,55 +943,57 @@ class MainActivity : AppCompatActivity() {
         }
         c.optString("hcaptcha_sitekey").takeIf { it.isNotEmpty() }?.let { captcha(it) }
 
+        col.addView(banner(Ic.CROWN, "Telegram Premium", "Подписка для любого @username", VIOLET_A, PINK, Color.WHITE))
         col.addView(tv("Подписка Telegram Premium для указанного аккаунта", 14f, MUTE))
         val user = input("Имя пользователя в Telegram, без @", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
         user.setText(Store.lastUser)
+        user.background = shape(CARD, 14, edge(VIOLET))
         col.addView(user)
 
         var months = plans[0].first
         var method = methods[0].first
         var methodName = methods[0].second
-        val total = tv("К оплате: —", 18f, TEXT, true)
+        val total = tv("К оплате: —", 18f, VIOLET_L, true)
         var token = 0
 
         fun requestQuote() {
             token++
             val my = token
-            total.text = "К оплате: …"
+            popText(total, "К оплате: …")
             val m = months
             val mt = method
             io.execute {
                 try {
                     val r = Api.quote(m, mt, "premium")
-                    ui { if (my == token) total.text = "К оплате: ${r.optString("total")} ${r.optString("currency", "RUB")}" }
+                    ui { if (my == token) popText(total, "К оплате: ${r.optString("total")} ${r.optString("currency", "RUB")}") }
                 } catch (e: Exception) {
-                    ui { if (my == token) total.text = "Не удалось рассчитать цену" }
+                    ui { if (my == token) popText(total, "Не удалось рассчитать цену") }
                 }
             }
         }
 
-        col.addView(tv("Срок подписки", 15f, TEXT, true))
+        col.addView(tv("Срок подписки", 15f, CYAN, true))
         val planBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(10) }
         col.addView(planBox)
         selectList(
             planBox, plans.map { Pair(it.first.toString(), "${it.first} мес. · от ${it.second} ₽") },
-            months.toString()
+            months.toString(), listOf(CYAN, VIOLET, PINK, GOLD)
         ) { id, _ -> months = id.toInt(); requestQuote() }
 
-        col.addView(tv("Способ оплаты", 15f, TEXT, true))
+        col.addView(tv("Способ оплаты", 15f, VIOLET_L, true))
         val methodBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(10) }
         col.addView(methodBox)
-        selectList(methodBox, methods, method) { id, name -> method = id; methodName = name; requestQuote() }
+        selectList(methodBox, methods, method, listOf(VIOLET, PINK)) { id, name -> method = id; methodName = name; requestQuote() }
 
         val info = tv("", 14f, MUTE)
-        val payBtn = btn("Оплатить", true) {
+        val payBtn = gradBtn("Оплатить", VIOLET_A, PINK, Color.WHITE) {
             pay(user.text.toString(), months, method, methodName, c, info, "premium")
         }
-        payBtn.gravity = Gravity.CENTER
         col.addView(total)
         col.addView(payBtn)
         col.addView(info)
         col.addView(btn("Мои заказы") { showProfile() })
+        riseIn(col, firstNew)
         requestQuote()
     }
 
@@ -792,7 +1140,7 @@ class MainActivity : AppCompatActivity() {
         backRow(col, "Профиль")
         val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         col.addView(body)
-        renderProfile(body, sid)
+        renderProfile(body, sid, true)
         refreshOrders(body, sid, false)
         startAutoRefresh(body, sid)
     }
@@ -822,7 +1170,7 @@ class MainActivity : AppCompatActivity() {
         return t
     }
 
-    private fun renderProfile(body: LinearLayout, sid: Int) {
+    private fun renderProfile(body: LinearLayout, sid: Int, animate: Boolean = false) {
         body.removeAllViews()
         val orders = Store.orders()
         val user = Store.lastUser
@@ -921,6 +1269,7 @@ class MainActivity : AppCompatActivity() {
                     .show()
             })
         }
+        if (animate) riseIn(body)
     }
 
     private fun editUsername(body: LinearLayout, sid: Int) {
@@ -963,6 +1312,7 @@ class MainActivity : AppCompatActivity() {
             background = shape((color and 0x00FFFFFF) or 0x33000000, 10)
             setPadding(dp(10), dp(4), dp(10), dp(4))
         }
+        if (statusKind(status) == 0 || statusKind(status) == 1) pulse(badge)
         val numView = txt("Заказ $num", 16f, TEXT, true).apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
