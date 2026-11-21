@@ -48,6 +48,7 @@ object Updater {
             }
             val text = (if (code in 200..299) c.inputStream else c.errorStream)
                 ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+            if (code == 403 || code == 429) return checkViaWeb()   // лимит API без токена — идём через обычный сайт
             if (code !in 200..299) throw Exception("GitHub ответил кодом $code")
             val r = JSONObject(text)
             val tag = r.optString("tag_name")
@@ -84,6 +85,53 @@ object Updater {
         } finally {
             c.disconnect()
         }
+    }
+
+    /**
+     * Запасной путь без api.github.com (у него лимит 60 запросов/час на IP, из-за него и бывает 403):
+     * https://github.com/<repo>/releases/latest перенаправляет на тег последнего релиза,
+     * а список файлов берём из страницы releases/expanded_assets/<тег>.
+     */
+    private fun checkViaWeb(): Info? {
+        val head = URL("https://github.com/$repo/releases/latest").openConnection() as HttpURLConnection
+        val tag: String
+        try {
+            head.instanceFollowRedirects = false
+            head.connectTimeout = 15000; head.readTimeout = 20000
+            head.setRequestProperty("User-Agent", "PharmShopApp")
+            val loc = head.getHeaderField("Location") ?: ""
+            tag = loc.substringAfter("/releases/tag/", "").substringBefore('?').trim()
+            if (head.responseCode == 404 || tag.isEmpty()) {
+                lastNote = "В репозитории $repo не найдено ни одного релиза (или репозиторий закрыт)."
+                return null
+            }
+        } finally { head.disconnect() }
+        val remote = tag.removePrefix("build-").toIntOrNull()
+        if (remote == null) { lastNote = "Последний релиз называется «$tag», а нужен тег вида build-107."; return null }
+        if (remote <= BuildConfig.VERSION_CODE) {
+            lastNote = "Последний релиз на GitHub: сборка $remote, у вас: сборка ${BuildConfig.VERSION_CODE}."
+            return null
+        }
+        val page = httpText("https://github.com/$repo/releases/expanded_assets/$tag")
+        val prefix = "/$repo/releases/download/$tag/"
+        val names = Regex("href=\"" + Regex.escape(prefix) + "([^\"]+)\"").findAll(page).map { it.groupValues[1] }.toList().distinct()
+        val apk = names.firstOrNull { it.endsWith(".apk") }
+        if (apk == null) { lastNote = "В релизе $tag нет файла .apk."; return null }
+        val base = "https://github.com$prefix"
+        val sum = if (names.contains("$apk.sha256"))
+            HEX64.find(httpText("$base$apk.sha256"))?.value?.lowercase() ?: "" else ""
+        if (sum.isEmpty()) { lastNote = "В релизе $tag нет контрольной суммы SHA-256, обновление пропущено."; return null }
+        return Info(remote, "сборка $remote", "", base + apk, 0L, sum)
+    }
+
+    private fun httpText(url: String): String {
+        val c = URL(url).openConnection() as HttpURLConnection
+        try {
+            c.connectTimeout = 15000; c.readTimeout = 20000
+            c.setRequestProperty("User-Agent", "PharmShopApp")
+            if (c.responseCode !in 200..299) throw Exception("GitHub ответил кодом ${c.responseCode}")
+            return c.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+        } finally { c.disconnect() }
     }
 
     private val HEX64 = Regex("[0-9a-fA-F]{64}")
