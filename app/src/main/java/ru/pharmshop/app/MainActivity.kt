@@ -65,7 +65,12 @@ class MainActivity : AppCompatActivity() {
     private var busy = false
     private var onHome = true
     private var screenId = 0
-    private var polling = false
+    private val net = Executors.newFixedThreadPool(4)   // параллельные запросы статусов
+    private var refreshing = false
+    private var returnFromPay = false
+    private var hc: HCaptcha? = null
+    private var hcOk: ((String) -> Unit)? = null
+    private var hcFail: ((String) -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -78,6 +83,14 @@ class MainActivity : AppCompatActivity() {
             }
         })
         showHome()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (returnFromPay) {
+            returnFromPay = false
+            showProfile()
+        }
     }
 
     // ---------- helpers ----------
@@ -377,10 +390,11 @@ class MainActivity : AppCompatActivity() {
     private fun buildForm(col: LinearLayout, c: JSONObject) {
         val min = c.optInt("min", 50)
         val max = c.optInt("max", 10000)
+        c.optString("hcaptcha_sitekey").takeIf { it.isNotEmpty() }?.let { captcha(it) }
         col.addView(tv("${c.optString("stars_rate")} ₽ за звезду · от $min до $max шт.", 14f, MUTE))
 
         val user = input("Имя пользователя в Telegram, без @", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
-        user.setText(Store.lastUser.ifEmpty { Store.tgUsername })
+        user.setText(Store.lastUser)
         val qty = input("Сколько звёзд", InputType.TYPE_CLASS_NUMBER)
         col.addView(user)
         col.addView(qty)
@@ -491,6 +505,18 @@ class MainActivity : AppCompatActivity() {
         col.addView(btn("Мои заказы") { showProfile() })
     }
 
+    /** Готовим hCaptcha заранее, чтобы по кнопке «Оплатить» проверка открывалась сразу. */
+    private fun captcha(siteKey: String): HCaptcha {
+        hc?.let { return it }
+        val h = HCaptcha.getClient(this)
+        h.addOnSuccessListener { r: HCaptchaTokenResponse -> hcOk?.invoke(r.tokenResult) }
+        h.addOnFailureListener { e: HCaptchaException -> hcFail?.invoke(e.message ?: "") }
+        // Сервер сайта проверяет домен токена, поэтому подписываемся его доменом, а не hcaptcha.com
+        h.setup(HCaptchaConfig.builder().siteKey(siteKey).host("pharmshop.tgstars.tg").build())
+        hc = h
+        return h
+    }
+
     private fun pay(rawUser: String, q: Int, method: String, methodName: String, c: JSONObject, info: TextView) {
         if (busy) return
         val username = rawUser.trim().removePrefix("@")
@@ -503,18 +529,15 @@ class MainActivity : AppCompatActivity() {
 
         busy = true
         info.text = "Пройдите проверку…"
-        val h = HCaptcha.getClient(this)
-        h.addOnSuccessListener { r: HCaptchaTokenResponse ->
+        val h = captcha(siteKey)
+        hcOk = { token ->
             info.text = "Создаём заказ…"
             io.execute {
                 try {
-                    val o = Api.createOrder(username, q, method, r.tokenResult)
+                    val o = Api.createOrder(username, q, method, token)
                     o.put("method_name", methodName)
                     Store.add(o)
                     Store.lastUser = username
-                    if (Store.loggedIn && Api.authConfigured) {
-                        try { Api.linkOrder(Store.session, o.optString("id")) } catch (e: Exception) { /* не критично */ }
-                    }
                     val url = o.optString("payment_url")
                     val num = o.optString("order_number")
                     ui {
@@ -526,16 +549,13 @@ class MainActivity : AppCompatActivity() {
                     ui { busy = false; info.text = "Ошибка: ${e.message}" }
                 }
             }
-        }.addOnFailureListener { e: HCaptchaException ->
-            busy = false
-            info.text = "Проверка не пройдена: ${e.message}"
         }
-        // Сервер сайта проверяет домен токена, поэтому подписываемся его доменом, а не hcaptcha.com
-        val config = HCaptchaConfig.builder()
-            .siteKey(siteKey)
-            .host("pharmshop.tgstars.tg")
-            .build()
-        h.setup(config).verifyWithHCaptcha()
+        hcFail = { msg ->
+            busy = false
+            hc = null   // в следующий раз подготовим проверку заново
+            info.text = "Проверка не пройдена: $msg"
+        }
+        h.verifyWithHCaptcha()
     }
 
     private fun openPay(url: String, info: TextView) {
@@ -544,20 +564,27 @@ class MainActivity : AppCompatActivity() {
             return
         }
         try {
+            returnFromPay = true
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         } catch (e: Exception) {
+            returnFromPay = false
             info.text = "Откройте ссылку вручную: $url"
         }
     }
 
     // ---------- профиль и заказы ----------
     // 0 — ждёт оплаты, 1 — оплачен/в работе, 2 — выполнен, 3 — отменён, 4 — неизвестный статус
-    private fun statusKind(s: String): Int = when (s.lowercase()) {
-        "pending", "new", "created", "awaiting_payment", "waiting" -> 0
-        "paid", "processing", "in_progress" -> 1
-        "completed", "complete", "done", "delivered", "success", "succeeded", "fulfilled" -> 2
-        "cancelled", "canceled", "expired", "failed", "refunded", "rejected" -> 3
-        else -> 4
+    private fun statusKind(raw: String): Int {
+        val s = raw.lowercase().trim()
+        return when {
+            s.isEmpty() -> 4
+            s in setOf("completed", "complete", "done", "delivered", "success", "succeeded", "fulfilled", "finished", "sent") -> 2
+            listOf("cancel", "fail", "expire", "refund", "reject", "error").any { s.contains(it) } -> 3
+            listOf("complet", "success", "fulfil", "finish").any { s.contains(it) } -> 2
+            listOf("paid", "process", "progress", "deliver", "confirm", "send", "queue", "work").any { s.contains(it) } -> 1
+            listOf("pend", "wait", "new", "creat", "unpaid", "await").any { s.contains(it) } -> 0
+            else -> 4
+        }
     }
 
     private fun statusLabel(s: String): String = when (statusKind(s)) {
@@ -597,8 +624,20 @@ class MainActivity : AppCompatActivity() {
         col.addView(body)
         renderProfile(body, sid)
         refreshOrders(body, sid, false)
-        val pending = Store.pendingToken
-        if (pending.isNotEmpty() && !Store.loggedIn) pollLogin(body, sid, pending)
+        startAutoRefresh(body, sid)
+    }
+
+    /** Пока открыт профиль и есть незавершённые заказы — обновляем статусы каждые 5 секунд. */
+    private fun startAutoRefresh(body: LinearLayout, sid: Int) {
+        val r = object : Runnable {
+            override fun run() {
+                if (sid != screenId) return
+                val active = Store.orders().any { statusKind(it.optString("status")) !in listOf(2, 3) }
+                if (active) refreshOrders(body, sid, false)
+                main.postDelayed(this, 5000L)
+            }
+        }
+        main.postDelayed(r, 5000L)
     }
 
     private fun statTile(value: String, label: String): LinearLayout {
@@ -616,46 +655,25 @@ class MainActivity : AppCompatActivity() {
     private fun renderProfile(body: LinearLayout, sid: Int) {
         body.removeAllViews()
         val orders = Store.orders()
+        val user = Store.lastUser
 
         // карточка пользователя
-        val loggedIn = Store.loggedIn
-        val waiting = !loggedIn && Store.pendingToken.isNotEmpty()
-        val shownName = when {
-            loggedIn -> Store.tgName.ifEmpty { if (Store.tgUsername.isNotEmpty()) "@${Store.tgUsername}" else "Пользователь" }
-            else -> ""
-        }
-        val first = (shownName.ifEmpty { Store.tgUsername }).trimStart('@').firstOrNull()
+        val first = user.firstOrNull()
         val avatarDrawable = GradientDrawable()
         avatarDrawable.setShape(GradientDrawable.OVAL)
-        avatarDrawable.setColor(if (loggedIn) BLUE else LINE)
+        avatarDrawable.setColor(BLUE)
         val avatar = TextView(this).apply {
             text = if (first != null) first.uppercaseChar().toString() else "?"
             textSize = 22f
-            setTextColor(if (loggedIn) Color.BLACK else MUTE)
+            setTextColor(Color.BLACK)
             gravity = Gravity.CENTER
             setTypeface(typeface, Typeface.BOLD)
             background = avatarDrawable
             layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply { rightMargin = dp(14) }
         }
-        val who = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        when {
-            loggedIn -> {
-                who.addView(txt(shownName, 18f, TEXT, true))
-                val sub = if (Store.tgUsername.isNotEmpty()) "@${Store.tgUsername} · вход через бота" else "Вход через бота"
-                who.addView(txt(sub, 12f, GREEN))
-            }
-            waiting -> {
-                who.addView(txt("Ждём подтверждение…", 18f, TEXT, true))
-                who.addView(txt("Откройте бота и нажмите «Старт»", 12f, MUTE))
-            }
-            else -> {
-                who.addView(txt("Вы не вошли", 18f, TEXT, true))
-                who.addView(txt("Войдите через бота, чтобы видеть свои заказы", 12f, MUTE))
-            }
-        }
+        val who = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        who.addView(txt(if (user.isEmpty()) "Telegram не указан" else "@$user", 18f, TEXT, true))
+        who.addView(txt(if (user.isEmpty()) "Укажите ник — он подставится в заказы" else "Ник указан вручную, ботом не подтверждён", 12f, MUTE))
         val userCard = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -668,23 +686,8 @@ class MainActivity : AppCompatActivity() {
         body.addView(userCard)
 
         val tgActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        when {
-            loggedIn -> {
-                tgActions.addView(chip("Открыть @pharmaishop_bot", false) { openUrl(BOT_URL) })
-            }
-            waiting -> {
-                tgActions.addView(chip("Открыть бота снова", true) { startLogin(body, sid) })
-                tgActions.addView(chip("Отмена", false) {
-                    Store.pendingToken = ""
-                    polling = false
-                    renderProfile(body, sid)
-                })
-            }
-            else -> {
-                tgActions.addView(chip("Войти через Telegram", true) { startLogin(body, sid) })
-                tgActions.addView(chip("Указать ник", false) { editUsername(body, sid) })
-            }
-        }
+        tgActions.addView(chip(if (user.isEmpty()) "Указать Telegram" else "Изменить ник", true) { editUsername(body, sid) })
+        tgActions.addView(chip("Открыть @pharmaishop_bot", false) { openUrl("$BOT_URL?start=app") })
         body.addView(HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             layoutParams = lp(16)
@@ -730,28 +733,8 @@ class MainActivity : AppCompatActivity() {
             for (o in orders) body.addView(orderCard(o, body, sid))
         }
 
-        body.addView(tv(
-            if (loggedIn) "Заказы синхронизируются с вашим аккаунтом в боте."
-            else "Войдите через Telegram, чтобы видеть заказы из бота. Без входа история хранится только на этом устройстве.",
-            12f, MUTE
-        ))
+        body.addView(tv("История хранится только на этом устройстве: заказы с сайта и из бота здесь не видны.", 12f, MUTE))
         body.addView(btn("Поддержка в боте  @pharmaishop_bot") { openUrl(BOT_URL) })
-        if (loggedIn) {
-            body.addView(btn("Выйти из аккаунта") {
-                AlertDialog.Builder(this)
-                    .setTitle("Выйти из аккаунта?")
-                    .setMessage("Список заказов на этом устройстве будет очищен. Сами заказы останутся на сервере.")
-                    .setPositiveButton("Выйти") { _, _ ->
-                        val ses = Store.session
-                        Store.logout()
-                        polling = false
-                        if (Api.authConfigured) io.execute { try { Api.logout(ses) } catch (e: Exception) {} }
-                        if (sid == screenId) renderProfile(body, sid)
-                    }
-                    .setNegativeButton("Отмена", null)
-                    .show()
-            })
-        }
         if (orders.isNotEmpty()) {
             body.addView(btn("Очистить историю") {
                 AlertDialog.Builder(this)
@@ -765,88 +748,6 @@ class MainActivity : AppCompatActivity() {
                     .show()
             })
         }
-    }
-
-    // ---------- вход через Telegram-бота ----------
-    private fun startLogin(body: LinearLayout, sid: Int) {
-        if (!Api.authConfigured) {
-            toast("Сервер входа не настроен (Api.AUTH_BASE)")
-            return
-        }
-        // если вход уже начат — просто открываем бота ещё раз
-        val existing = Store.pendingToken
-        if (existing.isNotEmpty()) {
-            openUrl("$BOT_URL?start=login_$existing")
-            if (!polling) pollLogin(body, sid, existing)
-            return
-        }
-        io.execute {
-            try {
-                val r = Api.authStart()
-                val token = r.getString("token")
-                var link = r.optString("bot_url")
-                if (!link.startsWith("https://t.me/")) link = "$BOT_URL?start=login_$token"
-                Store.pendingToken = token
-                ui {
-                    if (sid == screenId) renderProfile(body, sid)
-                    openUrl(link)
-                    pollLogin(body, sid, token)
-                }
-            } catch (e: Exception) {
-                ui { toast("Не удалось начать вход: ${e.message}") }
-            }
-        }
-    }
-
-    private fun pollLogin(body: LinearLayout, sid: Int, token: String) {
-        if (polling) return
-        polling = true
-        val startedAt = System.currentTimeMillis()
-        val step = object : Runnable {
-            override fun run() {
-                // ушли с экрана или отменили — прекращаем
-                if (sid != screenId || Store.pendingToken != token) { polling = false; return }
-                if (System.currentTimeMillis() - startedAt > 5 * 60 * 1000L) {
-                    polling = false
-                    Store.pendingToken = ""
-                    renderProfile(body, sid)
-                    toast("Время ожидания вышло. Попробуйте ещё раз")
-                    return
-                }
-                io.execute {
-                    try {
-                        val r = Api.authPoll(token)
-                        when (r.optString("status")) {
-                            "ok" -> {
-                                val u = r.getJSONObject("user")
-                                Store.login(
-                                    r.getString("session"), u.optLong("id"),
-                                    u.optString("username"), u.optString("first_name")
-                                )
-                                ui {
-                                    polling = false
-                                    if (sid == screenId) {
-                                        renderProfile(body, sid)
-                                        refreshOrders(body, sid, true)
-                                    }
-                                    toast("Вы вошли через Telegram")
-                                }
-                            }
-                            "expired" -> ui {
-                                polling = false
-                                Store.pendingToken = ""
-                                if (sid == screenId) renderProfile(body, sid)
-                                toast("Ссылка входа устарела. Попробуйте ещё раз")
-                            }
-                            else -> ui { main.postDelayed(this, 2000L) }
-                        }
-                    } catch (e: Exception) {
-                        ui { main.postDelayed(this, 3000L) }
-                    }
-                }
-            }
-        }
-        main.postDelayed(step, 1500L)
     }
 
     private fun editUsername(body: LinearLayout, sid: Int) {
@@ -899,7 +800,7 @@ class MainActivity : AppCompatActivity() {
         }
         val url = o.optString("payment_url")
         if (statusKind(status) == 0 && url.startsWith("https://")) {
-            actions.addView(chip("Оплатить", true) { openUrl(url) })
+            actions.addView(chip("Оплатить", true) { returnFromPay = true; openUrl(url) })
         }
         actions.addView(chip("Обновить статус", false) { refreshOrders(body, sid, true) })
         actions.addView(chip("Скопировать номер", false) {
@@ -924,58 +825,43 @@ class MainActivity : AppCompatActivity() {
         return card
     }
 
-    /** Подтягивает заказы и статусы. force — обновить и завершённые. */
+    private fun ordersSnapshot(): String =
+        Store.orders().joinToString("|") { it.optString("id") + ":" + it.optString("status") }
+
+    /** Подтягивает свежие статусы заказов с сервера. force — обновить и завершённые. */
     private fun refreshOrders(body: LinearLayout, sid: Int, force: Boolean) {
-        val loggedIn = Store.loggedIn && Api.authConfigured
-        if (!loggedIn) {
-            val has = Store.orders().any { it.optString("id").isNotEmpty() }
-            if (!has) {
-                if (force) toast("Нет заказов для обновления")
-                return
-            }
+        if (refreshing) {
+            if (force) toast("Уже обновляем…")
+            return
         }
+        val targets = Store.orders()
+            .filter { o ->
+                val k = statusKind(o.optString("status"))
+                force || (k != 2 && k != 3)
+            }
+            .filter { it.optString("id").isNotEmpty() }
+            .take(10)
+        if (targets.isEmpty()) {
+            if (force) toast("Нет заказов для обновления")
+            return
+        }
+        refreshing = true
         io.execute {
-            var ok = 0
-            var expired = false
-            var syncedFromBot = false
-            if (loggedIn) {
-                try {
-                    val arr = Api.myOrders(Store.session).optJSONArray("orders")
-                    val list = ArrayList<JSONObject>()
-                    if (arr != null) for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { list.add(it) }
-                    Store.merge(list)
-                    syncedFromBot = true
-                    ok = list.size
-                } catch (e: AuthExpired) {
-                    expired = true
-                    Store.logout()
-                } catch (e: Exception) {
-                    // нет связи с сервером — ниже обновим статусы через витрину
+            val before = ordersSnapshot()
+            // запрашиваем все заказы одновременно, а не по очереди
+            val jobs = targets.map { o ->
+                val id = o.optString("id")
+                net.submit<Boolean> {
+                    try { Store.update(id, Api.order(id)); true } catch (e: Exception) { false }
                 }
             }
-            if (!syncedFromBot && !expired) {
-                val targets = Store.orders()
-                    .filter { o ->
-                        val k = statusKind(o.optString("status"))
-                        force || (k != 2 && k != 3)
-                    }
-                    .filter { it.optString("id").isNotEmpty() }
-                    .take(10)
-                for (o in targets) {
-                    val id = o.optString("id")
-                    try {
-                        Store.update(id, Api.order(id))
-                        ok++
-                    } catch (e: Exception) {
-                        // пропускаем этот заказ
-                    }
-                }
-            }
+            val ok = jobs.count { try { it.get() } catch (e: Exception) { false } }
+            val changed = ordersSnapshot() != before
             ui {
+                refreshing = false
                 if (sid == screenId) {
-                    renderProfile(body, sid)
-                    if (expired) toast("Сессия истекла, войдите заново")
-                    else if (force) toast(if (ok > 0) "Заказы обновлены" else "Не удалось обновить")
+                    if (changed || force) renderProfile(body, sid)
+                    if (force) toast(if (ok > 0) "Статусы обновлены" else "Не удалось обновить")
                 }
             }
         }

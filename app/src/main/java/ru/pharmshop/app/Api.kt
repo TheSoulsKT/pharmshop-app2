@@ -6,24 +6,14 @@ import java.net.URL
 import java.util.UUID
 
 /** Запросы к витрине pharmshop.tgstars.tg (те же, что делает сам сайт). */
-class AuthExpired : Exception("Сессия истекла, войдите заново")
-
 object Api {
     private const val BASE = "https://pharmshop.tgstars.tg"
 
-    /**
-     * Адрес ВАШЕГО сервера, который связан с ботом (см. папку server/).
-     * Замените на свой домен, например "https://api.example.com".
-     */
-    const val AUTH_BASE = "https://YOUR_DOMAIN"
-    val authConfigured: Boolean get() = !AUTH_BASE.contains("YOUR_DOMAIN")
-
     private fun call(
         method: String, path: String, body: JSONObject?,
-        headers: Map<String, String> = emptyMap(),
-        base: String = BASE
+        headers: Map<String, String> = emptyMap()
     ): JSONObject {
-        var url = URL(base + path)
+        var url = URL(BASE + path)
         var redirects = 0
         while (true) {
             val c = url.openConnection() as HttpURLConnection
@@ -35,8 +25,8 @@ object Api {
                 c.instanceFollowRedirects = false
                 c.setRequestProperty("Accept", "application/json")
                 c.setRequestProperty("User-Agent", "PharmShopApp/1.0")
-                c.setRequestProperty("Origin", base)
-                c.setRequestProperty("Referer", "$base/")
+                c.setRequestProperty("Origin", BASE)
+                c.setRequestProperty("Referer", "$BASE/")
                 for ((k, v) in headers) c.setRequestProperty(k, v)
                 if (body != null) {
                     c.doOutput = true
@@ -59,7 +49,6 @@ object Api {
                     throw Exception("Сервер вернул не JSON (код $code, $where). Возможно, сайт не пустил приложение.")
                 }
                 val json = JSONObject(text)
-                if (code == 401 && base == AUTH_BASE) throw AuthExpired()
                 if (code !in 200..299) {
                     // JSONObject сам декодирует \uXXXX, так что сообщение читается по-русски
                     val msg = json.optString("error").ifEmpty { text.take(300) }
@@ -75,42 +64,29 @@ object Api {
     fun config(): JSONObject = call("GET", "/api/storefront/config", null)
 
     /** Текущий статус заказа (так же делает сам сайт). */
-    fun order(id: String): JSONObject = call("GET", "/api/storefront/orders/$id", null)
+    fun order(id: String): JSONObject {
+        val r = call("GET", "/api/storefront/orders/$id", null)
+        // на случай, если заказ завёрнут в {"order": {...}} или {"data": {...}}
+        return r.optJSONObject("order") ?: r.optJSONObject("data") ?: r
+    }
 
     fun quote(quantity: Int, methodId: String): JSONObject =
         call("POST", "/api/storefront/quote", JSONObject().put("quantity", quantity).put("method_id", methodId))
 
-    fun createOrder(username: String, quantity: Int, methodId: String, captchaToken: String): JSONObject =
-        call(
-            "POST", "/api/storefront/orders",
-            JSONObject().put("username", username).put("quantity", quantity)
-                .put("method_id", methodId).put("captcha_token", captchaToken),
-            // сайт шлёт этот заголовок с UUID — без него сервер отвечает 422
-            mapOf("Idempotency-Key" to UUID.randomUUID().toString())
-        )
-
-    // ---------- вход через Telegram-бота (ваш сервер) ----------
-
-    private fun bearer(session: String) = mapOf("Authorization" to "Bearer $session")
-
-    /** Создаёт одноразовый токен входа. Ответ: {token, bot_url, expires_in}. */
-    fun authStart(): JSONObject = call("POST", "/app/auth/start", JSONObject(), base = AUTH_BASE)
-
-    /** Ответ: {status: "pending"|"expired"} или {status: "ok", session, user:{id, username, first_name}}. */
-    fun authPoll(token: String): JSONObject =
-        call("GET", "/app/auth/poll?token=$token", null, base = AUTH_BASE)
-
-    fun me(session: String): JSONObject =
-        call("GET", "/app/me", null, bearer(session), AUTH_BASE)
-
-    fun logout(session: String): JSONObject =
-        call("POST", "/app/auth/logout", JSONObject(), bearer(session), AUTH_BASE)
-
-    /** Заказы пользователя из бота. Ответ: {orders: [...]} в том же формате, что и у витрины. */
-    fun myOrders(session: String): JSONObject =
-        call("GET", "/app/orders", null, bearer(session), AUTH_BASE)
-
-    /** Привязывает заказ, созданный в приложении, к аккаунту. */
-    fun linkOrder(session: String, orderId: String): JSONObject =
-        call("POST", "/app/orders/link", JSONObject().put("id", orderId), bearer(session), AUTH_BASE)
+    fun createOrder(username: String, quantity: Int, methodId: String, captchaToken: String): JSONObject {
+        // один и тот же ключ при повторе — сервер не создаст дубль заказа
+        val key = UUID.randomUUID().toString()
+        val body = JSONObject().put("username", username).put("quantity", quantity)
+            .put("method_id", methodId).put("captcha_token", captchaToken)
+        var last: java.io.IOException? = null
+        for (attempt in 0 until 2) {
+            try {
+                // сайт шлёт этот заголовок с UUID — без него сервер отвечает 422
+                return call("POST", "/api/storefront/orders", body, mapOf("Idempotency-Key" to key))
+            } catch (e: java.io.IOException) {
+                last = e   // таймаут / обрыв сети — пробуем ещё раз
+            }
+        }
+        throw last ?: Exception("Не удалось создать заказ")
+    }
 }
