@@ -1,0 +1,162 @@
+package ru.pharmshop.app
+
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
+import android.graphics.Typeface
+import android.view.View
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
+
+enum class Ic { STAR, GIFT, CROWN, BOX, KEY, DB, AT, SEND, USER, BACK }
+
+/** Линейные иконки в стиле сайта. Рисуются в сетке 24x24. */
+class IconView(ctx: Context, private val kind: Ic, private val tint: Int) : View(ctx) {
+    private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = tint
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        strokeWidth = 1.8f
+    }
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = tint
+        textAlign = Paint.Align.CENTER
+        textSize = 24f
+        typeface = Typeface.DEFAULT_BOLD
+    }
+
+    override fun onDraw(c: Canvas) {
+        val s = minOf(width, height).toFloat()
+        if (s <= 0f) return
+        c.save()
+        c.translate((width - s) / 2f, (height - s) / 2f)
+        c.scale(s / 24f, s / 24f)
+        when (kind) {
+            Ic.STAR -> {
+                val p = Path()
+                for (i in 0 until 10) {
+                    val r = if (i % 2 == 0) 9.5f else 4.2f
+                    val a = PI / 5 * i - PI / 2
+                    val x = 12f + (r * cos(a)).toFloat()
+                    val y = 12.6f + (r * sin(a)).toFloat()
+                    if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
+                }
+                p.close()
+                c.drawPath(p, stroke)
+            }
+            Ic.GIFT -> {
+                c.drawRoundRect(RectF(3.5f, 11f, 20.5f, 21f), 1.5f, 1.5f, stroke)
+                c.drawRoundRect(RectF(2.5f, 7.5f, 21.5f, 11f), 1.5f, 1.5f, stroke)
+                c.drawLine(12f, 7.5f, 12f, 21f, stroke)
+                val p = Path()
+                p.moveTo(12f, 7.5f)
+                p.cubicTo(9.5f, 2.5f, 5.5f, 4f, 8.5f, 7.5f)
+                p.moveTo(12f, 7.5f)
+                p.cubicTo(14.5f, 2.5f, 18.5f, 4f, 15.5f, 7.5f)
+                c.drawPath(p, stroke)
+            }
+            Ic.CROWN -> {
+                val p = Path()
+                p.moveTo(3.5f, 18f)
+                p.lineTo(3f, 7f)
+                p.lineTo(8.5f, 12f)
+                p.lineTo(12f, 5f)
+                p.lineTo(15.5f, 12f)
+                p.lineTo(21f, 7f)
+                p.lineTo(20.5f, 18f)
+                p.close()
+                c.drawPath(p, stroke)
+                c.drawLine(4f, 21f, 20f, 21f, stroke)
+            }
+            Ic.BOX -> {
+                c.drawRoundRect(RectF(3f, 7f, 21f, 11f), 1.5f, 1.5f, stroke)
+                c.drawRoundRect(RectF(4.5f, 11f, 19.5f, 21f), 1.5f, 1.5f, stroke)
+                c.drawLine(12f, 7f, 12f, 21f, stroke)
+            }
+            Ic.KEY -> {
+                c.drawCircle(7.5f, 12f, 3.7f, stroke)
+                c.drawLine(11.2f, 12f, 21f, 12f, stroke)
+                c.drawLine(17.5f, 12f, 17.5f, 15.5f, stroke)
+                c.drawLine(20.5f, 12f, 20.5f, 14.5f, stroke)
+            }
+            Ic.DB -> {
+                c.drawOval(RectF(5f, 3.5f, 19f, 9.5f), stroke)
+                c.drawLine(5f, 6.5f, 5f, 17.5f, stroke)
+                c.drawLine(19f, 6.5f, 19f, 17.5f, stroke)
+                c.drawArc(RectF(5f, 9.5f, 19f, 15f), 0f, 180f, false, stroke)
+                c.drawArc(RectF(5f, 14.5f, 19f, 20.5f), 0f, 180f, false, stroke)
+            }
+            Ic.AT -> {
+                c.drawText("@", 12f, 19.5f, fill)
+            }
+            Ic.SEND -> {
+                val p = Path()
+                p.moveTo(21f, 3f)
+                p.lineTo(14.5f, 21f)
+                p.lineTo(10f, 14f)
+                p.lineTo(3f, 9.5f)
+                p.close()
+                c.drawPath(p, stroke)
+                c.drawLine(21f, 3f, 10f, 14f, stroke)
+            }
+            Ic.USER -> {
+                c.drawCircle(12f, 8f, 4f, stroke)
+                c.drawArc(RectF(4f, 15f, 20f, 31f), 180f, 180f, false, stroke)
+            }
+            Ic.BACK -> {
+                val p = Path()
+                p.moveTo(15f, 5f)
+                p.lineTo(8f, 12f)
+                p.lineTo(15f, 19f)
+                c.drawPath(p, stroke)
+            }
+        }
+        c.restore()
+    }
+}
+
+/** Логотип: синий квадрат с чёрным котом (нарисован по референсу). */
+class LogoView(ctx: Context) : View(ctx) {
+    private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#3B8EF3") }
+    private val cat = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#0B0B0D") }
+    private val eye = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.WHITE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+
+    override fun onDraw(c: Canvas) {
+        val w = width.toFloat()
+        if (w <= 0f) return
+        c.drawRoundRect(RectF(0f, 0f, w, w), w * 0.24f, w * 0.24f, bg)
+
+        val p = Path()
+        p.moveTo(0.20f * w, 0.55f * w)
+        p.lineTo(0.20f * w, 0.20f * w)
+        p.lineTo(0.38f * w, 0.34f * w)
+        p.quadTo(0.50f * w, 0.30f * w, 0.62f * w, 0.34f * w)
+        p.lineTo(0.80f * w, 0.20f * w)
+        p.lineTo(0.80f * w, 0.55f * w)
+        p.quadTo(0.80f * w, 0.82f * w, 0.50f * w, 0.82f * w)
+        p.quadTo(0.20f * w, 0.82f * w, 0.20f * w, 0.55f * w)
+        p.close()
+        c.drawPath(p, cat)
+
+        eye.strokeWidth = w * 0.035f
+        val e = Path()
+        e.moveTo(0.30f * w, 0.58f * w)
+        e.lineTo(0.36f * w, 0.50f * w)
+        e.lineTo(0.42f * w, 0.58f * w)
+        e.moveTo(0.58f * w, 0.58f * w)
+        e.lineTo(0.64f * w, 0.50f * w)
+        e.lineTo(0.70f * w, 0.58f * w)
+        c.drawPath(e, eye)
+    }
+}

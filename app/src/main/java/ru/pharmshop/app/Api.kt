@@ -63,6 +63,9 @@ object Api {
 
     fun config(): JSONObject = call("GET", "/api/storefront/config", null)
 
+    /** Текущий статус заказа (так же делает сам сайт). */
+    fun order(id: String): JSONObject = call("GET", "/api/storefront/orders/$id", null)
+
     fun quote(quantity: Int, methodId: String): JSONObject =
         call("POST", "/api/storefront/quote", JSONObject().put("quantity", quantity).put("method_id", methodId))
 
