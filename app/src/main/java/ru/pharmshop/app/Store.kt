@@ -44,6 +44,11 @@ object Store {
             return n
         }
 
+    /** Последние удалённые настройки (объявление, разделы, минимальная версия) — работают и без сети. */
+    var remoteConfig: String
+        get() = sp.getString("remote_config", "") ?: ""
+        set(v) { sp.edit().putString("remote_config", v).apply() }
+
     /** Имена способов оплаты {id: имя} — как они показаны в форме (для подписи заказов). */
     var methodNames: String
         get() = sp.getString("method_names", "{}") ?: "{}"

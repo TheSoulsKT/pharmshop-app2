@@ -59,6 +59,9 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.Executors
 
+/** Раздел главного меню с учётом удалённых настроек. */
+private class SecView(val title: String, val sub: String, val enabled: Boolean, val url: String, val message: String)
+
 private class MethodRow(val id: String, val name: String, val row: LinearLayout, val dot: View, val tint: Int = 0)
 
 class MainActivity : AppCompatActivity() {
@@ -110,6 +113,8 @@ class MainActivity : AppCompatActivity() {
         if (uri != null) onImagePicked?.invoke(uri)
     }
     private var updateChecked = false
+    private var remoteAt = 0L          // когда последний раз спрашивали удалённые настройки
+    private var forceShown = false     // показан экран обязательного обновления
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -129,6 +134,7 @@ class MainActivity : AppCompatActivity() {
             notifPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
         Reminders.ensureScheduled(this)
+        if (enforceUpdate()) return
         if (!openFromIntent(intent)) showHome()
     }
 
@@ -155,6 +161,7 @@ class MainActivity : AppCompatActivity() {
             returnFromPay = false
             showProfile()
         }
+        refreshRemote()
     }
 
     // ---------- анимации ----------
@@ -496,6 +503,23 @@ class MainActivity : AppCompatActivity() {
             (m == java.util.Calendar.NOVEMBER && d >= 15)
     }
 
+    /**
+     * Раздел меню с учётом настроек из админ-панели («Разделы»): включён/выключен, свои надписи и ссылка.
+     * offSub — подпись, когда раздел выключен и своей подписи не задано.
+     */
+    private fun sec(key: String, title: String, sub: String, defEnabled: Boolean, offSub: String = sub): SecView {
+        val s = Remote.section(key)
+        val enabled = if (s != null && s.has("enabled")) s.optBoolean("enabled") else defEnabled
+        val customSub = s?.optString("sub").orEmpty()
+        return SecView(
+            title = s?.optString("title").orEmpty().ifEmpty { title },
+            sub = customSub.ifEmpty { if (enabled) sub else offSub },
+            enabled = enabled,
+            url = s?.optString("url").orEmpty(),
+            message = s?.optString("message").orEmpty()
+        )
+    }
+
     /** Заголовок раздела главного меню («Купить», «Скоро»). */
     private fun sectionTitle(t: String, top: Int): TextView =
         txt(t, 20f, TEXT, true).apply { layoutParams = lp(10).apply { topMargin = dp(top) } }
@@ -571,24 +595,65 @@ class MainActivity : AppCompatActivity() {
                 addView(txt("Пусть в новом году будет больше звёзд ⭐", 13f, Color.parseColor("#E8F5EC")))
             })
         }
+        // объявление из админ-панели
+        Remote.announcement()?.let { a ->
+            val warn = a.optString("level") == "warn"
+            val accent = if (warn) AMBER else BLUE
+            col.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = shape(mix(accent, 0.16f), 16, accent)
+                setPadding(dp(16), dp(12), dp(16), dp(12))
+                layoutParams = lp(14)
+                addView(txt(if (warn) "⚠ Важно" else "📢 Объявление", 13f, accent, true))
+                addView(txt(a.optString("text"), 15f, TEXT))
+            })
+        }
         col.addView(tv("Выберите, что вам нужно", 15f, MUTE))
 
-        val soon = { toast("Скоро будет доступно") }
-        col.addView(sectionTitle("Купить", 4))
-        val (starsCard, starsSub) = menuWide(Ic.STAR, "Звёзды", rateText()) { showStars() }
-        col.addView(starsCard)
-        col.addView(menuWide(Ic.CROWN, "Купить Premium", "Покупка подписки") { showPremium() }.first)
-
-        col.addView(sectionTitle("Скоро", 10))
-        col.addView(menuWide(Ic.GIFT, "Обычные подарки", "Покупка за рубли") { soon() }.first)
-        col.addView(gridRow(
-            tile(Ic.BOX, "Купить NFT", "") { soon() },
-            tile(Ic.KEY, "Аренда NFT", "") { soon() }
-        ))
-        col.addView(gridRow(
-            tile(Ic.DB, "Продать звёзды", "") { soon() },
-            tile(Ic.AT, "Скупка NFT", "") { soon() }
-        ))
+        // разделы можно включать и выключать удалённо (админ-панель → «Разделы»)
+        class Entry(val key: String, val icon: Ic, val sv: SecView, val wide: Boolean, val action: (SecView) -> Unit)
+        val external = { v: SecView -> openUrl(v.url.ifEmpty { BOT_URL }) }
+        val entries = listOf(
+            Entry("stars", Ic.STAR, sec("stars", "Звёзды", rateText(), true, "Временно недоступно"), true, { _ -> showStars() }),
+            Entry("premium", Ic.CROWN, sec("premium", "Купить Premium", "Покупка подписки", true, "Временно недоступно"), true, { _ -> showPremium() }),
+            Entry("gifts", Ic.GIFT, sec("gifts", "Обычные подарки", "Покупка за рубли", false), true, external),
+            Entry("nft_buy", Ic.BOX, sec("nft_buy", "Купить NFT", "", false), false, external),
+            Entry("nft_rent", Ic.KEY, sec("nft_rent", "Аренда NFT", "", false), false, external),
+            Entry("stars_sell", Ic.DB, sec("stars_sell", "Продать звёзды", "", false), false, external),
+            Entry("nft_sell", Ic.AT, sec("nft_sell", "Скупка NFT", "", false), false, external)
+        )
+        var starsSub: TextView? = null
+        fun click(e: Entry) {
+            if (e.sv.enabled) e.action(e.sv) else toast(e.sv.message.ifEmpty { "Скоро будет доступно" })
+        }
+        fun wideCard(e: Entry): LinearLayout {
+            val (card, subView) = menuWide(e.icon, e.sv.title, e.sv.sub) { click(e) }
+            // курс подставится после загрузки конфигурации, если подпись не переопределена удалённо
+            if (e.key == "stars" && e.sv.enabled && Remote.section("stars")?.optString("sub").isNullOrEmpty()) starsSub = subView
+            return card
+        }
+        val on = entries.filter { it.sv.enabled }
+        val off = entries.filter { !it.sv.enabled }
+        if (on.isNotEmpty()) {
+            col.addView(sectionTitle("Купить", 4))
+            for (e in on) col.addView(wideCard(e))
+        }
+        if (off.isNotEmpty()) {
+            col.addView(sectionTitle("Скоро", if (on.isNotEmpty()) 10 else 4))
+            for (e in off.filter { it.wide }) col.addView(wideCard(e))
+            val tiles = off.filter { !it.wide }
+            var i = 0
+            while (i < tiles.size) {
+                val t1 = tiles[i]
+                val first = tile(t1.icon, t1.sv.title, t1.sv.sub) { click(t1) }
+                val second: View = if (i + 1 < tiles.size) {
+                    val t2 = tiles[i + 1]
+                    tile(t2.icon, t2.sv.title, t2.sv.sub) { click(t2) }
+                } else View(this).apply { visibility = View.INVISIBLE }
+                col.addView(gridRow(first, second))
+                i += 2
+            }
+        }
 
         // кнопка бота
         val botIcon = IconView(this, Ic.SEND, Color.BLACK).apply {
@@ -635,6 +700,9 @@ class MainActivity : AppCompatActivity() {
             )
         }
 
+        // объявление, разделы и обязательное обновление — спрашиваем у сервера
+        refreshRemote()
+
         // один раз за запуск тихо проверяем обновления
         if (!updateChecked) {
             updateChecked = true
@@ -647,7 +715,7 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val c = Api.config()
                     cfg = c
-                    ui { if (sid == screenId) starsSub.text = rateText() }
+                    ui { if (sid == screenId) starsSub?.text = rateText() }
                 } catch (e: Exception) {
                     // оставляем текст по умолчанию
                 }
@@ -723,6 +791,72 @@ class MainActivity : AppCompatActivity() {
                 ui { dialog.dismiss(); toast(e.message ?: "Не удалось скачать обновление") }
             }
         }
+    }
+
+    // ---------- удалённые настройки и обязательное обновление ----------
+
+    /** Спрашивает у сервера объявление, разделы и минимальную версию (не чаще раза в 30 секунд). */
+    private fun refreshRemote() {
+        val now = System.currentTimeMillis()
+        if (now - remoteAt < 30_000L) return
+        remoteAt = now
+        io.execute {
+            try {
+                val changed = Remote.refresh()
+                ui {
+                    if (isFinishing || isDestroyed) return@ui
+                    if (enforceUpdate()) return@ui
+                    if (forceShown) {            // требование сняли — возвращаем в приложение
+                        forceShown = false
+                        backAction = null
+                        showHome()
+                        return@ui
+                    }
+                    if (changed && onHome) showHome()
+                }
+            } catch (e: Exception) {
+                // нет связи — работаем с сохранёнными настройками
+            }
+        }
+    }
+
+    /** Если версия приложения ниже требуемой — показывает экран обновления. true — приложение заблокировано. */
+    private fun enforceUpdate(): Boolean {
+        val min = Remote.minVersion()
+        // в сборке без GitHub обновиться нечем — не блокируем
+        if (min <= BuildConfig.VERSION_CODE || !Updater.configured) return false
+        showForceUpdate(min)
+        return true
+    }
+
+    private fun showForceUpdate(min: Int) {
+        if (forceShown) return
+        forceShown = true
+        onHome = false
+        val col = screen()
+        backAction = { }   // «назад» ничего не делает, пока не обновишься
+        col.addView(txt("Нужно обновление", 26f, TEXT, true).apply { layoutParams = lp(12) })
+        col.addView(tv(
+            Remote.updateMessage().ifEmpty { "Эта версия приложения устарела и больше не поддерживается. Обновите приложение, чтобы продолжить." },
+            15f, MUTE
+        ))
+        col.addView(tv("Ваша сборка: ${BuildConfig.VERSION_CODE}, требуется не ниже $min", 12f, MUTE))
+        val status = tv("", 13f, MUTE)
+        col.addView(btn("Обновить", true) {
+            status.text = "Проверяем…"
+            io.execute {
+                try {
+                    val info = Updater.check()
+                    ui {
+                        if (info == null) status.text = Updater.lastNote.ifEmpty { "Обновление пока не найдено, попробуйте позже." }
+                        else { status.text = ""; startUpdate(info) }
+                    }
+                } catch (e: Exception) {
+                    ui { status.text = e.message ?: "Не удалось проверить обновления" }
+                }
+            }
+        })
+        col.addView(status)
     }
 
     // ---------- частые вопросы ----------
@@ -818,7 +952,8 @@ class MainActivity : AppCompatActivity() {
     private fun chatPane(
         sid: Int, mine: String, hint: String,
         fetch: (Long) -> JSONArray, send: (String, String) -> Unit,
-        fetchImage: (Long) -> String, showMeta: Boolean = false
+        fetchImage: (Long) -> String, showMeta: Boolean = false,
+        readTs: () -> Long = { 0L }
     ): LinearLayout {
         val pane = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -855,6 +990,17 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             visibility = View.GONE
             layoutParams = lp(6)
+        }
+
+        // отметки «Доставлено / Прочитано» под своими сообщениями
+        val receipts = ArrayList<Triple<Long, TextView, String>>()
+        fun updateReceipts() {
+            val rt = readTs()
+            for ((ts, v, base) in receipts) {
+                val read = rt >= ts
+                v.text = base + if (read) "  ✓✓ Прочитано" else "  ✓ Доставлено"
+                v.setTextColor(if (read) BLUE else MUTE)
+            }
         }
 
         fun add(m: JSONObject) {
@@ -900,7 +1046,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-            wrap.addView(txt(timeFmt.format(java.util.Date(m.optLong("ts"))), 10f, MUTE))
+            val msgTs = m.optLong("ts")
+            val timeStr = timeFmt.format(java.util.Date(msgTs))
+            val timeView = txt(timeStr, 10f, MUTE)
+            wrap.addView(timeView)
+            if (own) receipts.add(Triple(msgTs, timeView, timeStr))
             // для администратора: откуда пришло сообщение
             if (showMeta && m.optString("from") == "user") {
                 val ip = m.optString("ip")
@@ -926,6 +1076,7 @@ class MainActivity : AppCompatActivity() {
                         if (sid == screenId) {
                             val before = lastId
                             for (i in 0 until arr.length()) add(arr.getJSONObject(i))
+                            updateReceipts()
                             status.text = ""
                             if (lastId != before) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
                         }
@@ -1061,7 +1212,8 @@ class MainActivity : AppCompatActivity() {
                 "Вместе с обращением мы получаем ваш IP-адрес и модель устройства — это помогает разобраться с проблемой.",
             { after -> ChatApi.userMessages(Store.deviceId, Store.deviceSecret, after) },
             { text, image -> ChatApi.userSend(Store.deviceId, Store.deviceSecret, nick, order, BuildConfig.VERSION_NAME, text, image) },
-            { id -> ChatApi.userImage(Store.deviceId, Store.deviceSecret, id) }
+            { id -> ChatApi.userImage(Store.deviceId, Store.deviceSecret, id) },
+            readTs = { ChatApi.lastReadTs }
         )
         val faq = faqView()
         val tabs = LinearLayout(this).apply {
@@ -1119,13 +1271,52 @@ class MainActivity : AppCompatActivity() {
         col.addView(info)
     }
 
+    private fun threadStatusName(s: String) = when (s) { "work" -> "В работе"; "done" -> "Решён"; else -> "Новый" }
+    private fun threadStatusColor(s: String) = when (s) { "work" -> AMBER; "done" -> GREEN; else -> BLUE }
+
+    /** Строка быстрых разделов админки над списком чатов. */
+    private fun adminToolsRow(): HorizontalScrollView {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(chip("📢 Объявление", false) { showAdminAnnouncement() })
+        row.addView(chip("🧩 Разделы", false) { showAdminSections() })
+        row.addView(chip("⬆ Обновление", false) { showAdminForceUpdate() })
+        row.addView(chip("⛔ Блокировки", false) { showAdminBlocks() })
+        return HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = lp(12)
+            addView(row)
+        }
+    }
+
     private fun showAdminThreads() {
         onHome = false
         val col = screen()
         val sid = screenId
         backRow(col, "Чаты поддержки")
+        col.addView(adminToolsRow())
+
+        var fStatus = ""        // фильтр по статусу: "", new, work, done
+        var fUnread = false     // только непрочитанные
+        var query = ""          // поиск по нику или номеру заказа
+        var gen = 0             // номер запроса: устаревшие ответы и циклы обновления отбрасываются
+        var counts = JSONObject()
+        var reload: () -> Unit = {}
+        val timeFmt = SimpleDateFormat("d MMM, HH:mm", Locale.getDefault())
+
+        val search = input("Поиск: ник или номер заказа", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS).apply {
+            setSingleLine()
+            layoutParams = lp(10)
+        }
+        val filters = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val filtersScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = lp(12)
+            addView(filters)
+        }
         val status = tv("Загружаем…", 13f, MUTE)
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(search)
+        col.addView(filtersScroll)
         col.addView(status)
         col.addView(list)
         col.addView(btn("Выйти из админ-панели") {
@@ -1133,14 +1324,39 @@ class MainActivity : AppCompatActivity() {
             navBack = true
             showHome()
         })
-        val timeFmt = SimpleDateFormat("d MMM, HH:mm", Locale.getDefault())
 
-        fun render(arr: JSONArray) {
+        fun renderFilters() {
+            filters.removeAllViews()
+            fun n(k: String) = counts.optInt(k)
+            val all = n("new") + n("work") + n("done")
+            filters.addView(chip("Все ($all)", fStatus.isEmpty() && !fUnread) {
+                fStatus = ""; fUnread = false; renderFilters(); reload()
+            })
+            for ((key, label) in listOf("new" to "Новые", "work" to "В работе", "done" to "Решённые")) {
+                filters.addView(chip("$label (${n(key)})", fStatus == key) {
+                    fStatus = if (fStatus == key) "" else key
+                    renderFilters(); reload()
+                })
+            }
+            filters.addView(chip("Непрочитанные (${n("unread")})", fUnread) {
+                fUnread = !fUnread; renderFilters(); reload()
+            })
+        }
+
+        fun render(r: JSONObject) {
+            counts = r.optJSONObject("counts") ?: JSONObject()
+            renderFilters()
+            val arr = r.optJSONArray("threads") ?: JSONArray()
             list.removeAllViews()
-            status.text = if (arr.length() == 0) "Пока нет обращений" else ""
+            status.text = when {
+                arr.length() > 0 -> ""
+                query.isNotEmpty() || fStatus.isNotEmpty() || fUnread -> "Ничего не найдено"
+                else -> "Пока нет обращений"
+            }
             for (i in 0 until arr.length()) {
                 val t = arr.getJSONObject(i)
                 val unread = t.optInt("unread")
+                val st = t.optString("status").ifEmpty { "new" }
                 val name = t.optString("nick").let { if (it.isEmpty()) "Гость" else "@$it" }
                 val card = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
@@ -1157,6 +1373,13 @@ class MainActivity : AppCompatActivity() {
                 }
                 top.addView(txt(name, 16f, TEXT, true).apply {
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                top.addView(txt(threadStatusName(st), 11f, threadStatusColor(st), true).apply {
+                    background = shape(mix(threadStatusColor(st), 0.16f), 8, threadStatusColor(st))
+                    setPadding(dp(8), dp(2), dp(8), dp(2))
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { rightMargin = dp(if (unread > 0) 8 else 0) }
                 })
                 if (unread > 0) {
                     top.addView(txt("$unread", 12f, Color.BLACK, true).apply {
@@ -1175,27 +1398,77 @@ class MainActivity : AppCompatActivity() {
                     (if (order.isNotEmpty()) "  •  заказ $order" else "") +
                     (if (ip.isNotEmpty()) "  •  IP $ip" else "")
                 card.addView(txt(meta, 11f, MUTE))
+                val shared = t.optInt("shared_ip")
+                if (shared > 1) card.addView(txt("⚠ С этого IP писали разные устройства: $shared", 11f, AMBER))
+                if (t.optBoolean("blocked_device") || t.optBoolean("blocked_ip")) {
+                    val what = when {
+                        t.optBoolean("blocked_device") && t.optBoolean("blocked_ip") -> "устройство и IP"
+                        t.optBoolean("blocked_device") -> "устройство"
+                        else -> "IP"
+                    }
+                    card.addView(txt("⛔ Заблокирован: $what", 11f, RED))
+                }
                 list.addView(card)
             }
         }
 
         fun load() {
             if (sid != screenId) return
+            val my = ++gen
+            val st = fStatus
+            val un = fUnread
+            val q = query
             io.execute {
                 try {
-                    val arr = ChatApi.adminThreads(Store.adminCode)
-                    ui { if (sid == screenId) render(arr) }
+                    val r = ChatApi.adminThreads(Store.adminCode, st, un, q)
+                    ui { if (sid == screenId && my == gen) render(r) }
                 } catch (e: ChatAuthException) {
                     Store.adminCode = ""
                     ui { if (sid == screenId) showAdminLogin() }
                     return@execute
                 } catch (e: Exception) {
-                    ui { if (sid == screenId) status.text = errText(e) }
+                    ui { if (sid == screenId && my == gen) status.text = errText(e) }
                 }
-                main.postDelayed({ load() }, 8000L)
+                main.postDelayed({ if (my == gen) load() }, 8000L)
             }
         }
+        reload = { load() }
+
+        // поиск: ждём 0,4 с после последней буквы
+        val searchRun = Runnable { query = search.text.toString().trim(); load() }
+        search.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) {
+                main.removeCallbacks(searchRun)
+                main.postDelayed(searchRun, 400L)
+            }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
+        renderFilters()
         load()
+    }
+
+    /** Блокировка или разблокировка устройства/IP. done получает новое состояние. */
+    private fun toggleBlock(kind: String, value: String, currently: Boolean, done: (Boolean) -> Unit) {
+        fun doBlock(block: Boolean) {
+            io.execute {
+                try {
+                    if (block) ChatApi.adminBlock(Store.adminCode, kind, value) else ChatApi.adminUnblock(Store.adminCode, kind, value)
+                    ui { done(block); toast(if (block) "Заблокировано" else "Разблокировано") }
+                } catch (e: Exception) {
+                    ui { toast(errText(e)) }
+                }
+            }
+        }
+        if (currently) { doBlock(false); return }
+        val what = if (kind == "ip") "IP $value" else "это устройство"
+        val warn = if (kind == "ip") "\n\nОсторожно: с одного IP (например, мобильный интернет) могут сидеть разные люди." else ""
+        AlertDialog.Builder(this)
+            .setTitle("Заблокировать?")
+            .setMessage("Пользователь с $what больше не сможет писать в поддержку.$warn")
+            .setPositiveButton("Заблокировать") { _, _ -> doBlock(true) }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     private fun showAdminChat(t: JSONObject) {
@@ -1215,13 +1488,359 @@ class MainActivity : AppCompatActivity() {
                 setTextIsSelectable(true)
             })
         }
+
+        // статус чата и блокировка
+        var curStatus = t.optString("status").ifEmpty { "new" }
+        var blockedDevice = t.optBoolean("blocked_device")
+        var blockedIp = t.optBoolean("blocked_ip")
+        val tools = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun renderTools() {
+            tools.removeAllViews()
+            for (st in listOf("new", "work", "done")) {
+                tools.addView(chip(threadStatusName(st), curStatus == st) {
+                    if (curStatus != st) {
+                        val prev = curStatus
+                        curStatus = st
+                        renderTools()
+                        io.execute {
+                            try {
+                                ChatApi.adminSetStatus(Store.adminCode, device, st)
+                            } catch (e: Exception) {
+                                ui { curStatus = prev; renderTools(); toast(errText(e)) }
+                            }
+                        }
+                    }
+                })
+            }
+            tools.addView(chipTint(if (blockedDevice) "Разблокировать устройство" else "⛔ Устройство", RED) {
+                toggleBlock("device", device, blockedDevice) { blockedDevice = it; renderTools() }
+            })
+            if (lastIp.isNotEmpty() && lastIp != "unknown") {
+                tools.addView(chipTint(if (blockedIp) "Разблокировать IP" else "⛔ IP", RED) {
+                    toggleBlock("ip", lastIp, blockedIp) { blockedIp = it; renderTools() }
+                })
+            }
+        }
+        renderTools()
+        root.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = lp(8)
+            addView(tools)
+        })
+
+        // подозрительные совпадения: другие устройства с тех же IP
+        val related = tv("", 12f, AMBER).apply { visibility = View.GONE }
+        root.addView(related)
+        io.execute {
+            try {
+                val arr = ChatApi.adminRelated(Store.adminCode, device)
+                ui {
+                    if (sid == screenId && arr.length() > 0) {
+                        val names = LinkedHashSet<String>()
+                        for (i in 0 until arr.length()) {
+                            val n = arr.getJSONObject(i).optString("nick")
+                            names.add(if (n.isEmpty()) "гость" else "@$n")
+                        }
+                        related.text = "⚠ С этих же IP писали другие устройства: ${names.joinToString(", ")}"
+                        related.visibility = View.VISIBLE
+                    }
+                }
+            } catch (e: Exception) {
+                // не критично
+            }
+        }
+
         root.addView(chatPane(
             sid, "admin", "Сообщений пока нет.",
             { after -> ChatApi.adminMessages(Store.adminCode, device, after) },
             { text, image -> ChatApi.adminReply(Store.adminCode, device, text, image) },
             { id -> ChatApi.adminImage(Store.adminCode, device, id) },
-            showMeta = true
+            showMeta = true,
+            readTs = { ChatApi.lastReadTs }
         ))
+    }
+
+    // ---------- админ: объявление, разделы, обновление, блокировки ----------
+
+    /** Экран настроек: загружает текущие настройки с сервера и строит форму. */
+    private fun adminSettingsScreen(title: String, build: (LinearLayout, JSONObject) -> Unit) {
+        onHome = false
+        val col = screen()
+        val sid = screenId
+        backAction = { showAdminThreads() }
+        backRow(col, title) { showAdminThreads() }
+        val status = tv("Загружаем…", 13f, MUTE)
+        col.addView(status)
+        io.execute {
+            try {
+                val s = ChatApi.adminSettings(Store.adminCode)
+                ui { if (sid == screenId) { status.visibility = View.GONE; build(col, s) } }
+            } catch (e: ChatAuthException) {
+                Store.adminCode = ""
+                ui { if (sid == screenId) showAdminLogin() }
+            } catch (e: Exception) {
+                ui { if (sid == screenId) status.text = errText(e) }
+            }
+        }
+    }
+
+    private fun adminSave(patch: JSONObject, done: (JSONObject) -> Unit) {
+        io.execute {
+            try {
+                val saved = ChatApi.adminSaveSettings(Store.adminCode, patch)
+                ui { done(saved) }
+            } catch (e: ChatAuthException) {
+                Store.adminCode = ""
+                ui { showAdminLogin() }
+            } catch (e: Exception) {
+                ui { toast(errText(e)) }
+            }
+        }
+    }
+
+    private fun showAdminAnnouncement() {
+        adminSettingsScreen("Объявление") { col, s ->
+            val a = s.optJSONObject("announcement") ?: JSONObject()
+            var active = a.optBoolean("active")
+            var level = if (a.optString("level") == "warn") "warn" else "info"
+            col.addView(tv("Плашка на главном экране у всех пользователей, например «Технические работы до 18:00».", 13f, MUTE))
+            val text = input(
+                "Текст объявления (до 300 символов)",
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            ).apply {
+                setText(a.optString("text"))
+                minLines = 3
+                filters = arrayOf(InputFilter.LengthFilter(300))
+            }
+            col.addView(text)
+            val toggles = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = lp(12)
+            }
+            fun paint() {
+                toggles.removeAllViews()
+                toggles.addView(chip(if (active) "● Показывается" else "○ Скрыто", active) { active = !active; paint() })
+                toggles.addView(chip("Информация", level == "info") { level = "info"; paint() })
+                toggles.addView(chip("Важно", level == "warn") { level = "warn"; paint() })
+            }
+            paint()
+            col.addView(toggles)
+            col.addView(btn("Сохранить", true) {
+                val patch = JSONObject().put(
+                    "announcement",
+                    JSONObject().put("active", active).put("text", text.text.toString().trim()).put("level", level)
+                )
+                adminSave(patch) { toast("Сохранено. Пользователи увидят при следующем открытии главного экрана") }
+            })
+        }
+    }
+
+    /** Разделы меню: (ключ, название, включён по умолчанию). */
+    private val sectionDefs = listOf(
+        Triple("stars", "Звёзды", true),
+        Triple("premium", "Premium", true),
+        Triple("gifts", "Обычные подарки", false),
+        Triple("nft_buy", "Купить NFT", false),
+        Triple("nft_rent", "Аренда NFT", false),
+        Triple("stars_sell", "Продать звёзды", false),
+        Triple("nft_sell", "Скупка NFT", false)
+    )
+
+    private fun editSection(key: String, name: String, secs: JSONObject, done: () -> Unit) {
+        val cur = secs.optJSONObject(key) ?: JSONObject()
+        fun field(h: String, v: String) = EditText(this).apply {
+            hint = h
+            setText(v)
+            setSingleLine()
+        }
+        val fTitle = field("Название (пусто — «$name»)", cur.optString("title"))
+        val fSub = field("Подпись под названием", cur.optString("sub"))
+        val fUrl = field("Ссылка при нажатии (https://…)", cur.optString("url"))
+        val fMsg = field("Сообщение, если раздел выключен", cur.optString("message"))
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+            for (f in listOf(fTitle, fSub, fUrl, fMsg)) addView(f)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(name)
+            .setView(box)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val o = secs.optJSONObject(key) ?: JSONObject().also { secs.put(key, it) }
+                for ((k, f) in listOf("title" to fTitle, "sub" to fSub, "url" to fUrl, "message" to fMsg)) {
+                    val v = f.text.toString().trim()
+                    if (v.isEmpty()) o.remove(k) else o.put(k, v)
+                }
+                done()
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun showAdminSections() {
+        adminSettingsScreen("Разделы") { col, s ->
+            val secs = s.optJSONObject("sections") ?: JSONObject()
+            col.addView(tv(
+                "Включённые разделы показываются в блоке «Купить», выключенные — в «Скоро». " +
+                    "Для включённого раздела без своего экрана укажите ссылку (иначе откроется бот). " +
+                    "Изменения применяются без выпуска новой версии.", 13f, MUTE
+            ))
+            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            col.addView(box)
+            var render: () -> Unit = {}
+            fun save() { adminSave(JSONObject().put("sections", secs)) { render() } }
+            render = {
+                box.removeAllViews()
+                for ((key, name, defOn) in sectionDefs) {
+                    val cur = secs.optJSONObject(key) ?: JSONObject()
+                    val on = if (cur.has("enabled")) cur.optBoolean("enabled") else defOn
+                    val card = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        background = shape(CARD, 18, LINE)
+                        setPadding(dp(16), dp(14), dp(16), dp(14))
+                        layoutParams = lp(10)
+                    }
+                    card.addView(txt(cur.optString("title").ifEmpty { name }, 16f, TEXT, true))
+                    val details = listOf("sub" to "подпись", "url" to "ссылка", "message" to "сообщение")
+                        .filter { cur.optString(it.first).isNotEmpty() }
+                        .joinToString(", ") { "${it.second}: ${cur.optString(it.first)}" }
+                    if (details.isNotEmpty()) card.addView(txt(details, 12f, MUTE))
+                    val row = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                        ).apply { topMargin = dp(10) }
+                    }
+                    row.addView(chip(if (on) "● Включён" else "○ Выключен", on) {
+                        val o = secs.optJSONObject(key) ?: JSONObject().also { secs.put(key, it) }
+                        o.put("enabled", !on)
+                        save()
+                    })
+                    row.addView(chip("Изменить", false) { editSection(key, name, secs) { save() } })
+                    card.addView(row)
+                    box.addView(card)
+                }
+            }
+            render()
+        }
+    }
+
+    private fun showAdminForceUpdate() {
+        adminSettingsScreen("Обновление") { col, s ->
+            val cur = s.optInt("min_version_code")
+            col.addView(tv(
+                "Ваша сборка: ${BuildConfig.VERSION_CODE}. Сейчас требуется: " +
+                    (if (cur > 0) "сборка $cur и выше" else "ничего не требуется") + ".", 14f, TEXT
+            ))
+            col.addView(tv(
+                "Приложения с меньшей сборкой попросят обновиться и не будут работать, пока человек не обновится. " +
+                    "Сначала убедитесь, что релиз build-N уже опубликован на GitHub, иначе людям будет нечего скачать.", 12f, MUTE
+            ))
+            val num = input("Минимальная сборка (0 — не требовать)", InputType.TYPE_CLASS_NUMBER).apply {
+                setText(cur.toString())
+            }
+            val msg = input(
+                "Сообщение пользователям (необязательно)",
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            ).apply {
+                setText(s.optString("update_message"))
+                filters = arrayOf(InputFilter.LengthFilter(200))
+            }
+            col.addView(num)
+            col.addView(msg)
+            col.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = lp(12)
+                addView(chip("Моя сборка (${BuildConfig.VERSION_CODE})", false) { num.setText(BuildConfig.VERSION_CODE.toString()) })
+                addView(chip("Отключить требование", false) { num.setText("0") })
+            })
+            col.addView(btn("Сохранить", true) {
+                val n = num.text.toString().toIntOrNull() ?: 0
+                val patch = JSONObject().put("min_version_code", n).put("update_message", msg.text.toString().trim())
+                if (n <= 0) {
+                    adminSave(patch) { toast("Требование отключено") }
+                } else {
+                    AlertDialog.Builder(this)
+                        .setTitle("Требовать сборку $n?")
+                        .setMessage(
+                            "Все, у кого сборка ниже $n, не смогут пользоваться приложением, пока не обновятся. " +
+                                "Убедитесь, что релиз build-$n уже опубликован на GitHub."
+                        )
+                        .setPositiveButton("Требовать") { _, _ -> adminSave(patch) { toast("Сохранено") } }
+                        .setNegativeButton("Отмена", null)
+                        .show()
+                }
+            })
+        }
+    }
+
+    private fun showAdminBlocks() {
+        onHome = false
+        val col = screen()
+        val sid = screenId
+        backAction = { showAdminThreads() }
+        backRow(col, "Блокировки") { showAdminThreads() }
+        val status = tv("Загружаем…", 13f, MUTE)
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(status)
+        col.addView(list)
+        val timeFmt = SimpleDateFormat("d MMM yyyy, HH:mm", Locale.getDefault())
+        var reload: () -> Unit = {}
+
+        fun render(arr: JSONArray) {
+            list.removeAllViews()
+            status.text = if (arr.length() == 0) "Заблокированных нет" else ""
+            for (i in 0 until arr.length()) {
+                val b = arr.getJSONObject(i)
+                val kind = b.optString("kind")
+                val value = b.optString("value")
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = shape(CARD, 18, LINE)
+                    setPadding(dp(16), dp(14), dp(16), dp(14))
+                    layoutParams = lp(10)
+                }
+                card.addView(txt(if (kind == "ip") "IP $value" else "Устройство ${value.take(8)}…", 16f, TEXT, true))
+                val nick = b.optString("nick")
+                if (nick.isNotEmpty()) card.addView(txt("@$nick", 13f, MUTE))
+                val reason = b.optString("reason")
+                if (reason.isNotEmpty()) card.addView(txt(reason, 13f, MUTE))
+                card.addView(txt("с " + timeFmt.format(java.util.Date(b.optLong("ts"))), 11f, MUTE))
+                card.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { topMargin = dp(10) }
+                    addView(chip("Разблокировать", false) {
+                        io.execute {
+                            try {
+                                ChatApi.adminUnblock(Store.adminCode, kind, value)
+                                ui { toast("Разблокировано"); reload() }
+                            } catch (e: Exception) {
+                                ui { toast(errText(e)) }
+                            }
+                        }
+                    })
+                })
+                list.addView(card)
+            }
+        }
+
+        fun load() {
+            io.execute {
+                try {
+                    val arr = ChatApi.adminBlocks(Store.adminCode)
+                    ui { if (sid == screenId) render(arr) }
+                } catch (e: ChatAuthException) {
+                    Store.adminCode = ""
+                    ui { if (sid == screenId) showAdminLogin() }
+                } catch (e: Exception) {
+                    ui { if (sid == screenId) status.text = errText(e) }
+                }
+            }
+        }
+        reload = { load() }
+        load()
     }
 
     // ---------- покупка звёзд ----------

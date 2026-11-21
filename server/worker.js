@@ -11,6 +11,11 @@ const SCHEMA = [
      id INTEGER PRIMARY KEY AUTOINCREMENT, device TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_messages_device ON messages (device, id)`,
   `CREATE TABLE IF NOT EXISTS fails (ip TEXT PRIMARY KEY, n INTEGER, ts INTEGER)`,
+  // блокировки спамеров: kind = 'device' | 'ip'
+  `CREATE TABLE IF NOT EXISTS blocks (
+     kind TEXT NOT NULL, value TEXT NOT NULL, reason TEXT DEFAULT '', ts INTEGER NOT NULL, PRIMARY KEY (kind, value))`,
+  // удалённые настройки приложения (одна запись k='app' с JSON)
+  `CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL)`,
 ];
 // Новые колонки для уже существующей базы (ошибка «колонка уже есть» игнорируется).
 const MIGRATIONS = [
@@ -20,6 +25,10 @@ const MIGRATIONS = [
   `ALTER TABLE messages ADD COLUMN geo TEXT DEFAULT ''`,
   `ALTER TABLE threads ADD COLUMN last_ip TEXT DEFAULT ''`,
   `ALTER TABLE threads ADD COLUMN last_dev TEXT DEFAULT ''`,
+  `ALTER TABLE threads ADD COLUMN status TEXT DEFAULT 'new'`,          // new | work | done
+  `ALTER TABLE threads ADD COLUMN admin_read_ts INTEGER DEFAULT 0`,    // админ прочитал сообщения пользователя до этого времени
+  `ALTER TABLE threads ADD COLUMN user_read_ts INTEGER DEFAULT 0`,     // пользователь прочитал ответы админа до этого времени
+  `CREATE INDEX IF NOT EXISTS idx_messages_ip ON messages (ip)`,
 ];
 const MAX_IMAGE = 1_400_000; // символов base64 (~1 МБ картинки); лимит строки в D1 — 2 МБ
 const B64 = /^[A-Za-z0-9+/=]+$/;
@@ -33,6 +42,9 @@ const json = (o, s = 200) =>
 const err = (m, s = 400) => json({ error: m }, s);
 const UUID = /^[0-9a-f-]{36}$/;
 const LOCK_MS = 15 * 60 * 1000;
+const STATUSES = ['new', 'work', 'done'];
+const IP_RE = /^[0-9a-fA-F:.]{3,64}$/;
+const DAY = 24 * 60 * 60 * 1000;
 
 async function sha256(s) {
   const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -105,6 +117,8 @@ async function userSend(body, env, ctx, request) {
   if (image === null) return err('Фото слишком большое или повреждено');
   if (!text && !image) return err('Пустое сообщение');
   const hash = await sha256(secret);
+  const blockedBy = await isBlocked(env, device, (request.headers.get('cf-connecting-ip') || '').slice(0, 64));
+  if (blockedBy) return err('Доступ к поддержке ограничен', 403);
   const nick = String(body.nick || '').replace(/^@/, '').trim().slice(0, 40);
   const order = String(body.order || '').trim().slice(0, 40);
   const now = Date.now();
@@ -135,7 +149,8 @@ async function userSend(body, env, ctx, request) {
     env.DB.prepare(
       `UPDATE threads SET nick = CASE WHEN ? != '' THEN ? ELSE nick END,
          last_order = CASE WHEN ? != '' THEN ? ELSE last_order END,
-         last_text = ?, last_ts = ?, last_user_ts = ?, unread = unread + 1, last_ip = ?, last_dev = ? WHERE device = ?`
+         last_text = ?, last_ts = ?, last_user_ts = ?, unread = unread + 1, last_ip = ?, last_dev = ?,
+         status = CASE WHEN status = 'done' THEN 'new' ELSE status END WHERE device = ?`
     ).bind(nick, nick, order, order, shown, now, now, ip, dev, device),
   ]);
 
@@ -154,11 +169,16 @@ async function userMessages(body, env) {
   const device = String(body.device || '');
   const secret = String(body.secret || '');
   if (!UUID.test(device) || secret.length < 16) return err('Некорректный запрос');
-  const t = await env.DB.prepare('SELECT secret_hash FROM threads WHERE device = ?').bind(device).first();
-  if (!t) return json({ messages: [] });
+  const t = await env.DB.prepare('SELECT secret_hash, admin_read_ts FROM threads WHERE device = ?').bind(device).first();
+  if (!t) return json({ messages: [], read_ts: 0 });
   if (t.secret_hash !== (await sha256(secret))) return err('Нет доступа', 403);
   const { results } = await env.DB.prepare(MSG_SQL).bind(device, Number(body.after) || 0).all();
-  return json({ messages: results });
+  // пользователь открыл чат — ответы админа прочитаны (пишем в базу, только если есть что отметить)
+  await env.DB.prepare(
+    `UPDATE threads SET user_read_ts = ? WHERE device = ?
+       AND user_read_ts < (SELECT COALESCE(MAX(ts), 0) FROM messages WHERE device = ? AND sender = 'admin')`
+  ).bind(Date.now(), device, device).run();
+  return json({ messages: results, read_ts: t.admin_read_ts || 0 });
 }
 
 async function userImage(body, env) {
@@ -173,19 +193,197 @@ async function userImage(body, env) {
 }
 
 // ---------- админ ----------
-async function adminThreads(env) {
+// LIKE-шаблон без спецсимволов пользователя
+const likeOf = (q) => '%' + q.replace(/[\\%_]/g, (m) => '\\' + m) + '%';
+
+async function isBlocked(env, device, ip) {
+  const r = await env.DB.prepare(
+    `SELECT kind FROM blocks WHERE (kind = 'device' AND value = ?) OR (kind = 'ip' AND value = ? AND ? != '' AND ? != 'unknown') LIMIT 1`
+  ).bind(device, ip, ip, ip).first();
+  return r ? r.kind : '';
+}
+
+async function adminThreads(body, env) {
+  const where = [`last_text != ''`];
+  const args = [];
+  const st = String(body.status || '');
+  if (STATUSES.includes(st)) { where.push('status = ?'); args.push(st); }
+  if (body.unread) where.push('unread > 0');
+  const q = String(body.q || '').trim().replace(/^@/, '').slice(0, 60);
+  if (q) {
+    // по нику, по номеру заказа (в карточке и в тексте сообщений)
+    where.push(`(nick LIKE ? ESCAPE '\\' OR last_order LIKE ? ESCAPE '\\' OR device IN (SELECT device FROM messages WHERE text LIKE ? ESCAPE '\\'))`);
+    const like = likeOf(q);
+    args.push(like, like, like);
+  }
   const { results } = await env.DB.prepare(
-    'SELECT device, nick, last_order, last_text, last_ts, unread, last_ip, last_dev FROM threads WHERE last_text != \'\' ORDER BY last_ts DESC LIMIT 100'
+    `SELECT device, nick, last_order, last_text, last_ts, unread, last_ip, last_dev, status
+       FROM threads WHERE ${where.join(' AND ')} ORDER BY last_ts DESC LIMIT 100`
+  ).bind(...args).all();
+
+  // подозрительные совпадения: сколько разных устройств писали с того же IP за 30 дней
+  const ips = [...new Set(results.map((r) => r.last_ip).filter((x) => x && x !== 'unknown'))];
+  const shared = {};
+  for (let i = 0; i < ips.length; i += 80) {       // у D1 лимит ~100 параметров на запрос
+    const part = ips.slice(i, i + 80);
+    const { results: rows } = await env.DB.prepare(
+      `SELECT ip, COUNT(DISTINCT device) AS n FROM messages WHERE ip IN (${part.map(() => '?').join(',')}) AND ts > ? GROUP BY ip`
+    ).bind(...part, Date.now() - 30 * DAY).all();
+    for (const r of rows) shared[r.ip] = r.n;
+  }
+  const { results: bl } = await env.DB.prepare('SELECT kind, value FROM blocks').all();
+  const blDev = new Set(bl.filter((b) => b.kind === 'device').map((b) => b.value));
+  const blIp = new Set(bl.filter((b) => b.kind === 'ip').map((b) => b.value));
+  const threads = results.map((r) => ({
+    ...r,
+    status: STATUSES.includes(r.status) ? r.status : 'new',
+    shared_ip: (shared[r.last_ip] || 0) > 1 ? shared[r.last_ip] : 0,
+    blocked_device: blDev.has(r.device),
+    blocked_ip: blIp.has(r.last_ip),
+  }));
+
+  const counts = { new: 0, work: 0, done: 0, unread: 0 };
+  const { results: c1 } = await env.DB.prepare(`SELECT status, COUNT(*) AS n FROM threads WHERE last_text != '' GROUP BY status`).all();
+  for (const r of c1) counts[STATUSES.includes(r.status) ? r.status : 'new'] += r.n;
+  const c2 = await env.DB.prepare(`SELECT COUNT(*) AS n FROM threads WHERE last_text != '' AND unread > 0`).first();
+  counts.unread = c2 ? c2.n : 0;
+  return json({ threads, counts });
+}
+
+// Другие устройства, писавшие с тех же IP, что и этот чат (за 30 дней)
+async function adminRelated(body, env) {
+  const device = String(body.device || '');
+  if (!UUID.test(device)) return err('Некорректный запрос');
+  const since = Date.now() - 30 * DAY;
+  const { results: mine } = await env.DB.prepare(
+    `SELECT DISTINCT ip FROM messages WHERE device = ? AND ip != '' AND ip != 'unknown' AND ts > ? LIMIT 20`
+  ).bind(device, since).all();
+  if (!mine.length) return json({ related: [] });
+  const ips = mine.map((r) => r.ip);
+  const { results } = await env.DB.prepare(
+    `SELECT m.device AS device, t.nick AS nick, m.ip AS ip, MAX(m.ts) AS ts
+       FROM messages m JOIN threads t ON t.device = m.device
+      WHERE m.ip IN (${ips.map(() => '?').join(',')}) AND m.device != ? AND m.ts > ?
+      GROUP BY m.device, m.ip ORDER BY ts DESC LIMIT 20`
+  ).bind(...ips, device, since).all();
+  return json({ related: results });
+}
+
+async function adminSetStatus(body, env) {
+  const device = String(body.device || '');
+  const status = String(body.status || '');
+  if (!UUID.test(device) || !STATUSES.includes(status)) return err('Некорректный запрос');
+  await env.DB.prepare('UPDATE threads SET status = ? WHERE device = ?').bind(status, device).run();
+  return json({ ok: true });
+}
+
+// ---------- блокировки ----------
+function blockTarget(body) {
+  const kind = String(body.kind || '');
+  const value = String(body.value || '').trim();
+  if (kind === 'device' && UUID.test(value)) return { kind, value };
+  if (kind === 'ip' && IP_RE.test(value) && value !== 'unknown') return { kind, value };
+  return null;
+}
+async function adminBlock(body, env) {
+  const b = blockTarget(body);
+  if (!b) return err('Некорректный запрос');
+  const reason = String(body.reason || '').trim().slice(0, 100);
+  await env.DB.prepare(
+    'INSERT INTO blocks (kind, value, reason, ts) VALUES (?, ?, ?, ?) ON CONFLICT(kind, value) DO UPDATE SET reason = excluded.reason, ts = excluded.ts'
+  ).bind(b.kind, b.value, reason, Date.now()).run();
+  return json({ ok: true });
+}
+async function adminUnblock(body, env) {
+  const b = blockTarget(body);
+  if (!b) return err('Некорректный запрос');
+  await env.DB.prepare('DELETE FROM blocks WHERE kind = ? AND value = ?').bind(b.kind, b.value).run();
+  return json({ ok: true });
+}
+async function adminBlocks(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT b.kind AS kind, b.value AS value, b.reason AS reason, b.ts AS ts,
+            (SELECT nick FROM threads t WHERE (b.kind = 'device' AND t.device = b.value) OR (b.kind = 'ip' AND t.last_ip = b.value) LIMIT 1) AS nick
+       FROM blocks b ORDER BY b.ts DESC LIMIT 200`
   ).all();
-  return json({ threads: results });
+  return json({ blocks: results });
+}
+
+// ---------- удалённые настройки: объявление, разделы, обязательное обновление ----------
+const SECTION_KEYS = ['stars', 'premium', 'gifts', 'nft_buy', 'nft_rent', 'stars_sell', 'nft_sell'];
+const DEFAULT_APP = {
+  announcement: { active: false, text: '', level: 'info', id: 0 },
+  sections: {},
+  min_version_code: 0,
+  update_message: '',
+};
+
+async function loadApp(env) {
+  const r = await env.DB.prepare(`SELECT v FROM settings WHERE k = 'app'`).first();
+  if (!r) return structuredClone(DEFAULT_APP);
+  try { return { ...structuredClone(DEFAULT_APP), ...JSON.parse(r.v) }; } catch (e) { return structuredClone(DEFAULT_APP); }
+}
+
+const cut = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
+
+function applyPatch(cur, patch) {
+  const out = { ...cur };
+  if (patch.announcement && typeof patch.announcement === 'object') {
+    const a = patch.announcement;
+    const text = cut(a.text, 300);
+    out.announcement = { active: !!a.active && text.length > 0, text, level: a.level === 'warn' ? 'warn' : 'info', id: Date.now() };
+  }
+  if (patch.sections && typeof patch.sections === 'object') {
+    const secs = {};
+    for (const key of SECTION_KEYS) {
+      const v = patch.sections[key];
+      if (!v || typeof v !== 'object') continue;
+      const s = {};
+      if (typeof v.enabled === 'boolean') s.enabled = v.enabled;
+      for (const [f, n] of [['title', 40], ['sub', 60], ['message', 100]]) { const t = cut(v[f], n); if (t) s[f] = t; }
+      const url = cut(v.url, 200);
+      if (/^https:\/\//.test(url)) s.url = url;   // только https-ссылки
+      secs[key] = s;
+    }
+    out.sections = secs;
+  }
+  if (patch.min_version_code !== undefined) {
+    const n = Math.floor(Number(patch.min_version_code));
+    out.min_version_code = Number.isFinite(n) ? Math.min(Math.max(n, 0), 1_000_000) : 0;
+  }
+  if (patch.update_message !== undefined) out.update_message = cut(patch.update_message, 200);
+  return out;
+}
+
+async function adminSettings(env) { return json(await loadApp(env)); }
+async function adminSaveSettings(body, env) {
+  const next = applyPatch(await loadApp(env), body || {});
+  await env.DB.prepare(`INSERT INTO settings (k, v) VALUES ('app', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`)
+    .bind(JSON.stringify(next)).run();
+  return json(next);
+}
+
+// публично: приложение спрашивает при запуске и при открытии главного экрана
+async function appConfig(env) {
+  const a = await loadApp(env);
+  return json({
+    announcement: a.announcement.active ? { active: true, text: a.announcement.text, level: a.announcement.level, id: a.announcement.id } : { active: false },
+    sections: a.sections,
+    min_version_code: a.min_version_code,
+    update_message: a.update_message,
+  });
 }
 
 async function adminMessages(body, env) {
   const device = String(body.device || '');
   if (!UUID.test(device)) return err('Некорректный запрос');
   const { results } = await env.DB.prepare(MSG_SQL_ADMIN).bind(device, Number(body.after) || 0).all();
-  await env.DB.prepare('UPDATE threads SET unread = 0 WHERE device = ? AND unread > 0').bind(device).run();
-  return json({ messages: results });
+  const t = await env.DB.prepare('SELECT user_read_ts FROM threads WHERE device = ?').bind(device).first();
+  // админ открыл чат — сообщения пользователя прочитаны (пишем, только если есть новое)
+  await env.DB.prepare(
+    'UPDATE threads SET unread = 0, admin_read_ts = ? WHERE device = ? AND (unread > 0 OR admin_read_ts < last_user_ts)'
+  ).bind(Date.now(), device).run();
+  return json({ messages: results, read_ts: t ? t.user_read_ts || 0 : 0 });
 }
 
 async function adminImage(body, env) {
@@ -208,7 +406,10 @@ async function adminReply(body, env) {
   const now = Date.now();
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO messages (device, sender, text, ts, image) VALUES (?, 'admin', ?, ?, ?)`).bind(device, text, now, image),
-    env.DB.prepare('UPDATE threads SET last_text = ?, last_ts = ?, unread = 0 WHERE device = ?').bind(text || '📷 Фото', now, device),
+    env.DB.prepare(
+      `UPDATE threads SET last_text = ?, last_ts = ?, unread = 0, admin_read_ts = ?,
+         status = CASE WHEN status = 'new' THEN 'work' ELSE status END WHERE device = ?`
+    ).bind(text || '📷 Фото', now, now, device),
   ]);
   return json({ ok: true });
 }
@@ -226,12 +427,20 @@ export default {
     if (path === '/api/chat/send') return userSend(body, env, ctx, request);
     if (path === '/api/chat/messages') return userMessages(body, env);
     if (path === '/api/chat/image') return userImage(body, env);
+    if (path === '/api/app/config') return appConfig(env);
 
     if (path.startsWith('/api/admin/')) {
       const a = await adminAuth(request, env);
       if (a === 'locked') return err('Слишком много попыток. Попробуйте через 15 минут', 429);
       if (!a) return err('Неверный код', 401);
-      if (path === '/api/admin/threads') return adminThreads(env);
+      if (path === '/api/admin/threads') return adminThreads(body, env);
+      if (path === '/api/admin/related') return adminRelated(body, env);
+      if (path === '/api/admin/status') return adminSetStatus(body, env);
+      if (path === '/api/admin/block') return adminBlock(body, env);
+      if (path === '/api/admin/unblock') return adminUnblock(body, env);
+      if (path === '/api/admin/blocks') return adminBlocks(env);
+      if (path === '/api/admin/settings') return adminSettings(env);
+      if (path === '/api/admin/settings_save') return adminSaveSettings(body, env);
       if (path === '/api/admin/messages') return adminMessages(body, env);
       if (path === '/api/admin/reply') return adminReply(body, env);
       if (path === '/api/admin/image') return adminImage(body, env);
