@@ -67,6 +67,7 @@ class MainActivity : AppCompatActivity() {
     private var screenId = 0
     private val net = Executors.newFixedThreadPool(4)   // параллельные запросы статусов
     private var refreshing = false
+    private var lastRefreshError = ""
     private var returnFromPay = false
     private var hc: HCaptcha? = null
     private var hcOk: ((String) -> Unit)? = null
@@ -458,7 +459,16 @@ class MainActivity : AppCompatActivity() {
 
         val methods = c.optJSONArray("methods")
         if (methods != null) {
-            for (i in 0 until methods.length()) {
+            // 1) меняем первый и второй способы оплаты местами (в списке с сайта)
+            val all = (0 until methods.length()).toMutableList()
+            if (all.size >= 2) { val t = all[0]; all[0] = all[1]; all[1] = t }
+            // 2) убираем способы оплаты через сеть TON (прямой перевод TON и USDT в сети TON)
+            val tonRe = Regex("(^|[^a-z])ton([^a-z]|$)|тон", RegexOption.IGNORE_CASE)
+            val order = all.filter { i ->
+                val m = methods.getJSONObject(i)
+                !(tonRe.containsMatchIn(m.optString("name")) || tonRe.containsMatchIn(m.optString("id")))
+            }
+            for (i in order) {
                 val m = methods.getJSONObject(i)
                 val mid = m.getString("id")
                 val mname = m.getString("name")
@@ -574,6 +584,32 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- профиль и заказы ----------
     // 0 — ждёт оплаты, 1 — оплачен/в работе, 2 — выполнен, 3 — отменён, 4 — неизвестный статус
+    /**
+     * Итоговый статус заказа. Сайт может отдавать статус в разных полях
+     * (status / payment_status / delivery_status …) или флагами (paid, paid_at …),
+     * поэтому берём самый «продвинутый» из всех найденных.
+     */
+    private fun effStatus(o: JSONObject): String {
+        val fields = listOf(
+            "status", "order_status", "state", "payment_status",
+            "delivery_status", "fulfillment_status", "payout_status"
+        )
+        var best = ""
+        var bestRank = -1
+        fun rank(k: Int) = when (k) { 2 -> 4; 3 -> 3; 1 -> 2; 0 -> 1; else -> 0 }
+        for (f in fields) {
+            val v = o.optString(f)
+            if (v.isEmpty() || v == "null") continue
+            val r = rank(statusKind(v))
+            if (r > bestRank) { bestRank = r; best = v }
+        }
+        // признаки выполнения/оплаты, если строкового статуса мало
+        fun has(key: String) = o.has(key) && !o.isNull(key) && o.optString(key).isNotEmpty() && o.optString(key) != "false"
+        if (bestRank < 4 && (has("completed_at") || has("delivered_at") || has("fulfilled_at"))) return "completed"
+        if (bestRank < 2 && (has("paid") && o.optString("paid") != "0" || has("is_paid") && o.optString("is_paid") != "0" || has("paid_at"))) return "paid"
+        return best
+    }
+
     private fun statusKind(raw: String): Int {
         val s = raw.lowercase().trim()
         return when {
@@ -632,7 +668,7 @@ class MainActivity : AppCompatActivity() {
         val r = object : Runnable {
             override fun run() {
                 if (sid != screenId) return
-                val active = Store.orders().any { statusKind(it.optString("status")) !in listOf(2, 3) }
+                val active = Store.orders().any { statusKind(effStatus(it)) !in listOf(2, 3) }
                 if (active) refreshOrders(body, sid, false)
                 main.postDelayed(this, 5000L)
             }
@@ -695,7 +731,7 @@ class MainActivity : AppCompatActivity() {
         })
 
         // статистика
-        val paid = orders.filter { val k = statusKind(it.optString("status")); k == 1 || k == 2 }
+        val paid = orders.filter { val k = statusKind(effStatus(it)); k == 1 || k == 2 }
         val spent = paid.sumOf { it.optString("total").toDoubleOrNull() ?: 0.0 }
         val stars = paid.sumOf { it.optInt("quantity") }
         val t1 = statTile(orders.size.toString(), "Заказов")
@@ -726,6 +762,9 @@ class MainActivity : AppCompatActivity() {
             addView(refreshChip)
         }
         body.addView(listHead)
+        if (lastRefreshError.isNotEmpty()) {
+            body.addView(tv("Не удалось обновить статус: $lastRefreshError", 12f, RED))
+        }
 
         if (orders.isEmpty()) {
             body.addView(tv("Пока нет заказов. Здесь появятся заказы, оформленные в этом приложении.", 14f, MUTE))
@@ -766,8 +805,23 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    /** Показывает всё, что сайт вернул по заказу (для диагностики статуса). */
+    private fun showRaw(o: JSONObject) {
+        val t = TextView(this).apply {
+            text = o.toString(2)
+            textSize = 12f
+            setTextIsSelectable(true)
+            setPadding(dp(20), dp(12), dp(20), dp(12))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Данные заказа")
+            .setView(ScrollView(this).apply { addView(t) })
+            .setPositiveButton("Закрыть", null)
+            .show()
+    }
+
     private fun orderCard(o: JSONObject, body: LinearLayout, sid: Int): LinearLayout {
-        val status = o.optString("status")
+        val status = effStatus(o)
         val num = o.optString("order_number")
         val color = statusColor(status)
 
@@ -803,6 +857,7 @@ class MainActivity : AppCompatActivity() {
             actions.addView(chip("Оплатить", true) { returnFromPay = true; openUrl(url) })
         }
         actions.addView(chip("Обновить статус", false) { refreshOrders(body, sid, true) })
+        actions.addView(chip("Данные", false) { showRaw(o) })
         actions.addView(chip("Скопировать номер", false) {
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             cm.setPrimaryClip(ClipData.newPlainText("order", num))
@@ -826,7 +881,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun ordersSnapshot(): String =
-        Store.orders().joinToString("|") { it.optString("id") + ":" + it.optString("status") }
+        Store.orders().joinToString("|") { it.optString("id") + ":" + effStatus(it) }
 
     /** Подтягивает свежие статусы заказов с сервера. force — обновить и завершённые. */
     private fun refreshOrders(body: LinearLayout, sid: Int, force: Boolean) {
@@ -836,7 +891,7 @@ class MainActivity : AppCompatActivity() {
         }
         val targets = Store.orders()
             .filter { o ->
-                val k = statusKind(o.optString("status"))
+                val k = statusKind(effStatus(o))
                 force || (k != 2 && k != 3)
             }
             .filter { it.optString("id").isNotEmpty() }
@@ -851,11 +906,13 @@ class MainActivity : AppCompatActivity() {
             // запрашиваем все заказы одновременно, а не по очереди
             val jobs = targets.map { o ->
                 val id = o.optString("id")
-                net.submit<Boolean> {
-                    try { Store.update(id, Api.order(id)); true } catch (e: Exception) { false }
+                net.submit<String> {
+                    try { Store.update(id, Api.order(id)); "" } catch (e: Exception) { e.message ?: "ошибка" }
                 }
             }
-            val ok = jobs.count { try { it.get() } catch (e: Exception) { false } }
+            val results = jobs.map { try { it.get() } catch (e: Exception) { e.message ?: "ошибка" } }
+            val ok = results.count { it.isEmpty() }
+            lastRefreshError = results.firstOrNull { it.isNotEmpty() } ?: ""
             val changed = ordersSnapshot() != before
             ui {
                 refreshing = false
