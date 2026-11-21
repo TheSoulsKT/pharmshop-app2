@@ -20,6 +20,7 @@ import android.text.InputFilter
 import android.text.InputType
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.TextUtils
 import android.text.TextWatcher
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
@@ -41,10 +42,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.graphics.ColorUtils
+import androidx.lifecycle.Lifecycle
 import com.hcaptcha.sdk.HCaptcha
 import com.hcaptcha.sdk.HCaptchaConfig
 import com.hcaptcha.sdk.HCaptchaException
 import com.hcaptcha.sdk.HCaptchaTokenResponse
+import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -86,6 +89,7 @@ class MainActivity : AppCompatActivity() {
     private var busy = false
     private var onHome = true
     private var screenId = 0
+    private var backAction: (() -> Unit)? = null   // особое действие кнопки «назад» (чаты)
     private val net = Executors.newFixedThreadPool(4)   // параллельные запросы статусов
     private var refreshing = false
     private var lastRefreshError = ""
@@ -104,6 +108,8 @@ class MainActivity : AppCompatActivity() {
         window.navigationBarColor = BG
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                val ba = backAction
+                if (ba != null) { ba(); return }
                 if (onHome) finish() else { navBack = true; showHome() }
             }
         })
@@ -353,6 +359,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun screen(): LinearLayout {
         screenId++
+        backAction = null
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(28), dp(18), dp(24))
@@ -373,7 +380,7 @@ class MainActivity : AppCompatActivity() {
         return col
     }
 
-    private fun backRow(col: LinearLayout, title: String) {
+    private fun backRow(col: LinearLayout, title: String, onBack: () -> Unit = { navBack = true; showHome() }) {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -386,7 +393,7 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
             background = ripple(CARD, 22, LINE)
             isClickable = true
-            setOnClickListener { navBack = true; showHome() }
+            setOnClickListener { onBack() }
             pressable(this)
             layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)).apply { rightMargin = dp(14) }
             addView(icon)
@@ -477,6 +484,7 @@ class MainActivity : AppCompatActivity() {
         // шапка: логотип, название, профиль
         val logo = LogoView(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(56), dp(56)).apply { rightMargin = dp(14) }
+            setOnLongClickListener { showAdminEntry(); true }
         }
         val title = TextView(this).apply {
             textSize = 30f
@@ -512,10 +520,10 @@ class MainActivity : AppCompatActivity() {
             setTextColor(TEXT)
             setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER
-            contentDescription = "Частые вопросы"
+            contentDescription = "Поддержка"
             background = ripple(CARD, 22, LINE)
             isClickable = true
-            setOnClickListener { showFaq() }
+            setOnClickListener { showSupport() }
             pressable(this)
             layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)).apply { rightMargin = dp(8) }
         }
@@ -602,106 +610,335 @@ class MainActivity : AppCompatActivity() {
         return card
     }
 
-    private fun showFaq() {
-        onHome = false
-        val col = screen()
-        backRow(col, "Частые вопросы")
-        col.addView(tv("Часто задаваемые вопросы:", 15f, MUTE))
-        col.addView(faqCard(
+    // ---------- поддержка: чат ----------
+
+    /** Экран с фиксированной шапкой и полем ввода внизу (для чатов). */
+    private fun chatScreen(): LinearLayout {
+        screenId++
+        backAction = null
+        navBack = false
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(BG)
+            setPadding(dp(18), dp(28), dp(18), dp(12))
+        }
+        setContentView(root)
+        return root
+    }
+
+    private fun errText(e: Exception) =
+        if (e is IllegalStateException) "Чат пока не настроен" else (e.message ?: "Нет связи")
+
+    /**
+     * Лента сообщений + поле ввода. mine — чьи сообщения показывать справа ("user" или "admin").
+     * fetch(after) возвращает новые сообщения, send(text) отправляет сообщение.
+     */
+    private fun chatPane(
+        sid: Int, mine: String, hint: String,
+        fetch: (Long) -> JSONArray, send: (String) -> Unit
+    ): LinearLayout {
+        val pane = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), 0, dp(8))
+        }
+        val emptyHint = tv(hint, 14f, MUTE)
+        list.addView(emptyHint)
+        val scroll = ScrollView(this).apply {
+            addView(list)
+            isVerticalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        val status = txt("", 12f, MUTE).apply { layoutParams = lp(4) }
+        val field = input(
+            "Сообщение",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        ).apply {
+            maxLines = 4
+            filters = arrayOf(InputFilter.LengthFilter(1000))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(8) }
+        }
+
+        var lastId = 0L
+        val timeFmt = SimpleDateFormat("d MMM, HH:mm", Locale.getDefault())
+
+        fun add(m: JSONObject) {
+            val id = m.optLong("id")
+            if (id <= lastId) return
+            lastId = id
+            if (emptyHint.parent != null) list.removeView(emptyHint)
+            val own = m.optString("from") == mine
+            val bubble = TextView(this).apply {
+                text = m.optString("text")
+                textSize = 15f
+                setTextColor(if (own) Color.BLACK else TEXT)
+                background = shape(if (own) BLUE else CARD, 16, if (own) BLUE else LINE)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                maxWidth = (resources.displayMetrics.widthPixels * 0.78f).toInt()
+            }
+            val time = txt(timeFmt.format(java.util.Date(m.optLong("ts"))), 10f, MUTE)
+            val wrap = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = if (own) Gravity.END else Gravity.START
+                layoutParams = lp(8)
+                addView(bubble)
+                addView(time)
+            }
+            list.addView(wrap)
+        }
+
+        fun fetchOnce() {
+            io.execute {
+                try {
+                    val arr = fetch(lastId)
+                    ui {
+                        if (sid == screenId) {
+                            val before = lastId
+                            for (i in 0 until arr.length()) add(arr.getJSONObject(i))
+                            status.text = ""
+                            if (lastId != before) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+                        }
+                    }
+                } catch (e: Exception) {
+                    ui { if (sid == screenId) status.text = errText(e) }
+                }
+            }
+        }
+
+        fun loop() {
+            if (sid != screenId) return
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) fetchOnce()
+            main.postDelayed({ loop() }, 4000L)
+        }
+
+        fun sendNow() {
+            val text = field.text.toString().trim()
+            if (text.isEmpty()) return
+            field.setText("")
+            io.execute {
+                try {
+                    send(text)
+                    ui { fetchOnce() }
+                } catch (e: Exception) {
+                    ui {
+                        if (sid == screenId) {
+                            field.setText(text)
+                            toast(errText(e))
+                        }
+                    }
+                }
+            }
+        }
+
+        val sendBtn = chip("Отправить", true) { sendNow() }.apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(50))
+        }
+        val composer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+            addView(field)
+            addView(sendBtn)
+        }
+        pane.addView(scroll)
+        pane.addView(status)
+        pane.addView(composer)
+        loop()
+        return pane
+    }
+
+    private fun faqView(): ScrollView {
+        val c = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        c.addView(tv("Часто задаваемые вопросы:", 15f, MUTE))
+        c.addView(faqCard(
             "Как быстро приходят звезды?",
             "Заказы отправляются автоматически и, приходят в течение 15 секунд.", BLUE
         ))
-        col.addView(faqCard(
+        c.addView(faqCard(
             "Могу ли я покупать звезды только для себя?",
             "Нет, вы можете отправлять подарки любым пользователям, у которых есть @username.", CYAN
         ))
-        col.addView(faqCard(
+        c.addView(faqCard(
             "Есть ли риск блокировки моего аккаунта или рефаунда звезд?",
             "Нет, риск отсутствует, так как мы используем официальную платформу Telegram для покупки звёзд. " +
                 "Блокировка или потеря звёзд невозможны", GREEN
         ))
-        col.addView(faqCard(
+        c.addView(faqCard(
             "Продажа звезд",
             "Для продажи звезд требуется подтвердить их, или ждать 21 день. После оплаты заявки бот выдаст вам " +
                 "всю информацию. Необходимо скинуть номер заявки и транзакции по звездам, все просто", AMBER
         ))
-        col.addView(btn("Связаться с поддержкой", true) { showSupport() })
-        riseIn(col)
+        return ScrollView(this).apply {
+            addView(c)
+            isVerticalScrollBarEnabled = false
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
     }
 
-    // ---------- поддержка ----------
-    private var lastSupportAt = 0L
-    private var supportBusy = false
-
+    /** Единственная точка связи с поддержкой: кнопка «?» на главном экране. */
     private fun showSupport() {
+        onHome = false
+        val root = chatScreen()
+        val sid = screenId
+        backRow(root, "Поддержка")
+        val nick = Store.lastUser
+        val order = Store.orders().firstOrNull()?.optString("order_number").orEmpty()
+        val chat = chatPane(
+            sid, "user",
+            "Напишите нам, ответ придёт сюда, в чат. Если вопрос по заказу, укажите его номер.",
+            { after -> ChatApi.userMessages(Store.deviceId, Store.deviceSecret, after) },
+            { text -> ChatApi.userSend(Store.deviceId, Store.deviceSecret, nick, order, BuildConfig.VERSION_NAME, text) }
+        )
+        val faq = faqView()
+        val tabs = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = lp(12)
+        }
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        fun select(isChat: Boolean) {
+            tabs.removeAllViews()
+            tabs.addView(chip("Чат", isChat) { select(true) })
+            tabs.addView(chip("Частые вопросы", !isChat) { select(false) })
+            body.removeAllViews()
+            body.addView(if (isChat) chat else faq)
+        }
+        root.addView(tabs)
+        root.addView(body)
+        select(true)
+    }
+
+    // ---------- админ-панель (вход: долгое нажатие на логотип) ----------
+
+    private fun showAdminEntry() {
+        if (Store.adminCode.isNotEmpty()) showAdminThreads() else showAdminLogin()
+    }
+
+    private fun showAdminLogin() {
         onHome = false
         val col = screen()
         val sid = screenId
-        backRow(col, "Поддержка")
-        col.addView(tv("Опишите вопрос или проблему — сообщение получит поддержка. Мы ответим вам в Telegram.", 14f, MUTE))
-
-        val contact = input("Ваш Telegram, без @", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
-        contact.setText(Store.lastUser)
-        val msg = input(
-            "Сообщение",
-            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-        ).apply {
-            minLines = 5
-            gravity = Gravity.TOP or Gravity.START
-            filters = arrayOf(InputFilter.LengthFilter(1000))
-        }
-        col.addView(contact)
-        col.addView(msg)
-        col.addView(tv("Вместе с сообщением отправляются ваш ник, номер последнего заказа и версия приложения.", 12f, MUTE))
-
-        val info = tv("", 14f, MUTE)
-        val sendBtn = btn("Отправить", true) {
-            if (supportBusy) return@btn
-            val nick = contact.text.toString().trim().removePrefix("@")
-            val text = msg.text.toString().trim()
-            if (nick.length < 4) { toast("Укажите ваш Telegram, чтобы мы могли ответить"); return@btn }
-            if (text.length < 5) { toast("Напишите сообщение"); return@btn }
-            val wait = 30_000L - (System.currentTimeMillis() - lastSupportAt)
-            if (wait > 0) { toast("Подождите ${(wait + 999) / 1000} сек. перед следующим сообщением"); return@btn }
-
-            supportBusy = true
-            info.text = "Отправляем…"
-            val lastOrder = Store.orders().firstOrNull()?.optString("order_number").orEmpty()
-            val full = buildString {
-                append("Сообщение из приложения PharmShop\n")
-                append("От: @").append(nick).append('\n')
-                if (lastOrder.isNotEmpty()) append("Последний заказ: ").append(lastOrder).append('\n')
-                append("Версия: ").append(BuildConfig.VERSION_NAME).append("\n\n")
-                append(text)
-            }
+        backRow(col, "Админ-панель")
+        col.addView(tv("Введите код доступа.", 14f, MUTE))
+        val code = input("Код", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        val info = tv("", 13f, RED)
+        var working = false
+        col.addView(code)
+        col.addView(btn("Войти", true) {
+            if (working) return@btn
+            val c = code.text.toString().trim()
+            if (c.isEmpty()) return@btn
+            working = true
+            info.text = ""
             io.execute {
                 try {
-                    Api.sendSupport(full)
-                    Store.lastUser = nick
-                    lastSupportAt = System.currentTimeMillis()
-                    ui {
-                        supportBusy = false
-                        if (sid == screenId) {
-                            msg.setText("")
-                            info.text = "Сообщение отправлено. Ответим вам в Telegram: @$nick"
-                        }
-                        toast("Сообщение отправлено")
-                    }
+                    ChatApi.adminThreads(c)
+                    Store.adminCode = c
+                    ui { working = false; if (sid == screenId) showAdminThreads() }
                 } catch (e: Exception) {
-                    val m = when (e) {
-                        is IllegalStateException -> "Поддержка в приложении пока не настроена. Напишите в бота @pharmaishop_bot"
-                        is java.io.IOException -> "Нет связи. Проверьте интернет и попробуйте ещё раз"
-                        else -> e.message ?: "Не удалось отправить"
-                    }
-                    ui { supportBusy = false; if (sid == screenId) info.text = m }
+                    ui { working = false; if (sid == screenId) info.text = errText(e) }
                 }
             }
-        }
-        sendBtn.gravity = Gravity.CENTER
-        col.addView(sendBtn)
+        })
         col.addView(info)
-        col.addView(btn("Открыть бота  @pharmaishop_bot") { openUrl(BOT_URL) })
-        riseIn(col)
+    }
+
+    private fun showAdminThreads() {
+        onHome = false
+        val col = screen()
+        val sid = screenId
+        backRow(col, "Чаты поддержки")
+        val status = tv("Загружаем…", 13f, MUTE)
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(status)
+        col.addView(list)
+        col.addView(btn("Выйти из админ-панели") {
+            Store.adminCode = ""
+            navBack = true
+            showHome()
+        })
+        val timeFmt = SimpleDateFormat("d MMM, HH:mm", Locale.getDefault())
+
+        fun render(arr: JSONArray) {
+            list.removeAllViews()
+            status.text = if (arr.length() == 0) "Пока нет обращений" else ""
+            for (i in 0 until arr.length()) {
+                val t = arr.getJSONObject(i)
+                val unread = t.optInt("unread")
+                val name = t.optString("nick").let { if (it.isEmpty()) "Гость" else "@$it" }
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = ripple(CARD, 18, if (unread > 0) BLUE else LINE)
+                    setPadding(dp(16), dp(14), dp(16), dp(14))
+                    layoutParams = lp(10)
+                    isClickable = true
+                    setOnClickListener { showAdminChat(t) }
+                    pressable(this)
+                }
+                val top = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                top.addView(txt(name, 16f, TEXT, true).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                })
+                if (unread > 0) {
+                    top.addView(txt("$unread", 12f, Color.BLACK, true).apply {
+                        background = shape(BLUE, 10)
+                        setPadding(dp(8), dp(2), dp(8), dp(2))
+                    })
+                }
+                card.addView(top)
+                card.addView(txt(t.optString("last_text").ifEmpty { "…" }, 14f, MUTE).apply {
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                })
+                val order = t.optString("last_order")
+                val meta = timeFmt.format(java.util.Date(t.optLong("last_ts"))) +
+                    (if (order.isNotEmpty()) "  •  заказ $order" else "")
+                card.addView(txt(meta, 11f, MUTE))
+                list.addView(card)
+            }
+        }
+
+        fun load() {
+            if (sid != screenId) return
+            io.execute {
+                try {
+                    val arr = ChatApi.adminThreads(Store.adminCode)
+                    ui { if (sid == screenId) render(arr) }
+                } catch (e: ChatAuthException) {
+                    Store.adminCode = ""
+                    ui { if (sid == screenId) showAdminLogin() }
+                    return@execute
+                } catch (e: Exception) {
+                    ui { if (sid == screenId) status.text = errText(e) }
+                }
+                main.postDelayed({ load() }, 8000L)
+            }
+        }
+        load()
+    }
+
+    private fun showAdminChat(t: JSONObject) {
+        onHome = false
+        val root = chatScreen()
+        val sid = screenId
+        backAction = { showAdminThreads() }
+        val device = t.optString("device")
+        val title = t.optString("nick").let { if (it.isEmpty()) "Гость" else "@$it" }
+        backRow(root, title) { showAdminThreads() }
+        val order = t.optString("last_order")
+        if (order.isNotEmpty()) root.addView(tv("Последний заказ: $order", 12f, MUTE))
+        root.addView(chatPane(
+            sid, "admin", "Сообщений пока нет.",
+            { after -> ChatApi.adminMessages(Store.adminCode, device, after) },
+            { text -> ChatApi.adminReply(Store.adminCode, device, text) }
+        ))
     }
 
     // ---------- покупка звёзд ----------
@@ -1255,7 +1492,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         body.addView(tv("История хранится только на этом устройстве: заказы с сайта и из бота здесь не видны.", 12f, MUTE))
-        body.addView(btn("Поддержка в боте  @pharmaishop_bot") { openUrl(BOT_URL) })
         if (orders.isNotEmpty()) {
             body.addView(btn("Очистить историю") {
                 AlertDialog.Builder(this)

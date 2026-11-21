@@ -108,26 +108,6 @@ object Api {
         throw last ?: Exception("Не удалось получить статус")
     }
 
-    /** Сообщение в поддержку: уходит в Telegram-чат админа через бота (токен задаётся при сборке). */
-    fun sendSupport(text: String) {
-        val token = BuildConfig.SUPPORT_BOT_TOKEN
-        val chat = BuildConfig.SUPPORT_CHAT_ID
-        if (token.isEmpty() || chat.isEmpty()) throw IllegalStateException("not_configured")
-        val c = URL("https://api.telegram.org/bot$token/sendMessage").openConnection() as HttpURLConnection
-        try {
-            c.requestMethod = "POST"
-            c.connectTimeout = 15000
-            c.readTimeout = 20000
-            c.doOutput = true
-            c.setRequestProperty("Content-Type", "application/json")
-            val body = JSONObject().put("chat_id", chat).put("text", text.take(4000))
-            c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-            val code = c.responseCode
-            if (code !in 200..299) throw Exception("Сервер не принял сообщение (код $code)")
-        } finally {
-            c.disconnect()
-        }
-    }
 
     fun quote(quantity: Int, methodId: String, product: String = ""): JSONObject {
         val body = JSONObject().put("quantity", quantity).put("method_id", methodId)

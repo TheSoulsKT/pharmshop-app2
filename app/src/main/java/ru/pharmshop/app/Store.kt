@@ -17,6 +17,33 @@ object Store {
         get() = sp.getString("last_user", "") ?: ""
         set(v) { sp.edit().putString("last_user", v).apply() }
 
+    /** Код администратора (хранится только на этом устройстве). */
+    var adminCode: String
+        get() = sp.getString("admin_code", "") ?: ""
+        set(v) { sp.edit().putString("admin_code", v).apply() }
+
+    /** Анонимный идентификатор устройства для чата поддержки. */
+    val deviceId: String
+        get() {
+            val cur = sp.getString("dev_id", "") ?: ""
+            if (cur.isNotEmpty()) return cur
+            val n = java.util.UUID.randomUUID().toString()
+            sp.edit().putString("dev_id", n).apply()
+            return n
+        }
+
+    /** Секрет устройства: по нему сервер понимает, что это ваш чат, а не чужой. */
+    val deviceSecret: String
+        get() {
+            val cur = sp.getString("dev_secret", "") ?: ""
+            if (cur.isNotEmpty()) return cur
+            val b = ByteArray(24)
+            java.security.SecureRandom().nextBytes(b)
+            val n = b.joinToString("") { "%02x".format(it) }
+            sp.edit().putString("dev_secret", n).apply()
+            return n
+        }
+
     /** Имена способов оплаты {id: имя} — как они показаны в форме (для подписи заказов). */
     var methodNames: String
         get() = sp.getString("method_names", "{}") ?: "{}"
