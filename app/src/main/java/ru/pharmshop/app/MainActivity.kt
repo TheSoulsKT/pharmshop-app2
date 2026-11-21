@@ -324,7 +324,7 @@ class MainActivity : AppCompatActivity() {
         val (starsCard, starsSub) = menuWide(Ic.STAR, "Звёзды", rateText()) { showStars() }
         col.addView(starsCard)
         col.addView(menuWide(Ic.GIFT, "Обычные подарки", "Покупка за рубли") { soon() }.first)
-        col.addView(menuWide(Ic.CROWN, "Купить Premium", "Покупка подписки") { soon() }.first)
+        col.addView(menuWide(Ic.CROWN, "Купить Premium", "Покупка подписки") { showPremium() }.first)
         col.addView(gridRow(
             tile(Ic.BOX, "Купить NFT", "") { soon() },
             tile(Ic.KEY, "Аренда NFT", "") { soon() }
@@ -459,26 +459,7 @@ class MainActivity : AppCompatActivity() {
 
         val methods = c.optJSONArray("methods")
         if (methods != null) {
-            // 1) меняем первый и второй способы оплаты местами (в списке с сайта),
-            //    а ИМЕНА оставляем по позициям: первая кнопка = «СБП 1», вторая = «СБП 2»
-            val all = (0 until methods.length()).toMutableList()
-            if (all.size >= 2) { val t = all[0]; all[0] = all[1]; all[1] = t }
-            // 2) убираем способы оплаты через сеть TON (прямой перевод TON и USDT в сети TON)
-            val tonRe = Regex("(^|[^a-z])ton([^a-z]|$)|тон", RegexOption.IGNORE_CASE)
-            val shown = ArrayList<Pair<Int, String>>()   // (индекс способа, отображаемое имя)
-            for (pos in all.indices) {
-                val m = methods.getJSONObject(all[pos])
-                if (tonRe.containsMatchIn(m.optString("name")) || tonRe.containsMatchIn(m.optString("id"))) continue
-                shown.add(Pair(all[pos], methods.getJSONObject(pos).getString("name")))
-            }
-            // запоминаем имена, чтобы старые заказы подписывались так же
-            val names = JSONObject()
-            for ((i, nm) in shown) names.put(methods.getJSONObject(i).getString("id"), nm)
-            Store.methodNames = names.toString()
-            for ((i, displayName) in shown) {
-                val m = methods.getJSONObject(i)
-                val mid = m.getString("id")
-                val mname = displayName
+            for ((mid, mname) in shownMethods(c)) {
                 val dotView = View(this).apply {
                     layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { rightMargin = dp(14) }
                 }
@@ -501,7 +482,8 @@ class MainActivity : AppCompatActivity() {
                 rows.add(MethodRow(mid, mname, row, dotView))
             }
         }
-        if (rows.isNotEmpty() && rows.none { it.id == method }) method = rows[0].id
+        // по умолчанию выбран первый способ — «СБП 1»
+        if (rows.isNotEmpty()) method = rows[0].id
         methodName = rows.firstOrNull { it.id == method }?.name ?: ""
         paint()
 
@@ -522,6 +504,151 @@ class MainActivity : AppCompatActivity() {
         col.addView(btn("Мои заказы") { showProfile() })
     }
 
+    /**
+     * Способы оплаты для формы: первый и второй меняются местами, подписи («СБП #1», «СБП #2»)
+     * остаются по позициям, способы через сеть TON скрыты. Возвращает (id, подпись).
+     */
+    private fun shownMethods(c: JSONObject): List<Pair<String, String>> {
+        val methods = c.optJSONArray("methods") ?: return emptyList()
+        val all = (0 until methods.length()).toMutableList()
+        if (all.size >= 2) { val t = all[0]; all[0] = all[1]; all[1] = t }
+        val tonRe = Regex("(^|[^a-z])ton([^a-z]|$)|тон", RegexOption.IGNORE_CASE)
+        val out = ArrayList<Pair<String, String>>()
+        for (pos in all.indices) {
+            val m = methods.getJSONObject(all[pos])
+            if (tonRe.containsMatchIn(m.optString("name")) || tonRe.containsMatchIn(m.optString("id"))) continue
+            out.add(Pair(m.getString("id"), methods.getJSONObject(pos).getString("name")))
+        }
+        // запоминаем подписи, чтобы заказы в профиле подписывались так же
+        val names = JSONObject()
+        for ((id, nm) in out) names.put(id, nm)
+        Store.methodNames = names.toString()
+        return out
+    }
+
+    /** Список с радио-точками: один выбранный пункт. */
+    private fun selectList(
+        box: LinearLayout, items: List<Pair<String, String>>, initial: String,
+        onSelect: (String, String) -> Unit
+    ) {
+        val rows = ArrayList<MethodRow>()
+        var cur = initial
+        fun paint() {
+            for (r in rows) {
+                val sel = r.id == cur
+                r.row.background = shape(if (sel) Color.parseColor("#1A2A42") else CARD, 14, if (sel) BLUE else LINE)
+                val dot = GradientDrawable()
+                dot.setShape(GradientDrawable.OVAL)
+                dot.setColor(if (sel) BLUE else Color.TRANSPARENT)
+                dot.setStroke(dp(2), if (sel) BLUE else MUTE)
+                r.dot.background = dot
+            }
+        }
+        for ((id, name) in items) {
+            val dotView = View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { rightMargin = dp(14) }
+            }
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(16), dp(14), dp(16), dp(14))
+                layoutParams = lp(8)
+                isClickable = true
+                setOnClickListener { cur = id; paint(); onSelect(id, name) }
+            }
+            row.addView(dotView)
+            row.addView(txt(name, 16f, TEXT))
+            box.addView(row)
+            rows.add(MethodRow(id, name, row, dotView))
+        }
+        paint()
+    }
+
+    // ---------- покупка Premium ----------
+    private fun showPremium() {
+        onHome = false
+        val col = screen()
+        val sid = screenId
+        backRow(col, "Купить Premium")
+        val status = tv("Загружаем данные…", 14f, MUTE)
+        col.addView(status)
+        io.execute {
+            try {
+                val c = cfg ?: Api.config().also { cfg = it }
+                ui { if (sid == screenId) { status.visibility = View.GONE; buildPremiumForm(col, c) } }
+            } catch (e: Exception) {
+                ui { if (sid == screenId) status.text = "Не удалось загрузить данные: ${e.message}" }
+            }
+        }
+    }
+
+    private fun buildPremiumForm(col: LinearLayout, c: JSONObject) {
+        // доступные сроки: (месяцев, цена от)
+        val plans = ArrayList<Pair<Int, String>>()
+        val arr = c.optJSONArray("premium")
+        if (arr != null) for (i in 0 until arr.length()) {
+            val p = arr.optJSONObject(i) ?: continue
+            if (p.optBoolean("available", true)) plans.add(Pair(p.optInt("months"), p.optString("total")))
+        }
+        val methods = shownMethods(c)
+        if (plans.isEmpty() || methods.isEmpty()) {
+            col.addView(tv("Premium сейчас недоступен", 14f, MUTE))
+            return
+        }
+        c.optString("hcaptcha_sitekey").takeIf { it.isNotEmpty() }?.let { captcha(it) }
+
+        col.addView(tv("Подписка Telegram Premium для указанного аккаунта", 14f, MUTE))
+        val user = input("Имя пользователя в Telegram, без @", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
+        user.setText(Store.lastUser)
+        col.addView(user)
+
+        var months = plans[0].first
+        var method = methods[0].first
+        var methodName = methods[0].second
+        val total = tv("К оплате: —", 18f, TEXT, true)
+        var token = 0
+
+        fun requestQuote() {
+            token++
+            val my = token
+            total.text = "К оплате: …"
+            val m = months
+            val mt = method
+            io.execute {
+                try {
+                    val r = Api.quote(m, mt, "premium")
+                    ui { if (my == token) total.text = "К оплате: ${r.optString("total")} ${r.optString("currency", "RUB")}" }
+                } catch (e: Exception) {
+                    ui { if (my == token) total.text = "Не удалось рассчитать цену" }
+                }
+            }
+        }
+
+        col.addView(tv("Срок подписки", 15f, TEXT, true))
+        val planBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(10) }
+        col.addView(planBox)
+        selectList(
+            planBox, plans.map { Pair(it.first.toString(), "${it.first} мес. · от ${it.second} ₽") },
+            months.toString()
+        ) { id, _ -> months = id.toInt(); requestQuote() }
+
+        col.addView(tv("Способ оплаты", 15f, TEXT, true))
+        val methodBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(10) }
+        col.addView(methodBox)
+        selectList(methodBox, methods, method) { id, name -> method = id; methodName = name; requestQuote() }
+
+        val info = tv("", 14f, MUTE)
+        val payBtn = btn("Оплатить", true) {
+            pay(user.text.toString(), months, method, methodName, c, info, "premium")
+        }
+        payBtn.gravity = Gravity.CENTER
+        col.addView(total)
+        col.addView(payBtn)
+        col.addView(info)
+        col.addView(btn("Мои заказы") { showProfile() })
+        requestQuote()
+    }
+
     /** Готовим hCaptcha заранее, чтобы по кнопке «Оплатить» проверка открывалась сразу. */
     private fun captcha(siteKey: String): HCaptcha {
         hc?.let { return it }
@@ -534,13 +661,13 @@ class MainActivity : AppCompatActivity() {
         return h
     }
 
-    private fun pay(rawUser: String, q: Int, method: String, methodName: String, c: JSONObject, info: TextView) {
+    private fun pay(rawUser: String, q: Int, method: String, methodName: String, c: JSONObject, info: TextView, product: String = "") {
         if (busy) return
         val username = rawUser.trim().removePrefix("@")
         val min = c.optInt("min", 50)
         val max = c.optInt("max", 10000)
         if (username.length < 4) { toast("Введите имя пользователя"); return }
-        if (q < min || q > max) { toast("Количество: от $min до $max"); return }
+        if (product.isEmpty() && (q < min || q > max)) { toast("Количество: от $min до $max"); return }
         val siteKey = c.optString("hcaptcha_sitekey")
         if (siteKey.isEmpty()) { toast("Нет ключа проверки"); return }
 
@@ -551,7 +678,7 @@ class MainActivity : AppCompatActivity() {
             info.text = "Создаём заказ…"
             io.execute {
                 try {
-                    val o = Api.createOrder(username, q, method, token)
+                    val o = Api.createOrder(username, q, method, token, product)
                     o.put("method_name", methodName)
                     Store.add(o)
                     Store.lastUser = username
@@ -740,7 +867,7 @@ class MainActivity : AppCompatActivity() {
         // статистика
         val paid = orders.filter { val k = statusKind(effStatus(it)); k == 1 || k == 2 }
         val spent = paid.sumOf { it.optString("total").toDoubleOrNull() ?: 0.0 }
-        val stars = paid.sumOf { it.optInt("quantity") }
+        val stars = paid.filter { it.optString("product") != "premium" }.sumOf { it.optInt("quantity") }
         val t1 = statTile(orders.size.toString(), "Заказов")
         val t2 = statTile(String.format(Locale.US, "%.2f ₽", spent), "Оплачено")
         val t3 = statTile(stars.toString(), "Звёзд куплено")
@@ -851,7 +978,12 @@ class MainActivity : AppCompatActivity() {
         val method = savedNames.optString(o.optString("method_id"))
             .ifEmpty { o.optString("method_name") }
             .ifEmpty { o.optString("method_id") }
-        val line1 = tv("${o.optInt("quantity")} ★  →  @${o.optString("username")}", 15f, TEXT)
+        val isPremium = o.optString("product") == "premium"
+        val line1 = tv(
+            if (isPremium) "Premium · ${o.optInt("months", o.optInt("quantity"))} мес.  →  @${o.optString("username")}"
+            else "${o.optInt("quantity")} ★  →  @${o.optString("username")}",
+            15f, TEXT
+        )
         val line2 = tv(
             listOf(money(o.optString("total"), o.optString("currency")), method, fmtDate(o.optString("created_at")))
                 .filter { it.isNotBlank() }.joinToString("  •  "),

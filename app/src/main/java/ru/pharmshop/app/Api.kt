@@ -108,14 +108,18 @@ object Api {
         throw last ?: Exception("Не удалось получить статус")
     }
 
-    fun quote(quantity: Int, methodId: String): JSONObject =
-        call("POST", "/api/storefront/quote", JSONObject().put("quantity", quantity).put("method_id", methodId))
+    fun quote(quantity: Int, methodId: String, product: String = ""): JSONObject {
+        val body = JSONObject().put("quantity", quantity).put("method_id", methodId)
+        if (product.isNotEmpty()) body.put("product", product)
+        return call("POST", "/api/storefront/quote", body)
+    }
 
-    fun createOrder(username: String, quantity: Int, methodId: String, captchaToken: String): JSONObject {
+    fun createOrder(username: String, quantity: Int, methodId: String, captchaToken: String, product: String = ""): JSONObject {
         // один и тот же ключ при повторе — сервер не создаст дубль заказа
         val key = UUID.randomUUID().toString()
         val body = JSONObject().put("username", username).put("quantity", quantity)
             .put("method_id", methodId).put("captcha_token", captchaToken)
+        if (product.isNotEmpty()) body.put("product", product)   // "premium"; для звёзд поле не шлём
         var last: java.io.IOException? = null
         for (attempt in 0 until 2) {
             try {
