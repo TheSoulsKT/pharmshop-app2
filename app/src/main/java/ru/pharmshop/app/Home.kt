@@ -79,15 +79,8 @@ internal fun MainActivity.rateText(): String {
     return if (r.isNotEmpty()) "$r ₽/шт" else "Покупка за рубли"
 }
 
-/** Новогоднее оформление включено с 15 ноября по 20 января. */
-internal fun MainActivity.isNewYear(): Boolean {
-    val c = java.util.Calendar.getInstance()
-    val m = c.get(java.util.Calendar.MONTH)
-    val d = c.get(java.util.Calendar.DAY_OF_MONTH)
-    return m == java.util.Calendar.DECEMBER ||
-        (m == java.util.Calendar.JANUARY && d <= 20) ||
-        (m == java.util.Calendar.NOVEMBER && d >= 15)
-}
+/** Новогоднее оформление «по умолчанию» включено с 15 ноября по 20 января (если не выбрана другая тема). */
+internal fun MainActivity.isNewYear(): Boolean = Theme.newYearWindow()
 
 /**
  * Раздел меню с учётом настроек из админ-панели («Разделы»): включён/выключен, свои надписи и ссылка.
@@ -171,14 +164,15 @@ internal fun MainActivity.showHome() {
         addView(profileBtn)
     }
     col.addView(head)
-    if (isNewYear()) {
+    // плашка выбранной темы (у «Стандарта» — новогодняя в сезон)
+    Theme.banner()?.let { bn ->
         col.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = gradient(Color.parseColor("#C62F3E"), Color.parseColor("#1F7A4D"), 18)
+            background = gradient(bn.c1, bn.c2, 18)
             setPadding(dp(18), dp(14), dp(18), dp(14))
             layoutParams = lp(16)
-            addView(txt("🎄 С наступающим Новым годом!", 17f, Color.WHITE, true))
-            addView(txt("Пусть в новом году будет больше звёзд ⭐", 13f, Color.parseColor("#E8F5EC")))
+            addView(txt(bn.title, 17f, bn.on, true))
+            addView(txt(bn.sub, 13f, bn.onSub))
         })
     }
     // объявление из админ-панели
@@ -278,10 +272,10 @@ internal fun MainActivity.showHome() {
     floatForever(logo)
     riseIn(col)
 
-    // новогодний снегопад (снимается сам при переходе на другой экран)
-    if (isNewYear()) {
+    // «Стандарт»: в новогодний сезон — снегопад, как раньше (у остальных тем фон добавляет screen())
+    if (Theme.skin == Skin.CLASSIC && isNewYear() && FxView.allowed(this)) {
         findViewById<ViewGroup>(android.R.id.content).addView(
-            SnowView(this),
+            FxView(this, Fx.SNOW),
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
     }

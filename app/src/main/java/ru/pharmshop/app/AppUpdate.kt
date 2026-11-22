@@ -139,3 +139,22 @@ internal fun MainActivity.showForceUpdate(min: Int) {
     })
     col.addView(status)
 }
+
+/** Установка обновления, которое уже скачано в фоне по Wi-Fi (оно лежит в кэше, контрольная сумма проверена при скачивании). */
+internal fun MainActivity.installPendingUpdate() {
+    val apk = java.io.File(cacheDir, "updates/update.apk")
+    if (!apk.exists() || Store.pendingUpdateCode <= BuildConfig.VERSION_CODE) {
+        toast("Скачанного обновления нет")
+        return
+    }
+    if (!Updater.canInstall(this)) {
+        AlertDialog.Builder(this)
+            .setTitle("Нужно разрешение")
+            .setMessage("Разрешите приложению устанавливать обновления, затем вернитесь и нажмите «Установить» ещё раз.")
+            .setPositiveButton("Открыть настройки") { _, _ -> Updater.openInstallPermissionSettings(this) }
+            .setNegativeButton("Отмена", null)
+            .show()
+        return
+    }
+    try { Updater.install(this, apk) } catch (e: Exception) { toast("Не удалось запустить установку") }
+}

@@ -14,12 +14,13 @@ import org.json.JSONObject
 import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
-    internal val BG get() = if (Theme.light) Theme.L_BG else Theme.D_BG
-    internal val CARD get() = if (Theme.light) Theme.L_CARD else Theme.D_CARD
-    internal val LINE get() = if (Theme.light) Theme.L_LINE else Theme.D_LINE
-    internal val TEXT get() = if (Theme.light) Theme.L_TEXT else Theme.D_TEXT
-    internal val MUTE get() = if (Theme.light) Theme.L_MUTE else Theme.D_MUTE
-    internal val BLUE = Color.parseColor("#3B8EF3")
+    // цвета берутся из выбранного оформления (Настройки → Тема) и режима (тёмная/светлая)
+    internal val BG get() = Theme.bg
+    internal val CARD get() = Theme.card
+    internal val LINE get() = Theme.line
+    internal val TEXT get() = Theme.text
+    internal val MUTE get() = Theme.mute
+    internal val BLUE get() = Theme.accent   // главный акцентный цвет темы (название историческое)
     internal val GREEN get() = if (Theme.light) Theme.L_GREEN else Color.parseColor("#34C759")
     internal val AMBER get() = if (Theme.light) Theme.L_AMBER else Color.parseColor("#E0A030")
     internal val RED get() = if (Theme.light) Theme.L_RED else Color.parseColor("#FF5A52")
@@ -64,25 +65,29 @@ class MainActivity : AppCompatActivity() {
     internal var updateChecked = false
     internal var remoteAt = 0L          // когда последний раз спрашивали удалённые настройки
     internal var forceShown = false     // показан экран обязательного обновления
+    internal var lockView: android.view.View? = null   // экран входа по PIN/отпечатку (поверх всего)
+    internal var bioBusy = false                       // окно отпечатка уже на экране
 
     override fun onCreate(savedInstanceState: Bundle?) {
         Store.init(this)
         Theme.update(this)
         androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(Theme.nightMode())
         super.onCreate(savedInstanceState)
-        window.statusBarColor = BG
-        window.navigationBarColor = BG
-        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = Theme.light
-            isAppearanceLightNavigationBars = Theme.light
-        }
+        applyWindowTheme()
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (lockView != null) { moveTaskToBack(true); return }   // на экране входа «назад» просто сворачивает
                 val ba = backAction
                 if (ba != null) { ba(); return }
                 if (onHome) finish() else { navBack = true; showHome() }
             }
         })
+        // скачанное в фоне обновление уже установлено — убираем файл
+        if (Store.pendingUpdateCode != 0 && Store.pendingUpdateCode <= BuildConfig.VERSION_CODE) {
+            Store.pendingUpdateCode = 0
+            Store.pendingUpdateName = ""
+            java.io.File(cacheDir, "updates").listFiles()?.forEach { it.delete() }
+        }
         // напоминания: разрешение спрашиваем один раз, будильник ставим при каждом запуске
         if (Reminders.shouldAskPermission(this)) {
             Reminders.markAsked(this)
@@ -90,9 +95,24 @@ class MainActivity : AppCompatActivity() {
         }
         Reminders.ensureScheduled(this)
         if (Store.pushEnabled) PollWorker.schedule(this)
+        if (Store.wifiUpdate && Updater.configured) UpdateWorker.schedule(this)
         Push.init(this)
-        if (enforceUpdate()) return
-        if (!openFromIntent(intent)) showHome()
+        if (!enforceUpdate() && !openFromIntent(intent)) {
+            // после смены темы в настройках возвращаемся в настройки, а не на главную
+            if (AppState.reopen == "settings") showSettings() else showHome()
+        }
+        AppState.reopen = null
+        showLockIfNeeded()
+    }
+
+    /** Цвета строки состояния и навигации под текущую тему. */
+    internal fun applyWindowTheme() {
+        window.statusBarColor = BG
+        window.navigationBarColor = BG
+        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = Theme.light
+            isAppearanceLightNavigationBars = Theme.light
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -111,6 +131,7 @@ class MainActivity : AppCompatActivity() {
             "profile" -> { showProfile(); true }
             "support" -> { showSupport(); true }
             "admin" -> { showAdminEntry(); true }
+            "update" -> { showHome(); installPendingUpdate(); true }
             else -> false
         }
     }
@@ -118,10 +139,18 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         AppState.visible = true
+        // вернулись в приложение после паузы — снова просим PIN / отпечаток
+        if (lockEnabled() && AppState.unlocked && AppState.stoppedAt > 0L &&
+            android.os.SystemClock.elapsedRealtime() - AppState.stoppedAt >= Store.lockDelaySec * 1000L
+        ) {
+            AppState.unlocked = false
+            showLock()
+        }
     }
 
     override fun onStop() {
         AppState.visible = false
+        AppState.stoppedAt = android.os.SystemClock.elapsedRealtime()
         super.onStop()
     }
 

@@ -14,6 +14,15 @@ import androidx.core.app.NotificationManagerCompat
 /** Открыто ли приложение на экране. Пока открыто — фоновые уведомления не нужны, всё видно и так. */
 object AppState {
     @Volatile var visible = false
+
+    /** Пройден ли вход по PIN/отпечатку в этом запуске (живёт, пока жив процесс). */
+    @Volatile var unlocked = false
+
+    /** Когда приложение ушло с экрана (elapsedRealtime) — для автоблокировки. */
+    @Volatile var stoppedAt = 0L
+
+    /** Экран, который надо открыть после пересоздания Activity (например, смена темы в настройках). */
+    @Volatile var reopen: String? = null
 }
 
 /** Уведомления о событиях: ответ поддержки, смена статуса заказа, новые чаты (для админа). */
@@ -21,9 +30,11 @@ object Notifier {
     const val CH_SUPPORT = "support"
     const val CH_ORDERS = "orders"
     const val CH_ADMIN = "admin"
+    const val CH_UPDATE = "updates"
 
     private const val ID_SUPPORT = 2001
     private const val ID_ADMIN = 2002
+    private const val ID_UPDATE = 2003
     private const val ID_ORDER_BASE = 3000
 
     fun enabled(c: Context): Boolean = NotificationManagerCompat.from(c).areNotificationsEnabled()
@@ -31,11 +42,12 @@ object Notifier {
     private fun ensureChannels(c: Context) {
         if (Build.VERSION.SDK_INT < 26) return
         val nm = c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        fun ch(id: String, name: String, desc: String) = NotificationChannel(id, name, NotificationManager.IMPORTANCE_HIGH)
-            .apply { description = desc }
+        fun ch(id: String, name: String, desc: String, imp: Int = NotificationManager.IMPORTANCE_HIGH) =
+            NotificationChannel(id, name, imp).apply { description = desc }
         nm.createNotificationChannel(ch(CH_SUPPORT, "Ответы поддержки", "Когда поддержка ответила в чате"))
         nm.createNotificationChannel(ch(CH_ORDERS, "Статусы заказов", "Когда заказ выполнен или отменён"))
         nm.createNotificationChannel(ch(CH_ADMIN, "Новые обращения", "Для администратора: новые сообщения в чатах"))
+        nm.createNotificationChannel(ch(CH_UPDATE, "Обновления приложения", "Новая версия скачана и готова к установке", NotificationManager.IMPORTANCE_DEFAULT))
     }
 
     @SuppressLint("MissingPermission")
@@ -72,6 +84,10 @@ object Notifier {
         val title = if (kind == 2) "Заказ $num выполнен" else "Заказ $num отменён"
         val id = ID_ORDER_BASE + (o.optString("id").hashCode() and 0x3FF)
         post(c, CH_ORDERS, id, title, what, "profile")
+    }
+
+    fun update(c: Context, versionName: String) {
+        post(c, CH_UPDATE, ID_UPDATE, "Обновление готово", "$versionName скачана по Wi-Fi. Нажмите, чтобы установить.", "update")
     }
 
     fun admin(c: Context, chats: Int, nick: String, text: String) {

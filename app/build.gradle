@@ -70,7 +70,8 @@ android {
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
-    implementation 'androidx.work:work-runtime:2.9.1'   // фоновые уведомления (PollWorker)
+    implementation 'androidx.work:work-runtime:2.9.1'   // фоновые уведомления (PollWorker) и обновления по Wi-Fi (UpdateWorker)
+    implementation 'androidx.biometric:biometric:1.1.0'   // вход по отпечатку
     implementation 'com.google.firebase:firebase-messaging:24.1.0'   // мгновенные push (FCM), если есть google-services.json
     implementation 'com.github.hCaptcha.hcaptcha-android-sdk:sdk:5.0.0'
 }

@@ -261,7 +261,18 @@ internal fun MainActivity.screen(): LinearLayout {
         .setInterpolator(DecelerateInterpolator(2f)).start()
     firstScreen = false
     navBack = false
+    addFx()
     return col
+}
+
+/** Анимированный фон выбранного оформления (снег, листья, звёзды…). У «Стандарта» его нет. */
+internal fun MainActivity.addFx() {
+    val kind = Theme.skin.fx
+    if (kind == Fx.NONE || !FxView.allowed(this)) return
+    findViewById<ViewGroup>(android.R.id.content).addView(
+        FxView(this, kind),
+        android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+    )
 }
 
 internal fun MainActivity.backRow(col: LinearLayout, title: String, onBack: () -> Unit = { navBack = true; showHome() }) {

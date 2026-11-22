@@ -66,6 +66,7 @@ object Reminders {
     // ---------- планирование ----------
     /** Вызывается при запуске приложения и после перезагрузки телефона. */
     fun ensureScheduled(c: Context) {
+        if (!enabled(c)) { cancel(c); return }
         val at = prefs(c).getLong("next_at", 0L)
         if (at > System.currentTimeMillis()) arm(c, at) else scheduleNext(c)
     }
@@ -77,12 +78,27 @@ object Reminders {
         arm(c, at)
     }
 
+    /** Пользователь может отключить напоминания в настройках. */
+    fun enabled(c: Context): Boolean = prefs(c).getBoolean("enabled", true)
+
+    fun setEnabled(c: Context, on: Boolean) {
+        prefs(c).edit().putBoolean("enabled", on).apply()
+        if (on) ensureScheduled(c) else cancel(c)
+    }
+
+    fun cancel(c: Context) {
+        val am = c.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        am.cancel(alarmIntent(c))
+    }
+
+    private fun alarmIntent(c: Context): PendingIntent = PendingIntent.getBroadcast(
+        c, ALARM_CODE, Intent(c, ReminderReceiver::class.java),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    )
+
     private fun arm(c: Context, at: Long) {
         val am = c.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val pi = PendingIntent.getBroadcast(
-            c, ALARM_CODE, Intent(c, ReminderReceiver::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
+        val pi = alarmIntent(c)
         // неточный будильник: разрешений не требует, может сработать чуть позже, но не раньше
         am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
     }
@@ -102,6 +118,7 @@ object Reminders {
 
     // ---------- показ ----------
     fun fire(c: Context) {
+        if (!enabled(c)) return
         val now = System.currentTimeMillis()
         val p = prefs(c)
         // страховка: даже при двойном срабатывании будильника перерыв остаётся ≥ 1 часа

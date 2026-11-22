@@ -55,6 +55,22 @@ internal fun MainActivity.showProfile() {
     val col = screen()
     val sid = screenId
     backRow(col, "Профиль")
+    // кнопка настроек — справа сверху (вставляем в только что созданную строку-шапку)
+    (col.getChildAt(col.childCount - 1) as LinearLayout).apply {
+        addView(android.view.View(this@showProfile).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) })
+        addView(LinearLayout(this@showProfile).apply {
+            gravity = Gravity.CENTER
+            background = ripple(CARD, 22, LINE)
+            isClickable = true
+            contentDescription = "Настройки"
+            setOnClickListener { showSettings() }
+            pressable(this)
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            addView(IconView(this@showProfile, Ic.GEAR, TEXT).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(22), dp(22))
+            })
+        })
+    }
     val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     col.addView(body)
     renderProfile(body, sid, true)
@@ -128,42 +144,6 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
         isHorizontalScrollBarEnabled = false
         layoutParams = lp(16)
         addView(tgActions)
-    })
-
-    // фоновые уведомления
-    fun pushLabel() = if (Store.pushEnabled) "🔔 Уведомления: включены" else "🔕 Уведомления: выключены"
-    val pushChip = chip(pushLabel(), false) { }
-    pushChip.setOnClickListener {
-        val on = !Store.pushEnabled
-        Store.pushEnabled = on
-        if (on) {
-            PollWorker.schedule(this)
-            if (android.os.Build.VERSION.SDK_INT >= 33 && !Notifier.enabled(this)) {
-                notifPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-            }
-        } else PollWorker.cancel(this)
-        pushChip.text = pushLabel()
-        toast(if (on) "Сообщим об ответе поддержки и статусе заказов" else "Уведомления выключены")
-    }
-    // тема оформления: тёмная → светлая → как в системе
-    fun themeLabel() = when (Store.theme) { 2 -> "☀️ Тема: светлая"; 0 -> "🌓 Тема: как в системе"; else -> "🌙 Тема: тёмная" }
-    val themeChip = chip(themeLabel(), false) { }
-    themeChip.setOnClickListener {
-        Store.theme = when (Store.theme) { 1 -> 2; 2 -> 0; else -> 1 }
-        themeChip.text = themeLabel()
-        Theme.update(this)
-        androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(Theme.nightMode())
-        recreate()
-    }
-    val settingsRow = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        addView(pushChip)
-        addView(themeChip)
-    }
-    body.addView(HorizontalScrollView(this).apply {
-        isHorizontalScrollBarEnabled = false
-        layoutParams = lp(16)
-        addView(settingsRow)   // у HorizontalScrollView может быть только один дочерний элемент
     })
 
     // статистика
@@ -269,12 +249,15 @@ internal fun MainActivity.orderCard(o: JSONObject, body: LinearLayout, sid: Int)
     val numView = txt("Заказ $num", 16f, TEXT, true).apply {
         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
     }
+    // стиль шагов заказа (Настройки → Заказы): значок со статусом или полоса «Создан → Оплачен → Выполнен»
+    val kind = statusKind(status)
+    val asBar = Store.stepsStyle == 1 && kind in 0..3
     val top = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         layoutParams = lp(8)
         addView(numView)
-        addView(badge)
+        if (!asBar) addView(badge)
     }
 
     val savedNames = try { JSONObject(Store.methodNames) } catch (e: Exception) { JSONObject() }
@@ -324,6 +307,7 @@ internal fun MainActivity.orderCard(o: JSONObject, body: LinearLayout, sid: Int)
     card.addView(top)
     card.addView(line1)
     card.addView(line2)
+    if (asBar) card.addView(stepsView(kind).apply { layoutParams = lp(4).apply { topMargin = dp(6) } })
     card.addView(HorizontalScrollView(this).apply {
         isHorizontalScrollBarEnabled = false
         addView(actions)
