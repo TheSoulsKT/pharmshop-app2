@@ -242,19 +242,28 @@ internal fun MainActivity.input(hintText: String, type: Int): EditText = EditTex
     layoutParams = lp()
 }
 
-/** Вкладки нижней панели: 0 — Купить (главная), 1 — Поддержка, 2 — Профиль, 3 — Настройки. */
+/** Вкладки нижней панели: 0 — ТГ (главная), 1 — Поддержка, 2 — Профиль, 3 — Настройки, 4 — VPN. */
 internal fun MainActivity.openTab(tab: Int) {
     when (tab) {
         0 -> showHome()
         1 -> showSupport()
         2 -> showProfile()
         3 -> showSettings()
+        4 -> {
+            // раздел можно выключить удалённо (админ-панель → «Разделы»)
+            val sv = sec("vpn", "VPN", "", true, "Временно недоступно")
+            if (sv.enabled) showVpn() else toast(sv.message.ifEmpty { "Скоро будет доступно" })
+        }
     }
 }
 
+/** Порядок вкладок слева направо (номера вкладок остаются прежними, VPN — пятая по номеру, вторая по месту). */
+private val TAB_ORDER = listOf(0, 4, 1, 2, 3)
+
 internal fun MainActivity.bottomNav(active: Int): LinearLayout {
     val items = listOf(
-        Triple(Ic.BAG, "Купить", 0),
+        Triple(Ic.BAG, "ТГ", 0),
+        Triple(Ic.KEY, "VPN", 4),
         Triple(Ic.CHAT, "Поддержка", 1),
         Triple(Ic.USER, "Профиль", 2),
         Triple(Ic.GEAR, "Настройки", 3)
@@ -275,7 +284,7 @@ internal fun MainActivity.bottomNav(active: Int): LinearLayout {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             setPadding(0, dp(4), 0, dp(4))
             setOnClickListener {
-                if (!on) { navBack = idx < active; openTab(idx) }
+                if (!on) { navBack = TAB_ORDER.indexOf(idx) < TAB_ORDER.indexOf(active); openTab(idx) }
             }
             pressable(this)
             addView(IconView(this@bottomNav, icon, color).apply {

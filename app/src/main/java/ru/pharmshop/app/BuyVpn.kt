@@ -14,7 +14,7 @@ import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
 
-// Раздел «VPN»: вход через Telegram, покупка подписки и выдача ключей.
+// Раздел «VPN»: вход через Telegram или по почте, покупка подписки и выдача ключей.
 // Устроен как экраны звёзд и Premium: форма, панель оплаты, оплата на странице платёжки.
 // Сайт: pvpn.vitrinka.net (запросы — в VpnApi). Подписки всегда берём с сервера, в «Мои заказы» они не попадают.
 
@@ -48,6 +48,9 @@ private fun vpnDate(s: String): String {
     return if (d.size == 3) "${d[2]}.${d[1]}.${d[0]}" else s
 }
 
+/** Название тарифа для экрана: с большой буквы, как на сайте. */
+private fun vpnPlanName(name: String): String = name.take(1).uppercase() + name.drop(1)
+
 private fun vpnProviderName(id: String): String = when (id) {
     "platega" -> "СБП"
     "aurapay" -> "СБП 2"
@@ -62,9 +65,9 @@ private fun vpnProviderName(id: String): String = when (id) {
 
 internal fun MainActivity.showVpn() {
     onHome = false
-    val col = screen(bottomBar = true)
+    val col = screen(4, bottomBar = true)
     val sid = screenId
-    backRow(col, "VPN")
+    titleRow(col, "VPN")
     if (!VpnApi.loggedIn()) {
         buildVpnLogin(col, sid)
         riseIn(col)
@@ -132,6 +135,7 @@ private fun MainActivity.buildVpnLogin(col: LinearLayout, sid: Int) {
     })
     card.addView(info)
     col.addView(card)
+    buildVpnEmailAuth(col, sid)   // вход, регистрация и сброс пароля по почте (VpnAuthUi.kt)
 }
 
 private fun MainActivity.pollVpnLogin(sid: Int, pollId: String, until: Long, info: TextView) {
@@ -182,12 +186,20 @@ private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArr
         })
     }
 
+    val methods = ArrayList<Pair<String, String>>()
+    prov.optJSONArray("providers")?.let { arr ->
+        for (i in 0 until arr.length()) {
+            val id = arr.optString(i)
+            if (id.isNotEmpty()) methods.add(Pair(id, vpnProviderName(id)))
+        }
+    }
+
     // мои подписки с ключами
     if (subs.length() > 0) {
         col.addView(sectionLabel("Мои подписки", pending.isEmpty()))
         for (i in 0 until subs.length()) {
             val s = subs.optJSONObject(i) ?: continue
-            col.addView(vpnSubCard(s))
+            col.addView(vpnSubCard(s, methods))
         }
     }
 
@@ -199,13 +211,6 @@ private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArr
     }
     list.sortWith(compareBy<JSONObject>({ it.optInt("days") }, { it.optLong("total_price_display") }))
 
-    val methods = ArrayList<Pair<String, String>>()
-    prov.optJSONArray("providers")?.let { arr ->
-        for (i in 0 until arr.length()) {
-            val id = arr.optString(i)
-            if (id.isNotEmpty()) methods.add(Pair(id, vpnProviderName(id)))
-        }
-    }
     if (list.isEmpty() || methods.isEmpty()) {
         col.addView(tv("Покупка VPN сейчас недоступна", 14f, MUTE))
         riseIn(col, firstNew)
@@ -267,7 +272,7 @@ private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArr
         val title = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(txt(name.take(1).uppercase() + name.drop(1), 16f, TEXT, true))
+            addView(txt(vpnPlanName(name), 16f, TEXT, true))
             if (p.optBoolean("is_special")) addView(vpnPill("Особый"))
             else if (p.optBoolean("is_popular")) addView(vpnPill("Популярный"))
         }
@@ -298,6 +303,15 @@ private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArr
     col.addView(methodBox)
     methodPicker(methodBox, methods, method) { id, _ -> method = id; paintTotal() }
 
+    val topNote = txt("", 13f, MUTE).apply { visibility = View.GONE; layoutParams = lp(4) }
+    col.addView(txt("Пополнить баланс", 13f, MUTE).apply {
+        gravity = Gravity.CENTER
+        setPadding(0, dp(14), 0, dp(6))
+        layoutParams = lp(0)
+        isClickable = true
+        setOnClickListener { askTopup(methods, topNote) }
+    })
+    col.addView(topNote)
     col.addView(txt("Выйти из аккаунта VPN", 13f, MUTE).apply {
         gravity = Gravity.CENTER
         setPadding(0, dp(14), 0, dp(14))
@@ -322,7 +336,7 @@ private fun MainActivity.vpnPill(t: String): TextView =
 
 // ---------- карточка подписки с ключом ----------
 
-private fun MainActivity.vpnSubCard(s: JSONObject): LinearLayout {
+private fun MainActivity.vpnSubCard(s: JSONObject, methods: List<Pair<String, String>>): LinearLayout {
     val active = s.optBoolean("is_active")
     val url = s.optString("subscription_url")
     val card = LinearLayout(this).apply {
@@ -332,7 +346,7 @@ private fun MainActivity.vpnSubCard(s: JSONObject): LinearLayout {
         layoutParams = lp(10)
     }
     val name = s.optString("plan_name").ifEmpty { "Подписка" }
-    card.addView(txt("${name.take(1).uppercase() + name.drop(1)} · ${vpnDevices(s.optInt("devices"))}", 16f, TEXT, true))
+    card.addView(txt("${vpnPlanName(name)} · ${vpnDevices(s.optInt("devices"))}", 16f, TEXT, true))
     val end = vpnDate(s.optString("end_date"))
     val line = when {
         s.optBoolean("is_frozen") -> "Заморожена · до $end"
@@ -340,6 +354,10 @@ private fun MainActivity.vpnSubCard(s: JSONObject): LinearLayout {
         else -> "Не активна · до $end"
     }
     card.addView(txt(line, 13f, if (active) GREEN else MUTE).apply { layoutParams = lp(10) })
+    val limBytes = s.optLong("traffic_limit_bytes")
+    if (limBytes > 0) {
+        card.addView(txt("Трафик: ${vpnGb(s.optLong("used_traffic_bytes"))} из ${vpnGb(limBytes)}", 13f, MUTE).apply { layoutParams = lp(10) })
+    }
     if (url.startsWith("https://")) {
         card.addView(txt(url, 12f, MUTE).apply {
             setTextIsSelectable(true)
@@ -360,7 +378,420 @@ private fun MainActivity.vpnSubCard(s: JSONObject): LinearLayout {
             addView(actions)
         })
     }
+    val subId = VpnApi.subId(s)
+    if (subId.isNotEmpty()) {
+        val note = txt("", 13f, MUTE).apply { visibility = View.GONE; layoutParams = lp(8) }
+        val acts = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = lp(8) }
+        acts.addView(chip("Продлить", true) {
+            if (busy) return@chip
+            pickRenewDays(subId, methods, note)
+        })
+        val frozen = s.optBoolean("is_frozen")
+        if (!s.optBoolean("is_trial") && !s.optBoolean("is_lifetime")) acts.addView(chip("Больше устройств", false) {
+            if (busy) return@chip
+            startUpgrade(s, subId, methods, note)
+        })
+        acts.addView(chip(if (frozen) "Разморозить" else "Заморозить", false) {
+            if (busy) return@chip
+            val go = {
+                busy = true
+                io.execute {
+                    try {
+                        if (frozen) VpnApi.unfreeze(subId) else VpnApi.freeze(subId)
+                        ui { busy = false; toast(if (frozen) "Подписка разморожена" else "Подписка заморожена"); showVpn() }
+                    } catch (e: VpnApi.AuthException) {
+                        ui { busy = false; showVpn() }
+                    } catch (e: Exception) {
+                        ui { busy = false; toast("Ошибка: ${e.message}") }
+                    }
+                }
+            }
+            if (frozen) go() else androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Заморозить подписку?")
+                .setMessage("Подписка будет приостановлена. Разморозить её можно в любой момент.")
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Заморозить") { _, _ -> go() }
+                .show()
+        })
+        acts.addView(chip("Обновить ссылку", false) {
+            if (busy) return@chip
+            val avail = s.optString("link_rotation_available_at")
+            val now = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+                .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date())
+            if (avail.length >= 19 && avail != "null" && avail.take(19) > now) {
+                toast("Ссылку можно обновить с ${vpnDateTime(avail)}")
+                return@chip
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Обновить ссылку?")
+                .setMessage("Старая ссылка перестанет работать, и по ней больше никто не подключится. Кто уже подключился по ней, останется до конца срока подписки.")
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Обновить") { _, _ ->
+                    busy = true
+                    io.execute {
+                        try {
+                            VpnApi.rotateLink(subId)
+                            ui { busy = false; toast("Ссылка обновлена"); showVpn() }
+                        } catch (e: VpnApi.AuthException) {
+                            ui { busy = false; showVpn() }
+                        } catch (e: Exception) {
+                            ui { busy = false; toast("Ошибка: ${e.message}") }
+                        }
+                    }
+                }.show()
+        })
+        if (limBytes > 0) acts.addView(chip("Докупить трафик", false) {
+            if (busy) return@chip
+            note.visibility = View.VISIBLE
+            note.text = "Загружаем пакеты…"
+            io.execute {
+                try {
+                    val packs = VpnApi.trafficPacks(subId)
+                    ui { note.visibility = View.GONE; pickTrafficPack(subId, methods, packs, note) }
+                } catch (e: VpnApi.AuthException) {
+                    ui { showVpn() }
+                } catch (e: Exception) {
+                    ui { note.text = "Не удалось загрузить пакеты: ${e.message}" }
+                }
+            }
+        })
+        card.addView(HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(acts)
+        })
+        card.addView(note)
+        vpnDevicesBlock(card, subId)
+    }
     return card
+}
+
+/** Срок продления: как на сайте — 1 месяц, 7/14/60/90 дней или свой (от 3 до 365). null = «1 месяц». */
+private fun MainActivity.pickRenewDays(subId: String, methods: List<Pair<String, String>>, note: TextView) {
+    val opts = arrayOf("1 месяц", "7 дней", "14 дней", "60 дней", "90 дней", "Свой срок…")
+    val vals = arrayOf<Int?>(null, 7, 14, 60, 90, -1)
+    androidx.appcompat.app.AlertDialog.Builder(this)
+        .setTitle("На сколько продлить?")
+        .setItems(opts) { _, i ->
+            if (vals[i] == -1) askCustomDays(subId, methods, note) else quoteRenew(subId, methods, note, vals[i])
+        }
+        .show()
+}
+
+private fun MainActivity.askCustomDays(subId: String, methods: List<Pair<String, String>>, note: TextView) {
+    val input = android.widget.EditText(this).apply {
+        inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        hint = "от 3 до 365"
+        setPadding(dp(20), dp(14), dp(20), dp(14))
+    }
+    androidx.appcompat.app.AlertDialog.Builder(this)
+        .setTitle("Свой срок, дней")
+        .setView(input)
+        .setNegativeButton("Отмена", null)
+        .setPositiveButton("Дальше") { _, _ ->
+            val n = input.text.toString().trim().toIntOrNull()
+            if (n == null || n < 3 || n > 365) toast("Введите число от 3 до 365") else quoteRenew(subId, methods, note, n)
+        }
+        .show()
+}
+
+private fun MainActivity.quoteRenew(subId: String, methods: List<Pair<String, String>>, note: TextView, days: Int?) {
+    note.visibility = View.VISIBLE
+    note.text = "Считаем цену…"
+    io.execute {
+        var q: JSONObject? = null
+        try {
+            q = VpnApi.renewQuote(subId, days)
+        } catch (e: VpnApi.AuthException) {
+            ui { showVpn() }
+            return@execute
+        } catch (e: Exception) {
+            // цену узнать не вышло — продлить всё равно можно, суммы в списке не будет
+        }
+        ui { note.visibility = View.GONE; pickRenewMethod(subId, methods, q, note, days) }
+    }
+}
+
+/** Выбор способа оплаты для продления (с итоговой суммой, если сайт её отдал). */
+private fun MainActivity.pickRenewMethod(subId: String, methods: List<Pair<String, String>>, q: JSONObject?, note: TextView, days: Int?) {
+    val totals = q?.optJSONObject("provider_totals")
+    val items = methods.map { (id, name) ->
+        val minor = totals?.optLong(id, -1L) ?: -1L
+        if (minor >= 0) "$name — ${vpnRub(minor)}" else name
+    }.toTypedArray()
+    val end = q?.optString("new_end_date").orEmpty()
+    val title = if (end.length >= 10) "Продлить до ${vpnDate(end)}" else "Продлить подписку"
+    androidx.appcompat.app.AlertDialog.Builder(this)
+        .setTitle(title)
+        .setItems(items) { _, i ->
+            note.visibility = View.VISIBLE
+            payVpnWith(note) { VpnApi.renew(subId, methods[i].first, days) }
+        }
+        .show()
+}
+
+// ---------- трафик и баланс ----------
+
+/** Байты → «7,1 ГБ». */
+private fun vpnGb(bytes: Long): String =
+    String.format(java.util.Locale("ru"), "%.1f ГБ", bytes / 1073741824.0)
+
+private fun MainActivity.pickMethod(title: String, methods: List<Pair<String, String>>, onPick: (String) -> Unit) {
+    androidx.appcompat.app.AlertDialog.Builder(this)
+        .setTitle(title)
+        .setItems(methods.map { it.second }.toTypedArray()) { _, i -> onPick(methods[i].first) }
+        .show()
+}
+
+private fun MainActivity.pickTrafficPack(subId: String, methods: List<Pair<String, String>>, packs: JSONArray, note: TextView) {
+    if (packs.length() == 0) { toast("Пакетов трафика сейчас нет"); return }
+    val gbs = ArrayList<Int>()
+    val items = ArrayList<String>()
+    for (i in 0 until packs.length()) {
+        val p = packs.optJSONObject(i) ?: continue
+        gbs.add(p.optInt("gb"))
+        items.add("${p.optInt("gb")} ГБ — ${vpnRub(p.optLong("total_display"))}")
+    }
+    androidx.appcompat.app.AlertDialog.Builder(this)
+        .setTitle("Докупить трафик")
+        .setItems(items.toTypedArray()) { _, i ->
+            pickMethod("Способ оплаты", methods) { prov ->
+                note.visibility = View.VISIBLE
+                payVpnWith(note) { VpnApi.trafficIntent(subId, gbs[i], prov) }
+            }
+        }
+        .show()
+}
+
+private fun MainActivity.askTopup(methods: List<Pair<String, String>>, note: TextView, prefillMinor: Long = 0L) {
+    val input = android.widget.EditText(this).apply {
+        inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        hint = "сумма, ₽"
+        if (prefillMinor > 0) setText(((prefillMinor + 99) / 100).toString())
+        setPadding(dp(20), dp(14), dp(20), dp(14))
+    }
+    androidx.appcompat.app.AlertDialog.Builder(this)
+        .setTitle("Пополнить баланс")
+        .setView(input)
+        .setNegativeButton("Отмена", null)
+        .setPositiveButton("Дальше") { _, _ ->
+            val rub = input.text.toString().trim().toLongOrNull()
+            if (rub == null || rub < 1) {
+                toast("Введите сумму в рублях")
+            } else {
+                pickMethod("Способ оплаты", methods) { prov ->
+                    note.visibility = View.VISIBLE
+                    payVpnWith(note) { VpnApi.topup(rub * 100, prov) }
+                }
+            }
+        }
+        .show()
+}
+
+// ---------- смена тарифа («Больше устройств») ----------
+
+/** Ищет тарифы с тем же сроком и бОльшим числом устройств, считает доплату по каждому и даёт выбрать. */
+private fun MainActivity.startUpgrade(s: JSONObject, subId: String, methods: List<Pair<String, String>>, note: TextView) {
+    note.visibility = View.VISIBLE
+    note.text = "Считаем доплату…"
+    io.execute {
+        try {
+            val days = s.optInt("days")
+            val devices = s.optInt("devices")
+            val curPlan = s.optString("plan_uuid")
+            val plans = VpnApi.plans()
+            val cands = ArrayList<JSONObject>()
+            for (i in 0 until plans.length()) {
+                val p = plans.optJSONObject(i) ?: continue
+                if (p.optBoolean("is_lifetime")) continue
+                if (p.optInt("days") == days && p.optInt("devices") > devices && p.optString("uuid") != curPlan) cands.add(p)
+            }
+            cands.sortBy { it.optInt("devices") }
+            val ok = ArrayList<Pair<JSONObject, JSONObject>>()
+            var lastErr: Exception? = null
+            for (p in cands) {
+                try {
+                    ok.add(Pair(p, VpnApi.upgradeQuote(subId, p.optString("uuid"))))
+                } catch (e: VpnApi.AuthException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastErr = e
+                }
+            }
+            val balance = try { VpnApi.profile().optLong("balance_display_minor", -1L) } catch (e: VpnApi.AuthException) { throw e } catch (e: Exception) { -1L }
+            ui {
+                note.visibility = View.GONE
+                when {
+                    cands.isEmpty() -> toast("Тарифов с большим числом устройств нет")
+                    ok.isEmpty() -> { note.visibility = View.VISIBLE; note.text = "Не удалось посчитать доплату: ${lastErr?.message}" }
+                    else -> pickUpgrade(subId, ok, balance, methods, note)
+                }
+            }
+        } catch (e: VpnApi.AuthException) {
+            ui { showVpn() }
+        } catch (e: Exception) {
+            ui { note.text = "Не удалось загрузить тарифы: ${e.message}" }
+        }
+    }
+}
+
+private fun MainActivity.pickUpgrade(subId: String, opts: List<Pair<JSONObject, JSONObject>>, balance: Long, methods: List<Pair<String, String>>, note: TextView) {
+    val items = opts.map { (p, q) ->
+        val extra = q.optLong("charged_display_minor")
+        "${vpnPlanName(p.optString("name"))} · ${vpnDevices(p.optInt("devices"))} — доплата ${vpnRub(extra)}"
+    }.toTypedArray()
+    androidx.appcompat.app.AlertDialog.Builder(this)
+        .setTitle("Больше устройств")
+        .setItems(items) { _, i ->
+            val (p, q) = opts[i]
+            val charge = q.optLong("charged_display_minor")
+            val enough = q.optBoolean("enough_balance", true)
+            val name = "${vpnPlanName(p.optString("name"))} · ${vpnDevices(p.optInt("devices"))}"
+            if (!enough) {
+                val have = if (balance >= 0) "На балансе ${vpnRub(balance)}." else ""
+                androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("Не хватает баланса")
+                    .setMessage("Нужно ${vpnRub(charge)}. $have Пополните баланс и повторите.")
+                    .setNegativeButton("Отмена", null)
+                    .setPositiveButton("Пополнить") { _, _ ->
+                        val need = if (balance >= 0) charge - balance else charge
+                        askTopup(methods, note, if (need > 0) need else charge)
+                    }.show()
+            } else {
+                androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("Перейти на «$name»?")
+                    .setMessage("С баланса спишется ${vpnRub(charge)}. Срок подписки не изменится.")
+                    .setNegativeButton("Отмена", null)
+                    .setPositiveButton("Перейти") { _, _ ->
+                        if (busy) return@setPositiveButton
+                        busy = true
+                        io.execute {
+                            try {
+                                VpnApi.upgrade(subId, p.optString("uuid"))
+                                ui { busy = false; toast("Тариф изменён"); showVpn() }
+                            } catch (e: VpnApi.AuthException) {
+                                ui { busy = false; showVpn() }
+                            } catch (e: Exception) {
+                                ui { busy = false; toast("Ошибка: ${e.message}") }
+                            }
+                        }
+                    }.show()
+            }
+        }
+        .show()
+}
+
+// ---------- устройства ----------
+
+/** «2026-11-22T14:08:52…» → «22.11 14:08». */
+private fun vpnDateTime(s: String): String {
+    if (s.length < 16) return s
+    val d = s.take(10).split("-")
+    return if (d.size == 3) "${d[2]}.${d[1]} ${s.substring(11, 16)}" else s
+}
+
+private fun MainActivity.vpnDevicesBlock(card: LinearLayout, subId: String) {
+    val box = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        visibility = View.GONE
+        layoutParams = lp(0)
+    }
+    var loaded = false
+
+    fun load() {
+        box.removeAllViews()
+        box.addView(txt("Загружаем устройства…", 13f, MUTE))
+        io.execute {
+            try {
+                val devs = VpnApi.devices(subId)
+                val blocks = try { VpnApi.deviceBlocks(subId) } catch (e: VpnApi.AuthException) { throw e } catch (e: Exception) { JSONArray() }
+                ui { paintDevices(box, subId, devs, blocks) { load() } }
+            } catch (e: VpnApi.AuthException) {
+                ui { showVpn() }
+            } catch (e: Exception) {
+                ui { box.removeAllViews(); box.addView(txt("Не удалось загрузить: ${e.message}", 13f, MUTE)) }
+            }
+        }
+    }
+    card.addView(chip("Устройства", false) {
+        if (box.visibility == View.VISIBLE) { box.visibility = View.GONE; return@chip }
+        box.visibility = View.VISIBLE
+        if (!loaded) { loaded = true; load() }
+    }.apply { (layoutParams as? ViewGroup.MarginLayoutParams)?.topMargin = dp(8) })
+    card.addView(box)
+}
+
+private fun MainActivity.paintDevices(box: LinearLayout, subId: String, devs: JSONArray, blocks: JSONArray, reload: () -> Unit) {
+    box.removeAllViews()
+    box.addView(txt("Устройства: ${devs.length()}", 14f, TEXT, true).apply { layoutParams = lp(6) })
+    if (devs.length() == 0) box.addView(txt("Пока ни одно устройство не подключено", 13f, MUTE))
+    for (i in 0 until devs.length()) {
+        val d = devs.optJSONObject(i) ?: continue
+        val name = d.optString("name").ifEmpty { d.optString("model") }.ifEmpty { "Устройство" }
+        val sub = listOf(d.optString("os"), d.optString("ip"), "был ${vpnDateTime(d.optString("last_seen"))}")
+            .filter { it.isNotEmpty() && it != "null" }.joinToString(" · ")
+        val left = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, V_WRAP, 1f)
+            addView(txt(name, 14f, TEXT, true))
+            addView(txt(sub, 12f, MUTE))
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = lp(6)
+            addView(left)
+            addView(chip("Отключить", false) {
+                androidx.appcompat.app.AlertDialog.Builder(this@paintDevices)
+                    .setTitle("Отключить «$name»?")
+                    .setMessage("Устройство потеряет доступ. Вернуть его можно в списке отключённых.")
+                    .setNegativeButton("Отмена", null)
+                    .setPositiveButton("Отключить") { _, _ ->
+                        io.execute {
+                            try {
+                                VpnApi.disconnectDevice(subId, d.optLong("id"))
+                                ui { toast("Устройство отключено"); reload() }
+                            } catch (e: VpnApi.AuthException) {
+                                ui { showVpn() }
+                            } catch (e: Exception) {
+                                ui { toast("Ошибка: ${e.message}") }
+                            }
+                        }
+                    }.show()
+            })
+        }
+        box.addView(row)
+    }
+    if (blocks.length() > 0) {
+        box.addView(txt("Отключённые", 13f, MUTE).apply { layoutParams = lp(6).apply { topMargin = dp(8) } })
+        for (i in 0 until blocks.length()) {
+            val b = blocks.optJSONObject(i) ?: continue
+            val hwid = b.optString("hwid")
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = lp(6)
+                addView(LinearLayout(this@paintDevices).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, V_WRAP, 1f)
+                    addView(txt(b.optString("name").ifEmpty { "Устройство" }, 14f, TEXT))
+                    addView(txt("отключено ${vpnDateTime(b.optString("blocked_at"))}", 12f, MUTE))
+                })
+                addView(chip("Вернуть", false) {
+                    io.execute {
+                        try {
+                            VpnApi.unblockDevice(subId, hwid)
+                            ui { toast("Устройство возвращено"); reload() }
+                        } catch (e: VpnApi.AuthException) {
+                            ui { showVpn() }
+                        } catch (e: Exception) {
+                            ui { toast("Ошибка: ${e.message}") }
+                        }
+                    }
+                })
+            }
+            box.addView(row)
+        }
+    }
 }
 
 /** Добавляет подписку в установленный VPN-клиент по его ссылке-схеме. Если клиента нет — просим скопировать ссылку. */
@@ -384,13 +815,17 @@ private fun MainActivity.openInVpnClient(url: String) {
 
 // ---------- оплата ----------
 
-private fun MainActivity.payVpn(planUuid: String, provider: String, info: TextView) {
+private fun MainActivity.payVpn(planUuid: String, provider: String, info: TextView) =
+    payVpnWith(info) { VpnApi.intent(planUuid, provider) }
+
+/** Создаёт платёж (покупка или продление) и открывает страницу оплаты. */
+private fun MainActivity.payVpnWith(info: TextView, create: () -> JSONObject) {
     if (busy) return
     busy = true
     info.text = "Создаём платёж…"
     io.execute {
         try {
-            val r = VpnApi.intent(planUuid, provider)
+            val r = create()
             val id = r.optString("payment_id")
             val url = r.optString("invoice_url")
             if (id.isNotEmpty()) Store.vpnPay = id
