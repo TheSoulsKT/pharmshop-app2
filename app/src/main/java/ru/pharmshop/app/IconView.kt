@@ -12,7 +12,7 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
-enum class Ic { STAR, GIFT, CROWN, BOX, KEY, DB, AT, SEND, USER, BACK }
+enum class Ic { STAR, GIFT, CROWN, BOX, KEY, DB, AT, SEND, USER, BACK, GEAR, BAG, CHAT }
 
 /** Линейные иконки в стиле сайта. Рисуются в сетке 24x24. */
 class IconView(ctx: Context, private val kind: Ic, private val tint: Int) : View(ctx) {
@@ -127,6 +127,51 @@ class IconView(ctx: Context, private val kind: Ic, private val tint: Int) : View
                 c.drawCircle(12f, 8f, 4f, stroke)
                 c.drawArc(RectF(4f, 15f, 20f, 31f), 180f, 180f, false, stroke)
             }
+            Ic.GEAR -> {
+                val p = Path()
+                for (i in 0 until 8) {
+                    val a = Math.toRadians(i * 45.0)
+                    fun pt(da: Double, r: Float, first: Boolean) {
+                        val x = 12f + (r * cos(a + Math.toRadians(da))).toFloat()
+                        val y = 12f + (r * sin(a + Math.toRadians(da))).toFloat()
+                        if (first) p.moveTo(x, y) else p.lineTo(x, y)
+                    }
+                    pt(-17.0, 7.3f, i == 0)
+                    pt(-10.0, 9.6f, false)
+                    pt(10.0, 9.6f, false)
+                    pt(17.0, 7.3f, false)
+                }
+                p.close()
+                c.drawPath(p, stroke)
+                c.drawCircle(12f, 12f, 3.1f, stroke)
+            }
+            Ic.BAG -> {
+                val p = Path()
+                p.moveTo(5f, 8f)
+                p.lineTo(19f, 8f)
+                p.lineTo(20f, 20f)
+                p.lineTo(4f, 20f)
+                p.close()
+                c.drawPath(p, stroke)
+                c.drawArc(RectF(8.5f, 3.5f, 15.5f, 12.5f), 180f, 180f, false, stroke)
+            }
+            Ic.CHAT -> {
+                val p = Path()
+                p.moveTo(5f, 4.5f)
+                p.lineTo(19f, 4.5f)
+                p.quadTo(21f, 4.5f, 21f, 6.5f)
+                p.lineTo(21f, 14.5f)
+                p.quadTo(21f, 16.5f, 19f, 16.5f)
+                p.lineTo(11f, 16.5f)
+                p.lineTo(6.5f, 20.5f)
+                p.lineTo(6.5f, 16.5f)
+                p.lineTo(5f, 16.5f)
+                p.quadTo(3f, 16.5f, 3f, 14.5f)
+                p.lineTo(3f, 6.5f)
+                p.quadTo(3f, 4.5f, 5f, 4.5f)
+                p.close()
+                c.drawPath(p, stroke)
+            }
             Ic.BACK -> {
                 val p = Path()
                 p.moveTo(15f, 5f)
@@ -141,7 +186,7 @@ class IconView(ctx: Context, private val kind: Ic, private val tint: Int) : View
 
 /** Логотип: синий квадрат с чёрным котом (нарисован по референсу). */
 class LogoView(ctx: Context) : View(ctx) {
-    private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#3B8EF3") }
+    private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Theme.accent }
     private val cat = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#0B0B0D") }
     private val eye = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE

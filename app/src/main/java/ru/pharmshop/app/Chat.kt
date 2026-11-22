@@ -16,7 +16,10 @@ object ChatApi {
      */
     const val BASE_URL = "https://flat-violet-e617pharmshop-chat.soulszlord.workers.dev"
 
-    private fun post(path: String, body: JSONObject, adminCode: String = ""): JSONObject {
+    /** Время, до которого собеседник прочитал наши сообщения (из последнего ответа сервера). */
+    @Volatile var lastReadTs = 0L
+
+    private fun post(path: String, body: JSONObject, adminToken: String = "", adminCode: String = ""): JSONObject {
         if (BASE_URL.isEmpty()) throw IllegalStateException("not_configured")
         val c = URL(BASE_URL + path).openConnection() as HttpURLConnection
         try {
@@ -26,6 +29,7 @@ object ChatApi {
             c.doOutput = true
             c.setRequestProperty("Content-Type", "application/json")
             c.setRequestProperty("Accept", "application/json")
+            if (adminToken.isNotEmpty()) c.setRequestProperty("X-Admin-Token", adminToken)
             if (adminCode.isNotEmpty()) c.setRequestProperty("X-Admin-Code", adminCode)
             c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val code = c.responseCode
@@ -56,23 +60,69 @@ object ChatApi {
             .put("order", order).put("version", version).put("text", text).put("info", deviceInfo())
         if (image.isNotEmpty()) body.put("image", image)
         post("/api/chat/send", body)
+        Store.chatStarted = true
+        Push.registerUser()   // после первого сообщения серверу уже есть кому слать ответы
     }
+
+    /** Передаёт серверу токен FCM этого устройства (подтверждается секретом устройства). */
+    fun pushRegister(device: String, secret: String, token: String) {
+        post("/api/push/register", JSONObject().put("device", device).put("secret", secret).put("token", token))
+    }
+
+    fun adminPushRegister(adminToken: String, fcmToken: String) {
+        post("/api/admin/push_register", JSONObject().put("token", fcmToken), adminToken)
+    }
+
+    fun adminPushUnregister(adminToken: String, fcmToken: String) {
+        post("/api/admin/push_unregister", JSONObject().put("token", fcmToken), adminToken)
+    }
+
+    /** Фоновый опрос: {unread, last_id, text} — непрочитанные ответы поддержки. Ничего не помечает прочитанным. */
+    fun userPoll(device: String, secret: String): JSONObject =
+        post("/api/chat/poll", JSONObject().put("device", device).put("secret", secret))
 
     fun userImage(device: String, secret: String, id: Long): String =
         post("/api/chat/image", JSONObject().put("device", device).put("secret", secret).put("id", id))
             .optString("image")
 
-    fun userMessages(device: String, secret: String, after: Long): JSONArray =
-        post("/api/chat/messages", JSONObject().put("device", device).put("secret", secret).put("after", after))
-            .optJSONArray("messages") ?: JSONArray()
+    fun userMessages(device: String, secret: String, after: Long): JSONArray {
+        val r = post("/api/chat/messages", JSONObject().put("device", device).put("secret", secret).put("after", after))
+        lastReadTs = r.optLong("read_ts")
+        return r.optJSONArray("messages") ?: JSONArray()
+    }
+
+    /** Объявление, настройки разделов и минимальная версия (публично, без кода). */
+    fun appConfig(versionCode: Int): JSONObject =
+        post("/api/app/config", JSONObject().put("version_code", versionCode))
 
     // ----- администратор -----
-    fun adminThreads(code: String): JSONArray =
-        post("/api/admin/threads", JSONObject(), code).optJSONArray("threads") ?: JSONArray()
+    /** Вход по коду: сервер возвращает токен сессии (30 дней). Сам код дальше нигде не хранится и не пересылается. */
+    fun adminLogin(code: String): String =
+        post("/api/admin/login", JSONObject(), adminCode = code).optString("token")
+            .ifEmpty { throw Exception("Сервер не выдал токен") }
 
-    fun adminMessages(code: String, device: String, after: Long): JSONArray =
-        post("/api/admin/messages", JSONObject().put("device", device).put("after", after), code)
-            .optJSONArray("messages") ?: JSONArray()
+    /** Завершает сессию на сервере (ошибки сети не важны — токен всё равно стирается на устройстве). */
+    fun adminLogout(token: String) {
+        try { post("/api/admin/logout", JSONObject(), token) } catch (e: Exception) { /* не критично */ }
+    }
+
+    /** Ответ: {threads: [...], counts: {new, work, done, unread}}. status: "", "new", "work", "done". */
+    fun adminThreads(code: String, status: String = "", unread: Boolean = false, query: String = ""): JSONObject {
+        val body = JSONObject()
+        if (status.isNotEmpty()) body.put("status", status)
+        if (unread) body.put("unread", true)
+        if (query.isNotEmpty()) body.put("q", query)
+        return post("/api/admin/threads", body, code)
+    }
+
+    /** Фоновый опрос админа: {unread, last_ts, nick, text} — чаты с непрочитанными сообщениями. */
+    fun adminPoll(token: String): JSONObject = post("/api/admin/poll", JSONObject(), token)
+
+    fun adminMessages(code: String, device: String, after: Long): JSONArray {
+        val r = post("/api/admin/messages", JSONObject().put("device", device).put("after", after), code)
+        lastReadTs = r.optLong("read_ts")
+        return r.optJSONArray("messages") ?: JSONArray()
+    }
 
     fun adminReply(code: String, device: String, text: String, image: String = "") {
         val body = JSONObject().put("device", device).put("text", text)
@@ -82,4 +132,39 @@ object ChatApi {
 
     fun adminImage(code: String, device: String, id: Long): String =
         post("/api/admin/image", JSONObject().put("device", device).put("id", id), code).optString("image")
+
+    fun adminSetStatus(code: String, device: String, status: String) {
+        post("/api/admin/status", JSONObject().put("device", device).put("status", status), code)
+    }
+
+    /** Другие устройства, писавшие с тех же IP: [{device, nick, ip, ts}]. */
+    fun adminRelated(code: String, device: String): JSONArray =
+        post("/api/admin/related", JSONObject().put("device", device), code).optJSONArray("related") ?: JSONArray()
+
+    /** kind: "device" или "ip". */
+    fun adminBlock(code: String, kind: String, value: String, reason: String = "") {
+        post("/api/admin/block", JSONObject().put("kind", kind).put("value", value).put("reason", reason), code)
+    }
+
+    fun adminUnblock(code: String, kind: String, value: String) {
+        post("/api/admin/unblock", JSONObject().put("kind", kind).put("value", value), code)
+    }
+
+    /** Приложение присылает на сервер свои заказы, чтобы админ видел их список. */
+    fun reportOrders(device: String, secret: String, orders: JSONArray) {
+        post("/api/orders/report", JSONObject().put("device", device).put("secret", secret).put("orders", orders))
+    }
+
+    /** Список заказов для админа: {orders, counts}. filter: all | active | done | failed. */
+    fun adminOrders(token: String, filter: String, before: Long): JSONObject =
+        post("/api/admin/orders", JSONObject().put("filter", filter).put("before", before), token)
+
+    fun adminBlocks(code: String): JSONArray =
+        post("/api/admin/blocks", JSONObject(), code).optJSONArray("blocks") ?: JSONArray()
+
+    fun adminSettings(code: String): JSONObject = post("/api/admin/settings", JSONObject(), code)
+
+    /** patch: любые из announcement, sections, min_version_code, update_message. Возвращает сохранённые настройки. */
+    fun adminSaveSettings(code: String, patch: JSONObject): JSONObject =
+        post("/api/admin/settings_save", patch, code)
 }

@@ -11,7 +11,7 @@ import kotlin.math.sin
 class SnowView(ctx: Context) : View(ctx) {
     private class Flake(var x: Float, var y: Float, val r: Float, val speed: Float, val drift: Float, val phase: Float, val alpha: Int)
 
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Theme.snowColor }
     private val rnd = java.util.Random()
     private val flakes = ArrayList<Flake>()
     private var last = 0L

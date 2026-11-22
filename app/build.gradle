@@ -3,6 +3,15 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Push через Firebase включаются, только если рядом лежит app/google-services.json (см. server/README.md → «Мгновенные push»).
+// Без этого файла приложение собирается как обычно и получает уведомления фоновым опросом.
+if (file('google-services.json').exists()) {
+    apply plugin: 'com.google.gms.google-services'
+}
+
+// Сборка из ветки test (APP_VARIANT=test) — отдельное приложение «PharmShop Test» без автообновления.
+def isTest = System.getenv('APP_VARIANT') == 'test'
+
 android {
     namespace 'ru.pharmshop.app'
     compileSdk 35
@@ -16,27 +25,40 @@ android {
         versionCode run ? run.toInteger() + 100 : 2
         versionName project.findProperty('appVersion') ?: '1.0.3-beta'   // название версии задаётся в gradle.properties
         // Репозиторий для проверки обновлений («владелец/имя»); GitHub подставляет его сам при сборке.
-        buildConfigField 'String', 'GITHUB_REPO', "\"${System.getenv('GITHUB_REPOSITORY') ?: ''}\""
+        buildConfigField 'String', 'GITHUB_REPO', "\"${isTest ? '' : (System.getenv('GITHUB_REPOSITORY') ?: '')}\""
+        manifestPlaceholders = [appLabel: isTest ? 'PharmShop Test' : 'PharmShop']
+        if (isTest) {
+            applicationIdSuffix '.test'
+            versionNameSuffix '-test'
+        }
     }
-    // Постоянный ключ подписи: без него новая версия не встанет поверх старой.
+    // Ключ подписи ТОЛЬКО из переменных окружения (в GitHub Actions — из секретов, см. server/README.md → «Ключ подписи»).
+    // В репозитории ключа нет. Без переменных (локальная сборка) подписываем стандартным debug-ключом Android.
+    def ksFile = System.getenv('KEYSTORE_FILE')
     signingConfigs {
-        ci {
-            def ksFile = System.getenv('KEYSTORE_FILE')
-            if (ksFile) {   // свой ключ из секретов GitHub (необязательно)
+        if (ksFile) {
+            ci {
                 storeFile file(ksFile)
                 storePassword System.getenv('KEYSTORE_PASSWORD')
                 keyAlias System.getenv('KEY_ALIAS')
                 keyPassword System.getenv('KEY_PASSWORD')
-            } else {        // ключ, лежащий в репозитории: app/release.keystore
-                storeFile file('release.keystore')
-                storePassword 'pharmshop123'
-                keyAlias 'pharmshop'
-                keyPassword 'pharmshop123'
             }
         }
     }
     buildTypes {
-        debug { signingConfig signingConfigs.ci }
+        debug { signingConfig ksFile ? signingConfigs.ci : signingConfigs.debug }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig ksFile ? signingConfigs.ci : signingConfigs.debug
+        }
+    }
+    // lintVital при assembleRelease тянет отдельные библиотеки (groovy и др.) и на сборщике GitHub не находит их.
+    // Для выпуска APK эта проверка не нужна.
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
     }
     buildFeatures { buildConfig true }
     compileOptions {
@@ -48,5 +70,8 @@ android {
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.work:work-runtime:2.9.1'   // фоновые уведомления (PollWorker) и обновления по Wi-Fi (UpdateWorker)
+    implementation 'androidx.biometric:biometric:1.1.0'   // вход по отпечатку
+    implementation 'com.google.firebase:firebase-messaging:24.1.0'   // мгновенные push (FCM), если есть google-services.json
     implementation 'com.github.hCaptcha.hcaptcha-android-sdk:sdk:5.0.0'
 }
