@@ -145,10 +145,21 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
         pushChip.text = pushLabel()
         toast(if (on) "Сообщим об ответе поддержки и статусе заказов" else "Уведомления выключены")
     }
+    // тема оформления: тёмная → светлая → как в системе
+    fun themeLabel() = when (Store.theme) { 2 -> "☀️ Тема: светлая"; 0 -> "🌓 Тема: как в системе"; else -> "🌙 Тема: тёмная" }
+    val themeChip = chip(themeLabel(), false) { }
+    themeChip.setOnClickListener {
+        Store.theme = when (Store.theme) { 1 -> 2; 2 -> 0; else -> 1 }
+        themeChip.text = themeLabel()
+        Theme.update(this)
+        androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(Theme.nightMode())
+        recreate()
+    }
     body.addView(HorizontalScrollView(this).apply {
         isHorizontalScrollBarEnabled = false
         layoutParams = lp(16)
         addView(pushChip)
+        addView(themeChip)
     })
 
     // статистика
@@ -286,6 +297,12 @@ internal fun MainActivity.orderCard(o: JSONObject, body: LinearLayout, sid: Int)
     if (statusKind(status) == 0 && url.startsWith("https://")) {
         actions.addView(chip("Оплатить", true) { returnFromPay = true; openUrl(url) })
     }
+    if (statusKind(status) == 2 || statusKind(status) == 3) {
+        actions.addView(chip("Повторить", true) {
+            Store.lastUser = o.optString("username")
+            if (isPremium) showPremium() else { Store.repeatQty = o.optInt("quantity"); showStars() }
+        })
+    }
     actions.addView(chip("Обновить статус", false) { refreshOrders(body, sid, true) })
     actions.addView(chip("Данные", false) { showRaw(o) })
     actions.addView(chip("Скопировать номер", false) {
@@ -343,6 +360,7 @@ internal fun MainActivity.refreshOrders(body: LinearLayout, sid: Int, force: Boo
         val results = jobs.map { try { it.get() } catch (e: Exception) { e.message ?: "ошибка" } }
         val ok = results.count { it.isEmpty() }
         lastRefreshError = results.firstOrNull { it.isNotEmpty() } ?: ""
+        OrderSync.syncAll()
         val changed = ordersSnapshot() != before
         ui {
             refreshing = false

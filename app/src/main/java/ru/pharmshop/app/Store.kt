@@ -17,6 +17,14 @@ import javax.crypto.spec.GCMParameterSpec
 object Store {
     private lateinit var sp: SharedPreferences
 
+    /** «Повторить заказ»: количество звёзд, которое нужно подставить при открытии формы (используется один раз). */
+    @Volatile var repeatQty: Int = 0
+
+    /** Тема оформления: 1 — тёмная (по умолчанию), 2 — светлая, 0 — как в системе. */
+    var theme: Int
+        get() = sp.getInt("theme", 1)
+        set(v) { sp.edit().putInt("theme", v).apply() }
+
     fun init(ctx: Context) {
         sp = ctx.applicationContext.getSharedPreferences("pharmshop", Context.MODE_PRIVATE)
         // старые версии хранили сам код админа открытым текстом — стираем; админ войдёт заново и получит токен

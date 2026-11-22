@@ -150,6 +150,15 @@ object ChatApi {
         post("/api/admin/unblock", JSONObject().put("kind", kind).put("value", value), code)
     }
 
+    /** Приложение присылает на сервер свои заказы, чтобы админ видел их список. */
+    fun reportOrders(device: String, secret: String, orders: JSONArray) {
+        post("/api/orders/report", JSONObject().put("device", device).put("secret", secret).put("orders", orders))
+    }
+
+    /** Список заказов для админа: {orders, counts}. filter: all | active | done | failed. */
+    fun adminOrders(token: String, filter: String, before: Long): JSONObject =
+        post("/api/admin/orders", JSONObject().put("filter", filter).put("before", before), token)
+
     fun adminBlocks(code: String): JSONArray =
         post("/api/admin/blocks", JSONObject(), code).optJSONArray("blocks") ?: JSONArray()
 

@@ -14,26 +14,26 @@ import org.json.JSONObject
 import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
-    internal val BG = Color.parseColor("#121214")
-    internal val CARD = Color.parseColor("#1D1C21")
-    internal val LINE = Color.parseColor("#2B2A31")
-    internal val TEXT = Color.parseColor("#F2F2F4")
-    internal val MUTE = Color.parseColor("#9A9DA3")
+    internal val BG get() = if (Theme.light) Theme.L_BG else Theme.D_BG
+    internal val CARD get() = if (Theme.light) Theme.L_CARD else Theme.D_CARD
+    internal val LINE get() = if (Theme.light) Theme.L_LINE else Theme.D_LINE
+    internal val TEXT get() = if (Theme.light) Theme.L_TEXT else Theme.D_TEXT
+    internal val MUTE get() = if (Theme.light) Theme.L_MUTE else Theme.D_MUTE
     internal val BLUE = Color.parseColor("#3B8EF3")
-    internal val GREEN = Color.parseColor("#34C759")
-    internal val AMBER = Color.parseColor("#E0A030")
-    internal val RED = Color.parseColor("#FF5A52")
+    internal val GREEN get() = if (Theme.light) Theme.L_GREEN else Color.parseColor("#34C759")
+    internal val AMBER get() = if (Theme.light) Theme.L_AMBER else Color.parseColor("#E0A030")
+    internal val RED get() = if (Theme.light) Theme.L_RED else Color.parseColor("#FF5A52")
 
     // палитра экранов покупки (главный экран остаётся синим)
-    internal val GOLD = Color.parseColor("#FFB020")
+    internal val GOLD get() = if (Theme.light) Theme.L_GOLD else Color.parseColor("#FFB020")
     internal val GOLD_A = Color.parseColor("#FFC83D")
     internal val GOLD_B = Color.parseColor("#FF8A3D")
-    internal val ORANGE = Color.parseColor("#FF7A3D")
+    internal val ORANGE get() = if (Theme.light) Theme.L_ORANGE else Color.parseColor("#FF7A3D")
     internal val PINK = Color.parseColor("#EC4899")
-    internal val VIOLET = Color.parseColor("#8B5CF6")
+    internal val VIOLET get() = if (Theme.light) Theme.L_VIOLET else Color.parseColor("#8B5CF6")
     internal val VIOLET_A = Color.parseColor("#7C3AED")
-    internal val VIOLET_L = Color.parseColor("#B794F6")
-    internal val CYAN = Color.parseColor("#22C1DC")
+    internal val VIOLET_L get() = if (Theme.light) Theme.L_VIOLET_L else Color.parseColor("#B794F6")
+    internal val CYAN get() = if (Theme.light) Theme.L_CYAN else Color.parseColor("#22C1DC")
     internal val DARK_ON = Color.parseColor("#231400")
 
     internal val BOT_URL = "https://t.me/pharmaishop_bot"
@@ -66,10 +66,16 @@ class MainActivity : AppCompatActivity() {
     internal var forceShown = false     // показан экран обязательного обновления
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
         Store.init(this)
+        Theme.update(this)
+        androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(Theme.nightMode())
+        super.onCreate(savedInstanceState)
         window.statusBarColor = BG
         window.navigationBarColor = BG
+        androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = Theme.light
+            isAppearanceLightNavigationBars = Theme.light
+        }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 val ba = backAction

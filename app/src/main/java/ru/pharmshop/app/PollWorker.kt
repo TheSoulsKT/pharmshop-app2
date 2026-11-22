@@ -60,6 +60,7 @@ class PollWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
                 Store.update(o.optString("id"), org.json.JSONObject().put("seen_kind", k))
             }
         }
+        OrderSync.syncAll()
     }
 
     private fun checkAdmin(c: Context) {

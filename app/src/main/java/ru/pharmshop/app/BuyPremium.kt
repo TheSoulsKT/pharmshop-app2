@@ -137,6 +137,7 @@ internal fun MainActivity.pay(rawUser: String, q: Int, method: String, methodNam
                 o.put("method_name", methodName)
                 Store.add(o)
                 Store.lastUser = username
+                OrderSync.syncAll()
                 val url = o.optString("payment_url")
                 val num = o.optString("order_number")
                 ui {

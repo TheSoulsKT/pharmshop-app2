@@ -119,7 +119,7 @@ internal fun MainActivity.shape(fill: Int, radius: Int, stroke: Int = 0) = Gradi
 }
 
 internal fun MainActivity.ripple(fill: Int, radius: Int, stroke: Int = 0) = RippleDrawable(
-    ColorStateList.valueOf(0x33FFFFFF),
+    ColorStateList.valueOf(Theme.rippleColor),
     shape(fill, radius, stroke),
     shape(Color.WHITE, radius)
 )
@@ -214,7 +214,7 @@ internal fun MainActivity.gradBtn(t: String, c1: Int, c2: Int, textColor: Int, o
         gravity = Gravity.CENTER
         setTextColor(textColor)
         background = RippleDrawable(
-            ColorStateList.valueOf(0x33FFFFFF), gradient(c1, c2, 18), shape(Color.WHITE, 18)
+            ColorStateList.valueOf(Theme.rippleColor), gradient(c1, c2, 18), shape(Color.WHITE, 18)
         )
         setPadding(dp(18), dp(16), dp(18), dp(16))
         layoutParams = lp()

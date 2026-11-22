@@ -142,6 +142,7 @@ internal fun MainActivity.buildForm(col: LinearLayout, c: JSONObject) {
         override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, d: Int) {}
         override fun onTextChanged(s: CharSequence?, a: Int, b: Int, d: Int) {}
     })
+    if (Store.repeatQty > 0) { qty.setText(Store.repeatQty.toString()); Store.repeatQty = 0 }   // «Повторить заказ»
 
     val info = tv("", 14f, MUTE)
     val payBtn = gradBtn("Оплатить", GOLD_A, GOLD_B, DARK_ON) {
