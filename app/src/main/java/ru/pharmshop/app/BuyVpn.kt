@@ -8,7 +8,6 @@ import android.net.Uri
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONArray
@@ -159,6 +158,15 @@ private fun MainActivity.pollVpnLogin(sid: Int, pollId: String, until: Long, inf
 
 // ---------- подписки и покупка ----------
 
+/** Вкладка раздела «VPN»: 0 — «Моя подписка», 1 — «Купить подписку»; -1 — выбрать по наличию подписок. */
+private var vpnTab = -1
+
+/** Строка уровня подписки в меню: название, устройства, цена. */
+private fun vpnPlanLabel(p: JSONObject): String {
+    val tag = if (p.optBoolean("is_special")) " · особый" else if (p.optBoolean("is_popular")) " · популярный" else ""
+    return "${vpnPlanName(p.optString("name"))} · ${vpnDevices(p.optInt("devices"))} — ${vpnRub(p.optLong("total_price_display"))}$tag"
+}
+
 private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArray, plans: JSONArray, prov: JSONObject) {
     val firstNew = col.childCount
 
@@ -166,16 +174,14 @@ private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArr
     val pending = Store.vpnPay
     val waitInfo = txt("⏳ Ждём подтверждение оплаты…", 14f, TEXT)
     if (pending.isNotEmpty()) {
-        val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = lp(0).apply { topMargin = dp(10) }
-        }
-        actions.addView(chip("Проверить сейчас", true) {
-            vpnPollGen++
-            waitInfo.text = "⏳ Проверяем оплату…"
-            pollVpnPayment(sid, pending, 0, vpnPollGen, waitInfo)
-        })
-        actions.addView(chip("Не жду", false) { Store.vpnPay = ""; vpnPollGen++; showVpn() })
+        val actions = btnGrid(listOf(
+            gbtn("Проверить сейчас", true) {
+                vpnPollGen++
+                waitInfo.text = "⏳ Проверяем оплату…"
+                pollVpnPayment(sid, pending, 0, vpnPollGen, waitInfo)
+            },
+            gbtn("Не жду", false) { Store.vpnPay = ""; vpnPollGen++; showVpn() }
+        ), 0).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = dp(10) }
         col.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = shape(mix(BLUE, 0.14f), 18, BLUE)
@@ -194,15 +200,6 @@ private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArr
         }
     }
 
-    // мои подписки с ключами
-    if (subs.length() > 0) {
-        col.addView(sectionLabel("Мои подписки", pending.isEmpty()))
-        for (i in 0 until subs.length()) {
-            val s = subs.optJSONObject(i) ?: continue
-            col.addView(vpnSubCard(s, methods))
-        }
-    }
-
     // тарифы (бессрочные не берём): по сроку, потом по цене
     val list = ArrayList<JSONObject>()
     for (i in 0 until plans.length()) {
@@ -210,20 +207,17 @@ private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArr
         if (!p.optBoolean("is_lifetime")) list.add(p)
     }
     list.sortWith(compareBy<JSONObject>({ it.optInt("days") }, { it.optLong("total_price_display") }))
+    val canBuy = list.isNotEmpty() && methods.isNotEmpty()
 
-    if (list.isEmpty() || methods.isEmpty()) {
-        col.addView(tv("Покупка VPN сейчас недоступна", 14f, MUTE))
-        riseIn(col, firstNew)
-        if (pending.isNotEmpty()) { vpnPollGen++; pollVpnPayment(sid, pending, 0, vpnPollGen, waitInfo) }
-        return
-    }
+    var tab = if (vpnTab in 0..1) vpnTab else if (subs.length() > 0) 0 else 1
 
-    var plan: JSONObject = list.firstOrNull { it.optBoolean("is_popular") } ?: list[0]
-    var method = methods[0].first
+    // состояние покупки живёт здесь, чтобы не сбрасываться при переключении вкладок
+    var plan: JSONObject = list.firstOrNull { it.optBoolean("is_popular") } ?: list.firstOrNull() ?: JSONObject()
+    var method = methods.firstOrNull()?.first ?: ""
     var quote: JSONObject? = null
     var qTok = 0
 
-    // закреплённая панель: сумма и кнопка
+    // закреплённая панель: сумма и кнопка (видна только на вкладке покупки)
     val bar = payBar { info -> payVpn(plan.optString("uuid"), method, info) }
 
     fun paintTotal() {
@@ -250,80 +244,111 @@ private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArr
         }
     }
 
-    // тарифы: карточки, сгруппированные по сроку
-    col.addView(sectionLabel(if (subs.length() > 0) "Купить новую подписку" else "Тариф", subs.length() == 0 && pending.isEmpty()))
-    val planBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(4) }
-    col.addView(planBox)
-    val rows = ArrayList<Pair<String, LinearLayout>>()
-    fun paintRows() {
-        for ((id, r) in rows) {
-            val sel = id == plan.optString("uuid")
-            r.background = ripple(if (sel) mix(BLUE, 0.16f) else CARD, 16, if (sel) BLUE else LINE)
-        }
-    }
-    var lastDays = -1
-    for (p in list) {
-        val d = p.optInt("days")
-        if (d != lastDays) {
-            lastDays = d
-            planBox.addView(txt(vpnDays(d), 13f, MUTE).apply { layoutParams = lp(6).apply { topMargin = dp(6) } })
-        }
-        val name = p.optString("name")
-        val title = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(txt(vpnPlanName(name), 16f, TEXT, true))
-            if (p.optBoolean("is_special")) addView(vpnPill("Особый"))
-            else if (p.optBoolean("is_popular")) addView(vpnPill("Популярный"))
-        }
-        val left = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+    // переключатель вкладок
+    val tabNames = listOf("Моя подписка", "Купить подписку")
+    val tabViews = tabNames.map { t ->
+        txt(t, 15f, TEXT, true).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, dp(12))
             layoutParams = LinearLayout.LayoutParams(0, V_WRAP, 1f)
-            addView(title)
-            addView(txt(vpnDevices(p.optInt("devices")), 13f, MUTE))
-        }
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            layoutParams = lp(8)
             isClickable = true
-            setOnClickListener { plan = p; paintRows(); requestQuote() }
             pressable(this)
-            addView(left)
-            addView(txt(vpnRub(p.optLong("total_price_display")), 16f, TEXT, true))
         }
-        planBox.addView(row)
-        rows.add(Pair(p.optString("uuid"), row))
+    }
+    fun paintTabs() {
+        for ((i, v) in tabViews.withIndex()) {
+            val on = i == tab
+            v.background = if (on) shape(BLUE, 12) else null
+            v.setTextColor(if (on) android.graphics.Color.BLACK else TEXT)
+        }
+    }
+    col.addView(LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        background = shape(CARD, 16, LINE)
+        setPadding(dp(4), dp(4), dp(4), dp(4))
+        layoutParams = lp(14)
+        for (v in tabViews) addView(v)
+    })
+    val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    col.addView(content)
+
+    lateinit var renderTab: () -> Unit
+
+    // ---------- вкладка «Моя подписка» ----------
+    fun fillMine(box: LinearLayout) {
+        if (subs.length() == 0) {
+            box.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = shape(CARD, 18, LINE)
+                setPadding(dp(16), dp(16), dp(16), dp(16))
+                layoutParams = lp(12)
+                addView(txt("Подписки пока нет", 16f, TEXT, true).apply { layoutParams = lp(4) })
+                addView(txt("Выберите тариф на вкладке «Купить подписку» — ключ появится здесь сразу после оплаты.", 14f, MUTE).apply { layoutParams = lp(12) })
+                addView(btnGrid(listOf(gbtn("Купить подписку", true) {
+                    tab = 1; vpnTab = 1; paintTabs(); renderTab(); riseIn(content)
+                }), 0))
+            })
+        } else {
+            for (i in 0 until subs.length()) {
+                val s = subs.optJSONObject(i) ?: continue
+                box.addView(vpnSubCard(s, methods))
+            }
+        }
+        val topNote = txt("", 13f, MUTE).apply { visibility = View.GONE; layoutParams = lp(8) }
+        val extra = ArrayList<TextView>()
+        if (methods.isNotEmpty()) extra.add(gbtn("Пополнить баланс", false) { askTopup(methods, topNote) })
+        extra.add(gbtn("Выйти из аккаунта VPN", false) { VpnApi.logout(); vpnTab = -1; vpnPollGen++; showVpn() })
+        box.addView(btnGrid(extra, 8))
+        box.addView(topNote)
     }
 
-    // способ оплаты (комиссия уже учтена в сумме внизу)
-    col.addView(sectionLabel("Способ оплаты"))
-    val methodBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(4) }
-    col.addView(methodBox)
-    methodPicker(methodBox, methods, method) { id, _ -> method = id; paintTotal() }
+    // ---------- вкладка «Купить подписку» ----------
+    fun fillBuy(box: LinearLayout) {
+        if (!canBuy) {
+            box.addView(tv("Покупка VPN сейчас недоступна", 14f, MUTE))
+            return
+        }
+        fun planItems(d: Int) = list.filter { it.optInt("days") == d }
+            .map { Pair(it.optString("uuid"), vpnPlanLabel(it)) }
+        val dayVals = list.map { it.optInt("days") }.distinct()
 
-    val topNote = txt("", 13f, MUTE).apply { visibility = View.GONE; layoutParams = lp(4) }
-    col.addView(txt("Пополнить баланс", 13f, MUTE).apply {
-        gravity = Gravity.CENTER
-        setPadding(0, dp(14), 0, dp(6))
-        layoutParams = lp(0)
-        isClickable = true
-        setOnClickListener { askTopup(methods, topNote) }
-    })
-    col.addView(topNote)
-    col.addView(txt("Выйти из аккаунта VPN", 13f, MUTE).apply {
-        gravity = Gravity.CENTER
-        setPadding(0, dp(14), 0, dp(14))
-        layoutParams = lp(4)
-        isClickable = true
-        setOnClickListener { VpnApi.logout(); vpnPollGen++; showVpn() }
-    })
+        lateinit var level: DropRow
+        val daysRow = dropRow(box, "Срок", "Срок подписки") { id, _ ->
+            val d = id.toInt()
+            val inDays = list.filter { it.optInt("days") == d }
+            plan = inDays.firstOrNull { it.optString("name") == plan.optString("name") }
+                ?: inDays.firstOrNull { it.optBoolean("is_popular") } ?: inDays[0]
+            level.set(planItems(d), plan.optString("uuid"))
+            requestQuote()
+        }
+        level = dropRow(box, "Уровень подписки", "Уровень подписки") { id, _ ->
+            plan = list.firstOrNull { it.optString("uuid") == id } ?: plan
+            requestQuote()
+        }
+        // способ оплаты — комиссия уже учтена в сумме внизу
+        val methodRow = dropRow(box, "Способ оплаты", "Способ оплаты") { id, _ -> method = id; paintTotal() }
 
-    attachBar(col, bar.root)
+        daysRow.set(dayVals.map { Pair(it.toString(), vpnDays(it)) }, plan.optInt("days").toString())
+        level.set(planItems(plan.optInt("days")), plan.optString("uuid"))
+        methodRow.set(methods, method)
+
+        attachBar(col, bar.root)
+        requestQuote()
+    }
+
+    renderTab = {
+        content.removeAllViews()
+        if (tab == 0) (col.tag as? android.widget.FrameLayout)?.removeAllViews()
+        if (tab == 0) fillMine(content) else fillBuy(content)
+    }
+    for ((i, v) in tabViews.withIndex()) {
+        v.setOnClickListener {
+            if (tab != i) { tab = i; vpnTab = i; paintTabs(); renderTab(); riseIn(content) }
+        }
+    }
+    paintTabs()
+    renderTab()
     riseIn(col, firstNew)
-    paintRows()
-    requestQuote()
     if (pending.isNotEmpty()) { vpnPollGen++; pollVpnPayment(sid, pending, 0, vpnPollGen, waitInfo) }
 }
 
@@ -363,36 +388,30 @@ private fun MainActivity.vpnSubCard(s: JSONObject, methods: List<Pair<String, St
             setTextIsSelectable(true)
             layoutParams = lp(10)
         })
-        val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = lp(0)
-        }
-        actions.addView(chip("Скопировать ссылку", true) {
+        val actions = ArrayList<TextView>()
+        actions.add(gbtn("Скопировать ссылку", true) {
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             cm.setPrimaryClip(ClipData.newPlainText("vpn", url))
             toast("Ссылка подписки скопирована")
         })
-        actions.addView(chip("Открыть в клиенте", false) { openInVpnClient(url) })
-        card.addView(HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(actions)
-        })
+        actions.add(gbtn("Открыть в клиенте", false) { openInVpnClient(url) })
+        card.addView(btnGrid(actions, 8))
     }
     val subId = VpnApi.subId(s)
     if (subId.isNotEmpty()) {
         val note = txt("", 13f, MUTE).apply { visibility = View.GONE; layoutParams = lp(8) }
-        val acts = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = lp(8) }
-        acts.addView(chip("Продлить", true) {
-            if (busy) return@chip
+        val acts = ArrayList<TextView>()
+        acts.add(gbtn("Продлить", true) {
+            if (busy) return@gbtn
             pickRenewDays(subId, methods, note)
         })
         val frozen = s.optBoolean("is_frozen")
-        if (!s.optBoolean("is_trial") && !s.optBoolean("is_lifetime")) acts.addView(chip("Больше устройств", false) {
-            if (busy) return@chip
+        if (!s.optBoolean("is_trial") && !s.optBoolean("is_lifetime")) acts.add(gbtn("Больше устройств", false) {
+            if (busy) return@gbtn
             startUpgrade(s, subId, methods, note)
         })
-        acts.addView(chip(if (frozen) "Разморозить" else "Заморозить", false) {
-            if (busy) return@chip
+        acts.add(gbtn(if (frozen) "Разморозить" else "Заморозить", false) {
+            if (busy) return@gbtn
             val go = {
                 busy = true
                 io.execute {
@@ -413,14 +432,14 @@ private fun MainActivity.vpnSubCard(s: JSONObject, methods: List<Pair<String, St
                 .setPositiveButton("Заморозить") { _, _ -> go() }
                 .show()
         })
-        acts.addView(chip("Обновить ссылку", false) {
-            if (busy) return@chip
+        acts.add(gbtn("Обновить ссылку", false) {
+            if (busy) return@gbtn
             val avail = s.optString("link_rotation_available_at")
             val now = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
                 .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date())
             if (avail.length >= 19 && avail != "null" && avail.take(19) > now) {
                 toast("Ссылку можно обновить с ${vpnDateTime(avail)}")
-                return@chip
+                return@gbtn
             }
             androidx.appcompat.app.AlertDialog.Builder(this)
                 .setTitle("Обновить ссылку?")
@@ -440,8 +459,8 @@ private fun MainActivity.vpnSubCard(s: JSONObject, methods: List<Pair<String, St
                     }
                 }.show()
         })
-        if (limBytes > 0) acts.addView(chip("Докупить трафик", false) {
-            if (busy) return@chip
+        if (limBytes > 0) acts.add(gbtn("Докупить трафик", false) {
+            if (busy) return@gbtn
             note.visibility = View.VISIBLE
             note.text = "Загружаем пакеты…"
             io.execute {
@@ -455,10 +474,7 @@ private fun MainActivity.vpnSubCard(s: JSONObject, methods: List<Pair<String, St
                 }
             }
         })
-        card.addView(HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(acts)
-        })
+        card.addView(btnGrid(acts, 8))
         card.addView(note)
         vpnDevicesBlock(card, subId)
     }
@@ -712,11 +728,11 @@ private fun MainActivity.vpnDevicesBlock(card: LinearLayout, subId: String) {
             }
         }
     }
-    card.addView(chip("Устройства", false) {
-        if (box.visibility == View.VISIBLE) { box.visibility = View.GONE; return@chip }
+    card.addView(btnGrid(listOf(gbtn("Устройства", false) {
+        if (box.visibility == View.VISIBLE) { box.visibility = View.GONE; return@gbtn }
         box.visibility = View.VISIBLE
         if (!loaded) { loaded = true; load() }
-    }.apply { (layoutParams as? ViewGroup.MarginLayoutParams)?.topMargin = dp(8) })
+    }), 8))
     card.addView(box)
 }
 

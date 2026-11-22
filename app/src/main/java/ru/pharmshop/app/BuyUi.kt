@@ -232,8 +232,9 @@ internal fun MainActivity.methodPicker(
 }
 
 /** Шторка выбора способа оплаты: цвета берутся из темы, выбранный пункт подсвечен акцентом. */
-private fun MainActivity.openMethodSheet(
-    items: List<Pair<String, String>>, selected: String, onPick: (String, String) -> Unit
+internal fun MainActivity.openMethodSheet(
+    items: List<Pair<String, String>>, selected: String, title: String = "Способ оплаты",
+    onPick: (String, String) -> Unit
 ) {
     // если открыта клавиатура (ввод числа/имени) — прячем, чтобы шторка не прыгала
     currentFocus?.let {
@@ -275,7 +276,7 @@ private fun MainActivity.openMethodSheet(
         }
         setPadding(dp(18), dp(10), dp(18), dp(24))
         addView(handle)
-        addView(txt("Способ оплаты", 18f, TEXT, true).apply { layoutParams = lp(12) })
+        addView(txt(title, 18f, TEXT, true).apply { layoutParams = lp(12) })
         addView(ScrollView(this@openMethodSheet).apply { addView(list) })
     }
     dlg.setContentView(sheet)
