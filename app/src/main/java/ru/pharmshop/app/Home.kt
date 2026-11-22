@@ -169,6 +169,7 @@ internal fun MainActivity.showHome() {
     val entries = listOf(
         Entry("stars", Ic.STAR, sec("stars", "Звёзды", rateText(), true, "Временно недоступно"), true, { _ -> showStars() }),
         Entry("premium", Ic.CROWN, sec("premium", "Купить Premium", "Покупка подписки", true, "Временно недоступно"), true, { _ -> showPremium() }),
+        Entry("vpn", Ic.KEY, sec("vpn", "VPN", "Ключи прямо в приложении", true, "Временно недоступно"), true, { _ -> showVpn() }),
         Entry("gifts", Ic.GIFT, sec("gifts", "Обычные подарки", "Покупка за рубли", false), true, external),
         Entry("nft_buy", Ic.BOX, sec("nft_buy", "Купить NFT", "", false), false, external),
         Entry("nft_rent", Ic.KEY, sec("nft_rent", "Аренда NFT", "", false), false, external),

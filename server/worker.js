@@ -523,7 +523,7 @@ async function adminBlocks(env) {
 }
 
 // ---------- удалённые настройки: объявление, разделы, обязательное обновление ----------
-const SECTION_KEYS = ['stars', 'premium', 'gifts', 'nft_buy', 'nft_rent', 'stars_sell', 'nft_sell'];
+const SECTION_KEYS = ['stars', 'premium', 'vpn', 'gifts', 'nft_buy', 'nft_rent', 'stars_sell', 'nft_sell'];
 const DEFAULT_APP = {
   announcement: { active: false, text: '', level: 'info', id: 0 },
   sections: {},

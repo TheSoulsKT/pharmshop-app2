@@ -52,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     internal var refreshing = false
     internal var lastRefreshError = ""
     internal var returnFromPay = false
+    internal var vpnReturn = false      // ушли оплачивать VPN: по возврату открываем экран VPN, а не профиль
     internal var hc: HCaptcha? = null
     internal var hcOk: ((String) -> Unit)? = null
     internal var hcFail: ((String) -> Unit)? = null
@@ -131,6 +132,7 @@ class MainActivity : AppCompatActivity() {
         return when (target) {
             "stars" -> { showStars(); true }
             "premium" -> { showPremium(); true }
+            "vpn" -> { showVpn(); true }
             "profile" -> { showProfile(); true }
             "support" -> { showSupport(); true }
             "admin" -> { showAdminEntry(); true }
@@ -159,7 +161,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (returnFromPay) {
+        if (vpnReturn) {
+            vpnReturn = false
+            showVpn()
+        } else if (returnFromPay) {
             returnFromPay = false
             showProfile()
         }

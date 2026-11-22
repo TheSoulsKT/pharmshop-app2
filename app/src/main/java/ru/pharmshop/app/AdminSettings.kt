@@ -93,6 +93,7 @@ internal fun MainActivity.showAdminAnnouncement() {
 private val sectionDefs = listOf(
     Triple("stars", "Звёзды", true),
     Triple("premium", "Premium", true),
+    Triple("vpn", "VPN", true),
     Triple("gifts", "Обычные подарки", false),
     Triple("nft_buy", "Купить NFT", false),
     Triple("nft_rent", "Аренда NFT", false),

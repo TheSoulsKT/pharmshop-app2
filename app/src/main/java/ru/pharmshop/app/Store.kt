@@ -168,6 +168,19 @@ object Store {
             sp.edit().putString("admin_token", if (v.isEmpty()) "" else try { seal(v) } catch (e: Exception) { "" }).apply()
         }
 
+    // ----- VPN (личный кабинет pvpn.vitrinka.net) -----
+    /** Долгоживущий ключ входа в кабинет VPN (cookie client_refresh). Хранится зашифрованным. */
+    var vpnRefresh: String
+        get() = sp.getString("vpn_refresh", "")?.takeIf { it.isNotEmpty() }?.let { unseal(it) } ?: ""
+        set(v) {
+            sp.edit().putString("vpn_refresh", if (v.isEmpty()) "" else try { seal(v) } catch (e: Exception) { "" }).apply()
+        }
+
+    /** Платёж VPN, который ждёт оплаты (id): после возврата в приложение проверяем его статус. */
+    var vpnPay: String
+        get() = sp.getString("vpn_pay", "") ?: ""
+        set(v) { sp.edit().putString("vpn_pay", v).apply() }
+
     /** Анонимный идентификатор устройства для чата поддержки. */
     val deviceId: String
         get() {
