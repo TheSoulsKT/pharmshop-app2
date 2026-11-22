@@ -155,11 +155,15 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
         androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(Theme.nightMode())
         recreate()
     }
+    val settingsRow = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        addView(pushChip)
+        addView(themeChip)
+    }
     body.addView(HorizontalScrollView(this).apply {
         isHorizontalScrollBarEnabled = false
         layoutParams = lp(16)
-        addView(pushChip)
-        addView(themeChip)
+        addView(settingsRow)   // у HorizontalScrollView может быть только один дочерний элемент
     })
 
     // статистика
