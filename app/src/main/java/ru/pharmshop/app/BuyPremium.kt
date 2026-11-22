@@ -18,9 +18,9 @@ import org.json.JSONObject
 // ---------- покупка Premium ----------
 internal fun MainActivity.showPremium() {
     onHome = false
-    val col = screen()
+    val col = screen(bottomBar = true)
     val sid = screenId
-    backRow(col, "Купить Premium")
+    buyHeader(col, "Купить Premium")
     val status = tv("Загружаем данные…", 14f, MUTE)
     col.addView(status)
     riseIn(col)
@@ -50,56 +50,52 @@ internal fun MainActivity.buildPremiumForm(col: LinearLayout, c: JSONObject) {
     }
     c.optString("hcaptcha_sitekey").takeIf { it.isNotEmpty() }?.let { captcha(it) }
 
-    col.addView(banner(Ic.CROWN, "Telegram Premium", "Подписка для любого @username", VIOLET_A, PINK, Color.WHITE))
-    col.addView(tv("Подписка Telegram Premium для указанного аккаунта", 14f, MUTE))
-    val user = input("Имя пользователя в Telegram, без @", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
+    // получатель
+    col.addView(sectionLabel("Получатель", true))
+    val (userBox, user) = userField()
     user.setText(Store.lastUser)
-    user.background = shape(CARD, 14, edge(VIOLET))
-    col.addView(user)
+    col.addView(userBox)
 
     var months = plans[0].first
     var method = methods[0].first
     var methodName = methods[0].second
-    val total = tv("К оплате: —", 18f, VIOLET_L, true)
     var token = 0
+
+    // закреплённая панель: сумма и кнопка
+    val bar = payBar { info ->
+        pay(user.text.toString(), months, method, methodName, c, info, "premium")
+    }
 
     fun requestQuote() {
         token++
         val my = token
-        popText(total, "К оплате: …")
+        bar.cap.text = "К оплате · $months мес."
+        popText(bar.total, "…")
         val m = months
         val mt = method
         io.execute {
             try {
                 val r = Api.quote(m, mt, "premium")
-                ui { if (my == token) popText(total, "К оплате: ${r.optString("total")} ${r.optString("currency", "RUB")}") }
+                ui { if (my == token) popText(bar.total, fmtMoney(r)) }
             } catch (e: Exception) {
-                ui { if (my == token) popText(total, "Не удалось рассчитать цену") }
+                ui { if (my == token) popText(bar.total, "Не удалось рассчитать цену") }
             }
         }
     }
 
-    col.addView(tv("Срок подписки", 15f, CYAN, true))
-    val planBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(10) }
+    // срок подписки: широкие карточки со скидкой за длинный срок
+    col.addView(sectionLabel("Срок подписки"))
+    val planBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(4) }
     col.addView(planBox)
-    selectList(
-        planBox, plans.map { Pair(it.first.toString(), "${it.first} мес. · от ${it.second} ₽") },
-        months.toString(), listOf(CYAN, VIOLET, PINK, GOLD)
-    ) { id, _ -> months = id.toInt(); requestQuote() }
+    planRows(planBox, plans, months) { m -> months = m; requestQuote() }
 
-    col.addView(tv("Способ оплаты", 15f, VIOLET_L, true))
-    val methodBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(10) }
+    // способ оплаты
+    col.addView(sectionLabel("Способ оплаты"))
+    val methodBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(4) }
     col.addView(methodBox)
-    selectList(methodBox, methods, method, listOf(VIOLET, PINK)) { id, name -> method = id; methodName = name; requestQuote() }
+    methodPicker(methodBox, methods, method) { id, name -> method = id; methodName = name; requestQuote() }
 
-    val info = tv("", 14f, MUTE)
-    val payBtn = gradBtn("Оплатить", VIOLET_A, PINK, Color.WHITE) {
-        pay(user.text.toString(), months, method, methodName, c, info, "premium")
-    }
-    col.addView(total)
-    col.addView(payBtn)
-    col.addView(info)
-    col.addView(btn("Мои заказы") { showProfile() })
+    attachBar(col, bar.root)
     riseIn(col, firstNew)
     requestQuote()
 }

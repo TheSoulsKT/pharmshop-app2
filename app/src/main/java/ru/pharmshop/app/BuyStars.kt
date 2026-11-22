@@ -2,12 +2,8 @@ package ru.pharmshop.app
 
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
-import android.text.Editable
-import android.text.InputType
-import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
-import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import org.json.JSONObject
 
@@ -16,9 +12,9 @@ import org.json.JSONObject
 // ---------- покупка звёзд ----------
 internal fun MainActivity.showStars() {
     onHome = false
-    val col = screen()
+    val col = screen(bottomBar = true)
     val sid = screenId
-    backRow(col, "Купить звёзды")
+    buyHeader(col, "Купить звёзды")
     val status = tv("Загружаем данные…", 14f, MUTE)
     col.addView(status)
     riseIn(col)
@@ -37,121 +33,88 @@ internal fun MainActivity.buildForm(col: LinearLayout, c: JSONObject) {
     val min = c.optInt("min", 50)
     val max = c.optInt("max", 10000)
     c.optString("hcaptcha_sitekey").takeIf { it.isNotEmpty() }?.let { captcha(it) }
-    col.addView(banner(Ic.STAR, "Telegram Stars", "Доставка в течение 15 секунд", GOLD_A, GOLD_B, DARK_ON))
-    col.addView(tv("${c.optString("stars_rate")} ₽ за звезду · от $min до $max шт.", 14f, MUTE))
 
-    val user = input("Имя пользователя в Telegram, без @", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
+    // получатель
+    col.addView(sectionLabel("Получатель", true))
+    val (userBox, user) = userField()
     user.setText(Store.lastUser)
-    val qty = input("Сколько звёзд", InputType.TYPE_CLASS_NUMBER)
-    user.background = shape(CARD, 14, edge(GOLD))
-    qty.background = shape(CARD, 14, edge(ORANGE))
-    col.addView(user)
-    col.addView(qty)
+    col.addView(userBox)
 
-    val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-    val presets = c.optJSONArray("presets")
-    if (presets != null) {
-        for (i in 0 until presets.length()) {
-            val v = presets.getInt(i)
-            chips.addView(chipTint(v.toString(), listOf(GOLD, ORANGE, PINK, VIOLET)[i % 4]) { qty.setText(v.toString()) })
-        }
-    }
-    col.addView(HorizontalScrollView(this).apply {
-        addView(chips)
-        isHorizontalScrollBarEnabled = false
-        layoutParams = lp(16)
+    // баннер «Сколько звёзд»: число вводится прямо в нём
+    val cb = countBanner("Сколько звёзд", "${c.optString("stars_rate")} ₽ за звезду · от $min до $max шт.")
+    val qty = cb.input
+    col.addView(cb.root)
+
+    // кнопки «+N» прибавляют к числу (шаги берём из пресетов сервера)
+    val steps = ArrayList<Int>()
+    c.optJSONArray("presets")?.let { for (i in 0 until it.length()) steps.add(it.getInt(i)) }
+    val stepList = if (steps.isEmpty()) listOf(50, 100, 500, 1000) else steps.take(4)
+    col.addView(stepChips(stepList) { v ->
+        val now = qty.text.toString().toIntOrNull() ?: 0
+        qty.setText(minOf(now + v, max).toString())
+        qty.setSelection(qty.text.length)
+    })
+    col.addView(txt("Сбросить", 13f, MUTE).apply {
+        gravity = Gravity.CENTER
+        setPadding(0, dp(8), 0, dp(8))
+        layoutParams = lp(4)
+        isClickable = true
+        setOnClickListener { qty.setText("") }
     })
 
-    col.addView(tv("Способ оплаты", 15f, GOLD, true))
+    // способ оплаты
+    col.addView(sectionLabel("Способ оплаты"))
     val box = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        layoutParams = lp(10)
+        layoutParams = lp(4)
     }
     col.addView(box)
+    val shown = shownMethods(c)
+    var method = shown.firstOrNull()?.first ?: c.optString("default_method")   // по умолчанию — первый («СБП 1»)
+    var methodName = shown.firstOrNull()?.second ?: ""
 
-    var method = c.optString("default_method")
-    var methodName = ""
-    val rows = ArrayList<MethodRow>()
-    val total = tv("К оплате: —", 18f, GOLD, true)
+    // закреплённая панель: сумма и кнопка
+    val bar = payBar { info ->
+        pay(user.text.toString(), qty.text.toString().toIntOrNull() ?: 0, method, methodName, c, info)
+    }
     var token = 0
 
-    fun paint() {
-        for (r in rows) {
-            val sel = r.id == method
-            r.row.background = shape(if (sel) mix(r.tint, 0.2f) else CARD, 14, if (sel) r.tint else LINE)
-            val dot = GradientDrawable()
-            dot.setShape(GradientDrawable.OVAL)
-            dot.setColor(if (sel) r.tint else Color.TRANSPARENT)
-            dot.setStroke(dp(2), if (sel) r.tint else MUTE)
-            r.dot.background = dot
-            dotState(r.dot, sel)
-        }
+    fun setPrice(s: String) {
+        popText(bar.total, s)
+        popText(cb.price, s)
     }
 
     fun requestQuote() {
         val q = qty.text.toString().toIntOrNull() ?: 0
         token++
         val my = token
-        if (q < min || q > max) { popText(total, "К оплате: —"); return }
+        val bad = q != 0 && (q < min || q > max)
+        cb.note.setTextColor(if (bad) RED else MUTE)
+        bar.cap.text = if (q in min..max) "К оплате · $q ★" else "К оплате"
+        if (q < min || q > max) { setPrice("—"); return }
         main.postDelayed({
             if (my != token) return@postDelayed
             io.execute {
                 try {
                     val r = Api.quote(q, method)
-                    ui { if (my == token) popText(total, "К оплате: ${r.optString("total")} ${r.optString("currency", "RUB")}") }
+                    ui { if (my == token) setPrice(fmtMoney(r)) }
                 } catch (e: Exception) {
-                    ui { if (my == token) popText(total, "Не удалось рассчитать цену") }
+                    ui { if (my == token) { popText(bar.total, "—"); popText(cb.price, "Не удалось рассчитать цену") } }
                 }
             }
         }, 400L)
     }
 
-    val methods = c.optJSONArray("methods")
-    if (methods != null) {
-        for ((mid, mname) in shownMethods(c)) {
-            val dotView = View(this).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { rightMargin = dp(14) }
-            }
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(16), dp(14), dp(16), dp(14))
-                layoutParams = lp(8)
-                isClickable = true
-                setOnClickListener {
-                    method = mid
-                    methodName = mname
-                    paint()
-                    requestQuote()
-                }
-                pressable(this)
-            }
-            row.addView(dotView)
-            row.addView(txt(mname, 16f, TEXT))
-            box.addView(row)
-            rows.add(MethodRow(mid, mname, row, dotView, listOf(GOLD, ORANGE, PINK, VIOLET)[rows.size % 4]))
-        }
+    methodPicker(box, shown, method) { id, name ->
+        method = id
+        methodName = name
+        requestQuote()
     }
-    // по умолчанию выбран первый способ — «СБП 1»
-    if (rows.isNotEmpty()) method = rows[0].id
-    methodName = rows.firstOrNull { it.id == method }?.name ?: ""
-    paint()
 
-    qty.addTextChangedListener(object : TextWatcher {
-        override fun afterTextChanged(s: Editable?) { requestQuote() }
-        override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, d: Int) {}
-        override fun onTextChanged(s: CharSequence?, a: Int, b: Int, d: Int) {}
-    })
+    qty.addTextChangedListener(afterText { requestQuote() })
     if (Store.repeatQty > 0) { qty.setText(Store.repeatQty.toString()); Store.repeatQty = 0 }   // «Повторить заказ»
 
-    val info = tv("", 14f, MUTE)
-    val payBtn = gradBtn("Оплатить", GOLD_A, GOLD_B, DARK_ON) {
-        pay(user.text.toString(), qty.text.toString().toIntOrNull() ?: 0, method, methodName, c, info)
-    }
-    col.addView(total)
-    col.addView(payBtn)
-    col.addView(info)
-    col.addView(btn("Мои заказы") { showProfile() })
+    attachBar(col, bar.root)
     riseIn(col, firstNew)
 }
 

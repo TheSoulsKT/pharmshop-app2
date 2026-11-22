@@ -18,6 +18,7 @@ import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -320,7 +321,11 @@ internal fun MainActivity.titleRow(col: LinearLayout, title: String) {
     col.addView(txt(title, 24f, TEXT, true).apply { layoutParams = lp(16) })
 }
 
-internal fun MainActivity.screen(tab: Int = -1): LinearLayout {
+/**
+ * Каркас экрана. bottomBar = true — внизу появляется закреплённая панель (её содержимое
+ * ставится позже через attachBar, когда загрузятся данные). Панель поднимается над клавиатурой.
+ */
+internal fun MainActivity.screen(tab: Int = -1, bottomBar: Boolean = false): LinearLayout {
     screenId++
     backAction = null
     val col = LinearLayout(this).apply {
@@ -332,7 +337,17 @@ internal fun MainActivity.screen(tab: Int = -1): LinearLayout {
         isFillViewport = true
         addView(col)
     }
-    setContentView(withNav(sv, tab))
+    val host = if (bottomBar) FrameLayout(this).apply {
+        setBackgroundColor(BG)
+        setPadding(dp(18), dp(8), dp(18), dp(12))
+    } else null
+    col.tag = host
+    val body: View = if (host == null) sv else LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(sv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        addView(host, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+    }
+    setContentView(withNav(body, tab))
     // переход между экранами: вперёд — выезд справа, назад — слева
     sv.alpha = 0f
     sv.translationX = if (firstScreen) 0f else dp(28).toFloat() * (if (navBack) -1 else 1)
