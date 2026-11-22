@@ -30,6 +30,11 @@ object Store {
         get() = sp.getInt("skin", 0)
         set(v) { sp.edit().putInt("skin", v).apply() }
 
+    /** Стартовая заставка уже показана (при самом первом запуске). */
+    var introSeen: Boolean
+        get() = sp.getBoolean("intro_seen", false)
+        set(v) { sp.edit().putBoolean("intro_seen", v).apply() }
+
     /** Шаги заказа: 0 — значок со статусом (как раньше), 1 — полоса «Создан → Оплачен → Выполнен». */
     var stepsStyle: Int
         get() = sp.getInt("steps_style", 0)

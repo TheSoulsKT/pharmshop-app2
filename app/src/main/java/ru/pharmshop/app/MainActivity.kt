@@ -67,6 +67,7 @@ class MainActivity : AppCompatActivity() {
     internal var forceShown = false     // показан экран обязательного обновления
     internal var lockView: android.view.View? = null   // экран входа по PIN/отпечатку (поверх всего)
     internal var bioBusy = false                       // окно отпечатка уже на экране
+    internal var splashSkip: (() -> Unit)? = null      // пока показана стартовая заставка — как её пропустить
 
     override fun onCreate(savedInstanceState: Bundle?) {
         Store.init(this)
@@ -76,6 +77,7 @@ class MainActivity : AppCompatActivity() {
         applyWindowTheme()
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                splashSkip?.let { it(); return }                         // на заставке «назад» её пропускает
                 if (lockView != null) { moveTaskToBack(true); return }   // на экране входа «назад» просто сворачивает
                 val ba = backAction
                 if (ba != null) { ba(); return }
@@ -102,6 +104,7 @@ class MainActivity : AppCompatActivity() {
             if (AppState.reopen == "settings") showSettings() else showHome()
         }
         AppState.reopen = null
+        showSplashIfFirstRun()   // только при самом первом запуске
         showLockIfNeeded()
     }
 
