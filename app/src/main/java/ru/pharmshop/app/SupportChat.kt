@@ -39,7 +39,7 @@ internal fun MainActivity.faqCard(title: String, body: String, color: Int): Line
 // ---------- поддержка: чат ----------
 
 /** Экран с фиксированной шапкой и полем ввода внизу (для чатов). */
-internal fun MainActivity.chatScreen(): LinearLayout {
+internal fun MainActivity.chatScreen(tab: Int = -1): LinearLayout {
     screenId++
     backAction = null
     navBack = false
@@ -48,7 +48,7 @@ internal fun MainActivity.chatScreen(): LinearLayout {
         setBackgroundColor(BG)
         setPadding(dp(18), dp(28), dp(18), dp(12))
     }
-    setContentView(root)
+    setContentView(withNav(root, tab))
     return root
 }
 
@@ -361,12 +361,12 @@ internal fun MainActivity.faqView(): ScrollView {
     }
 }
 
-/** Единственная точка связи с поддержкой: кнопка «?» на главном экране. */
+/** Единственная точка связи с поддержкой: вкладка «Поддержка» в нижней панели. */
 internal fun MainActivity.showSupport() {
     onHome = false
-    val root = chatScreen()
+    val root = chatScreen(1)
     val sid = screenId
-    backRow(root, "Поддержка")
+    titleRow(root, "Поддержка")
     val nick = Store.lastUser
     val order = Store.orders().firstOrNull()?.optString("order_number").orEmpty()
     val chat = chatPane(

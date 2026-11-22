@@ -12,7 +12,7 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
-enum class Ic { STAR, GIFT, CROWN, BOX, KEY, DB, AT, SEND, USER, BACK, GEAR }
+enum class Ic { STAR, GIFT, CROWN, BOX, KEY, DB, AT, SEND, USER, BACK, GEAR, BAG, CHAT }
 
 /** Линейные иконки в стиле сайта. Рисуются в сетке 24x24. */
 class IconView(ctx: Context, private val kind: Ic, private val tint: Int) : View(ctx) {
@@ -144,6 +144,33 @@ class IconView(ctx: Context, private val kind: Ic, private val tint: Int) : View
                 p.close()
                 c.drawPath(p, stroke)
                 c.drawCircle(12f, 12f, 3.1f, stroke)
+            }
+            Ic.BAG -> {
+                val p = Path()
+                p.moveTo(5f, 8f)
+                p.lineTo(19f, 8f)
+                p.lineTo(20f, 20f)
+                p.lineTo(4f, 20f)
+                p.close()
+                c.drawPath(p, stroke)
+                c.drawArc(RectF(8.5f, 3.5f, 15.5f, 12.5f), 180f, 180f, false, stroke)
+            }
+            Ic.CHAT -> {
+                val p = Path()
+                p.moveTo(5f, 4.5f)
+                p.lineTo(19f, 4.5f)
+                p.quadTo(21f, 4.5f, 21f, 6.5f)
+                p.lineTo(21f, 14.5f)
+                p.quadTo(21f, 16.5f, 19f, 16.5f)
+                p.lineTo(11f, 16.5f)
+                p.lineTo(6.5f, 20.5f)
+                p.lineTo(6.5f, 16.5f)
+                p.lineTo(5f, 16.5f)
+                p.quadTo(3f, 16.5f, 3f, 14.5f)
+                p.lineTo(3f, 6.5f)
+                p.quadTo(3f, 4.5f, 5f, 4.5f)
+                p.close()
+                c.drawPath(p, stroke)
             }
             Ic.BACK -> {
                 val p = Path()

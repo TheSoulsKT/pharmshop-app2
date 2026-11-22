@@ -241,7 +241,86 @@ internal fun MainActivity.input(hintText: String, type: Int): EditText = EditTex
     layoutParams = lp()
 }
 
-internal fun MainActivity.screen(): LinearLayout {
+/** Вкладки нижней панели: 0 — Купить (главная), 1 — Поддержка, 2 — Профиль, 3 — Настройки. */
+internal fun MainActivity.openTab(tab: Int) {
+    when (tab) {
+        0 -> showHome()
+        1 -> showSupport()
+        2 -> showProfile()
+        3 -> showSettings()
+    }
+}
+
+internal fun MainActivity.bottomNav(active: Int): LinearLayout {
+    val items = listOf(
+        Triple(Ic.BAG, "Купить", 0),
+        Triple(Ic.CHAT, "Поддержка", 1),
+        Triple(Ic.USER, "Профиль", 2),
+        Triple(Ic.GEAR, "Настройки", 3)
+    )
+    val row = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        setBackgroundColor(CARD)
+        setPadding(dp(6), dp(8), dp(6), dp(8))
+    }
+    for ((icon, label, idx) in items) {
+        val on = idx == active
+        val color = if (on) BLUE else MUTE
+        val item = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            contentDescription = label
+            isClickable = true
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            setPadding(0, dp(4), 0, dp(4))
+            setOnClickListener {
+                if (!on) { navBack = idx < active; openTab(idx) }
+            }
+            pressable(this)
+            addView(IconView(this@bottomNav, icon, color).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply { bottomMargin = dp(2) }
+            })
+            addView(txt(label, 11f, color, on).apply { gravity = Gravity.CENTER })
+        }
+        row.addView(item)
+    }
+    // тонкая линия сверху + сама панель
+    return LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(View(this@bottomNav).apply {
+            setBackgroundColor(LINE)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1))
+        })
+        addView(row)
+    }
+}
+
+/** Оборачивает экран: сверху содержимое, снизу панель вкладок (прячется, пока открыта клавиатура). */
+internal fun MainActivity.withNav(content: View, tab: Int): View {
+    if (tab < 0) return content
+    val wrap = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setBackgroundColor(BG)
+    }
+    content.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+    wrap.addView(content)
+    val bar = bottomNav(tab)
+    wrap.addView(bar)
+    wrap.viewTreeObserver.addOnGlobalLayoutListener {
+        val ime = androidx.core.view.ViewCompat.getRootWindowInsets(wrap)
+            ?.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime()) ?: false
+        val want = if (ime) View.GONE else View.VISIBLE
+        if (bar.visibility != want) bar.visibility = want
+    }
+    return wrap
+}
+
+/** Заголовок экрана-вкладки (без стрелки «назад»: переходы — через нижнюю панель). */
+internal fun MainActivity.titleRow(col: LinearLayout, title: String) {
+    col.addView(txt(title, 24f, TEXT, true).apply { layoutParams = lp(16) })
+}
+
+internal fun MainActivity.screen(tab: Int = -1): LinearLayout {
     screenId++
     backAction = null
     val col = LinearLayout(this).apply {
@@ -253,7 +332,7 @@ internal fun MainActivity.screen(): LinearLayout {
         isFillViewport = true
         addView(col)
     }
-    setContentView(sv)
+    setContentView(withNav(sv, tab))
     // переход между экранами: вперёд — выезд справа, назад — слева
     sv.alpha = 0f
     sv.translationX = if (firstScreen) 0f else dp(28).toFloat() * (if (navBack) -1 else 1)

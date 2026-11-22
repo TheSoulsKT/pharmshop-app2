@@ -52,25 +52,9 @@ internal fun MainActivity.money(total: String, cur: String): String =
 
 internal fun MainActivity.showProfile() {
     onHome = false
-    val col = screen()
+    val col = screen(2)
     val sid = screenId
-    backRow(col, "Профиль")
-    // кнопка настроек — справа сверху (вставляем в только что созданную строку-шапку)
-    (col.getChildAt(col.childCount - 1) as LinearLayout).apply {
-        addView(android.view.View(this@showProfile).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) })
-        addView(LinearLayout(this@showProfile).apply {
-            gravity = Gravity.CENTER
-            background = ripple(CARD, 22, LINE)
-            isClickable = true
-            contentDescription = "Настройки"
-            setOnClickListener { showSettings() }
-            pressable(this)
-            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-            addView(IconView(this@showProfile, Ic.GEAR, TEXT).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(22), dp(22))
-            })
-        })
-    }
+    titleRow(col, "Профиль")
     val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     col.addView(body)
     renderProfile(body, sid, true)

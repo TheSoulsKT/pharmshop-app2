@@ -22,10 +22,9 @@ import androidx.core.graphics.ColorUtils
 
 internal fun MainActivity.showSettings() {
     onHome = false
-    val col = screen()
+    val col = screen(3)
     val sid = screenId
-    backRow(col, "Настройки") { navBack = true; showProfile() }
-    backAction = { navBack = true; showProfile() }
+    titleRow(col, "Настройки")
     val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     col.addView(body)
     renderSettings(body, sid)

@@ -105,10 +105,10 @@ internal fun MainActivity.sectionTitle(t: String, top: Int): TextView =
 
 internal fun MainActivity.showHome() {
     onHome = true
-    val col = screen()
+    val col = screen(0)
     val sid = screenId
 
-    // шапка: логотип, название, профиль
+    // шапка: логотип и название (профиль, поддержка и настройки — в нижней панели)
     val logo = LogoView(this).apply {
         layoutParams = LinearLayout.LayoutParams(dp(56), dp(56)).apply { rightMargin = dp(14) }
         setOnLongClickListener { showAdminEntry(); true }
@@ -129,39 +129,12 @@ internal fun MainActivity.showHome() {
     titles.addView(title)
     titles.addView(txt("Telegram магазин • Stars • NFT • Подарки", 12f, MUTE))
 
-    val userIcon = IconView(this, Ic.USER, TEXT).apply {
-        layoutParams = LinearLayout.LayoutParams(dp(22), dp(22))
-    }
-    val profileBtn = LinearLayout(this).apply {
-        gravity = Gravity.CENTER
-        background = ripple(CARD, 22, LINE)
-        isClickable = true
-        setOnClickListener { showProfile() }
-        pressable(this)
-        layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
-        addView(userIcon)
-    }
-    val helpBtn = TextView(this).apply {
-        text = "?"
-        textSize = 20f
-        setTextColor(TEXT)
-        setTypeface(typeface, Typeface.BOLD)
-        gravity = Gravity.CENTER
-        contentDescription = "Поддержка"
-        background = ripple(CARD, 22, LINE)
-        isClickable = true
-        setOnClickListener { showSupport() }
-        pressable(this)
-        layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)).apply { rightMargin = dp(8) }
-    }
     val head = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         layoutParams = lp(22)
         addView(logo)
         addView(titles)
-        addView(helpBtn)
-        addView(profileBtn)
     }
     col.addView(head)
     // плашка выбранной темы (у «Стандарта» — новогодняя в сезон)
