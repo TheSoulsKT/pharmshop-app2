@@ -86,7 +86,8 @@ internal fun MainActivity.syncChatInfo(body: LinearLayout, sid: Int) {
     syncMyAvatar()
     io.execute {
         val before = Store.chatNick + "|" + Store.chatMsgs
-        try { ChatApi.chatMe() } catch (e: Exception) { return@execute }
+        val me = try { ChatApi.chatMe() } catch (e: Exception) { return@execute }
+        if (me.optBoolean("registered")) syncCrown(me.optInt("crown") == 1)   // зелёная корона в чате: все достижения собраны?
         ui { syncMyAvatar() }   // ник мог стать известен только сейчас (выбран до этого обновления)
         if (before != Store.chatNick + "|" + Store.chatMsgs) ui { if (sid == screenId) renderProfile(body, sid) }
     }

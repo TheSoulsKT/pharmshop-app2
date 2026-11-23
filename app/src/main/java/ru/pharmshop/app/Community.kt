@@ -10,6 +10,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.lifecycle.Lifecycle
+import com.hcaptcha.sdk.HCaptcha
+import com.hcaptcha.sdk.HCaptchaConfig
+import com.hcaptcha.sdk.HCaptchaException
+import com.hcaptcha.sdk.HCaptchaTokenResponse
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -27,6 +31,35 @@ internal object CommunityState {
     var tab = 0            // 0 — общий чат, 1 — личные
     var pane = 0           // номер текущей ленты: устаревшие ленты перестают опрашивать сервер
     var myUid = 0L
+    var roomNextAt = 0L    // когда снова можно писать в общий чат (время телефона, мс): пауза не сбрасывается при смене вкладки
+}
+
+/** Пауза между сообщениями в общем чате (сервер проверяет то же самое; у модераторов с «галочкой» паузы нет). */
+internal const val ROOM_COOLDOWN_MS = 10_000L
+
+/** Ключ сайта hCaptcha для входа в чат (публичный; секрет хранится только на сервере). */
+private const val CHAT_CAPTCHA_SITEKEY = "3d88c4d4-c8f4-4e0a-8db6-21e62e840604"
+
+/** Открывает проверку hCaptcha. Колбэки приходят в основном потоке. */
+private fun MainActivity.chatCaptcha(onToken: (String) -> Unit, onFail: () -> Unit) {
+    val h = HCaptcha.getClient(this)
+    h.addOnSuccessListener { r: HCaptchaTokenResponse -> onToken(r.tokenResult) }
+    h.addOnFailureListener { _: HCaptchaException -> onFail() }
+    h.setup(HCaptchaConfig.builder().siteKey(CHAT_CAPTCHA_SITEKEY).build())
+    h.verifyWithHCaptcha()
+}
+
+/**
+ * Зелёная корона: если у человека собраны все достижения, а сервер этого не знает (или наоборот) — сообщаем серверу.
+ * [serverCrown] — что сервер знает сейчас. Достижения считаются на телефоне, поэтому корона — только украшение.
+ */
+internal fun MainActivity.syncCrown(serverCrown: Boolean) {
+    io.execute {
+        try {
+            val all = allBadgesGot()
+            if (all != serverCrown) ChatApi.crownSet(all)
+        } catch (e: Exception) { /* не вышло сейчас — повторится при следующем заходе */ }
+    }
 }
 
 internal fun MainActivity.showChatPrivacy() {
@@ -42,12 +75,24 @@ internal fun MainActivity.nickColor(nick: String): Int {
     return palette[(nick.hashCode() and 0x7fffffff) % palette.size]
 }
 
-/** Ник с галочкой (если она есть). */
-internal fun MainActivity.nameRow(nick: String, badge: Boolean, size: Float = 12f): LinearLayout =
+/** Зелёная корона рядом с ником: собраны все достижения. Нажатие объясняет, что это. */
+internal fun MainActivity.crownIcon(size: Float): View {
+    val px = dp((size + 3f).toInt())
+    return IconView(this, Ic.CROWN, GREEN).apply {
+        layoutParams = LinearLayout.LayoutParams(px, px).apply { leftMargin = dp(4) }
+        contentDescription = "Зелёная корона: собраны все достижения"
+        isClickable = true
+        setOnClickListener { toast("Зелёная корона: у этого человека собраны все достижения") }
+    }
+}
+
+/** Ник с зелёной короной (все достижения) и галочкой (модератор), если они есть. */
+internal fun MainActivity.nameRow(nick: String, badge: Boolean, size: Float = 12f, crown: Boolean = false): LinearLayout =
     LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         addView(txt(nick, size, nickColor(nick), true))
+        if (crown) addView(crownIcon(size))
         if (badge) addView(txt(" ✓", size, BLUE, true))
     }
 
@@ -70,7 +115,12 @@ internal fun MainActivity.showCommunity() {
             ui {
                 if (sid != screenId) return@ui
                 body.removeAllViews()
-                if (me.optBoolean("registered")) communityMain(body, sid, me) else registerView(body)
+                if (me.optBoolean("registered")) {
+                    syncCrown(me.optInt("crown") == 1)
+                    communityMain(body, sid, me)
+                } else {
+                    registerView(body)
+                }
             }
         } catch (e: Exception) {
             ui {
@@ -83,16 +133,29 @@ internal fun MainActivity.showCommunity() {
     }
 }
 
-/** Первый вход: выбор ника. Занятый ник сервер не отдаёт. */
+/** Первый вход: выбор ника и проверка «я не робот» (hCaptcha). Занятый ник сервер не отдаёт. */
 private fun MainActivity.registerView(body: LinearLayout) {
     val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    // зачем этот чат
+    inner.addView(LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = shape(CARD, 18, LINE)
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        layoutParams = lp(14)
+        addView(txt("🤝 Чат создан, чтобы помогать друг другу", 15f, TEXT, true).apply { layoutParams = lp(4) })
+        addView(txt(
+            "Задавайте вопросы, делитесь опытом и подсказывайте другим пользователям. Будьте вежливы: за спам и оскорбления доступ к чату могут закрыть.",
+            13f, MUTE
+        ))
+    })
     inner.addView(txt("Выберите ник", 18f, TEXT, true).apply { layoutParams = lp(6) })
     inner.addView(txt(
         "Под ним вас увидят в общем чате и личных сообщениях. Ник уникален: двух одинаковых быть не может.",
         14f, MUTE
     ).apply { layoutParams = lp(8) })
     inner.addView(txt(
-        "3–20 символов: латиница или кириллица (не вперемешку), цифры и «_». Менять ник можно раз в 7 дней.",
+        "3–20 символов: латиница или кириллица (не вперемешку), цифры и «_». Менять ник можно раз в 7 дней. " +
+            "Перед входом нужно пройти короткую проверку, что вы не робот.",
         12f, MUTE
     ).apply { layoutParams = lp(14) })
     val field = input("Ник", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS).apply {
@@ -101,6 +164,10 @@ private fun MainActivity.registerView(body: LinearLayout) {
     }
     val info = txt("", 13f, RED).apply { layoutParams = lp(8) }
     var working = false
+    fun fail(sid: Int, msg: String) {
+        working = false
+        if (sid == screenId) { info.setTextColor(RED); info.text = msg }
+    }
     inner.addView(field)
     inner.addView(info)
     inner.addView(btn("Занять ник", true) {
@@ -108,14 +175,34 @@ private fun MainActivity.registerView(body: LinearLayout) {
         val nick = field.text.toString().trim().removePrefix("@")
         if (nick.isEmpty()) return@btn
         working = true
-        info.text = ""
+        info.setTextColor(MUTE)
+        info.text = "Проверяем ник…"
         val sid = screenId
         io.execute {
             try {
-                ChatApi.chatRegister(nick)
-                ui { working = false; if (sid == screenId) showCommunity() }
+                // сначала ник: чтобы капча не пропадала зря, если он занят или не подходит
+                ChatApi.chatRegister(nick, check = true)
             } catch (e: Exception) {
-                ui { working = false; if (sid == screenId) info.text = errText(e) }
+                ui { fail(sid, errText(e)) }
+                return@execute
+            }
+            ui {
+                if (sid != screenId) { working = false; return@ui }
+                info.text = "Пройдите проверку…"
+                chatCaptcha(
+                    onToken = { token ->
+                        info.text = "Входим в чат…"
+                        io.execute {
+                            try {
+                                ChatApi.chatRegister(nick, captcha = token)
+                                ui { working = false; if (sid == screenId) showCommunity() }
+                            } catch (e: Exception) {
+                                ui { fail(sid, errText(e)) }
+                            }
+                        }
+                    },
+                    onFail = { fail(sid, "Проверка не пройдена. Нажмите «Занять ник» и попробуйте ещё раз") }
+                )
             }
         }
     })
@@ -151,6 +238,7 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
     val myUid = me.optLong("uid")
     var myNick = me.optString("nick")
     var myBadge = me.optInt("badge") == 1
+    var myCrown = me.optInt("crown") == 1
     CommunityState.myUid = myUid
     var unread = 0
     var renderChats: ((JSONObject) -> Unit)? = null
@@ -162,7 +250,11 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
     // шапка: своя аватарка (та же, что в профиле), ник и его смена
     syncMyAvatar()
     val whoNick = txt("", 15f, TEXT, true)
-    fun renderWho() { whoNick.text = myNick + if (myBadge) "  ✓" else "" }
+    val whoCrown = crownIcon(15f)
+    fun renderWho() {
+        whoNick.text = myNick + if (myBadge) "  ✓" else ""
+        whoCrown.visibility = if (myCrown) View.VISIBLE else View.GONE
+    }
     renderWho()
     body.addView(LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -174,7 +266,12 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
         addView(LinearLayout(this@communityMain).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            addView(whoNick)
+            addView(LinearLayout(this@communityMain).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(whoNick)
+                addView(whoCrown)
+            })
             addView(txt("Ваш ник в чате", 11f, MUTE))
         })
         addView(chip("Сменить", false) { changeNickSheet(myNick) { myNick = it; renderWho() } }.apply {
@@ -205,9 +302,13 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
         onData = { r ->
             r.optJSONObject("me")?.let {
                 val b = it.optInt("badge") == 1
-                if (b != myBadge) { myBadge = b; renderWho() }
+                val c = it.optInt("crown") == 1
+                if (b != myBadge || c != myCrown) { myBadge = b; myCrown = c; renderWho() }
             }
-        }
+        },
+        cooldownMs = { if (myBadge) 0L else ROOM_COOLDOWN_MS },
+        nextAt = { CommunityState.roomNextAt },
+        setNextAt = { CommunityState.roomNextAt = it }
     )
 
     // ----- личные чаты -----
@@ -274,7 +375,7 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
                 })
                 card.addView(col)
                 val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-                top.addView(nameRow(c.optString("nick"), c.optInt("badge") == 1, 16f).apply {
+                top.addView(nameRow(c.optString("nick"), c.optInt("badge") == 1, 16f, c.optInt("crown") == 1).apply {
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 })
                 if (un > 0) {
@@ -410,7 +511,10 @@ internal fun MainActivity.msgPane(
     alive: () -> Boolean = { true },
     onName: ((JSONObject) -> Unit)? = null,
     onLong: ((JSONObject) -> Unit)? = null,
-    onData: (JSONObject) -> Unit = {}
+    onData: (JSONObject) -> Unit = {},
+    cooldownMs: () -> Long = { 0L },          // пауза между сообщениями (0 — без паузы)
+    nextAt: () -> Long = { 0L },              // когда можно писать снова (время телефона, мс)
+    setNextAt: (Long) -> Unit = {}
 ): LinearLayout {
     val pane = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -458,7 +562,7 @@ internal fun MainActivity.msgPane(
         lastUid = uid
         val nick = m.optString("nick")
         val head = if (showNames && (!own || namesOnOwn) && !cont) {
-            nameRow(nick, m.optInt("badge") == 1).apply {
+            nameRow(nick, m.optInt("badge") == 1, crown = m.optInt("crown") == 1).apply {
                 (this as View).setPadding(0, 0, 0, dp(1))
                 if (onName != null && !own) {
                     isClickable = true
@@ -526,25 +630,48 @@ internal fun MainActivity.msgPane(
     pane.addView(status)
     if (send != null) {
         val field = chatField()
+        var sendBtn: View? = null
+        // кнопка отправки во время паузы показывает, сколько секунд осталось
+        fun tickCooldown() {
+            val btn = sendBtn ?: return
+            if (sid != screenId || !alive()) return
+            val left = nextAt() - System.currentTimeMillis()
+            if (left <= 0) { setSendCooldown(btn, 0); return }
+            setSendCooldown(btn, ((left + 999) / 1000).toInt())
+            main.postDelayed({ tickCooldown() }, 250L)
+        }
         fun sendNow() {
+            val wait = nextAt() - System.currentTimeMillis()
+            if (wait > 0) {
+                toast("Следующее сообщение можно отправить через ${(wait + 999) / 1000} с")
+                return
+            }
             val text = field.text.toString().trim()
             if (text.isEmpty()) return
             field.setText("")
+            val limit = cooldownMs()
+            if (limit > 0) { setNextAt(System.currentTimeMillis() + limit); tickCooldown() }   // пауза идёт сразу: двойное нажатие не пройдёт
             io.execute {
                 try {
                     send(text)
                     ui { fetchOnce() }
                 } catch (e: Exception) {
                     ui {
+                        if (e is ChatCooldownException) setNextAt(System.currentTimeMillis() + e.retryMs)
+                        else if (limit > 0) setNextAt(0L)   // сообщение не ушло по другой причине — паузу не навязываем
                         if (sid == screenId) {
                             field.setText(text)
                             toast(errText(e))
+                            tickCooldown()
                         }
                     }
                 }
             }
         }
-        pane.addView(composerRow(null, field, sendButton { sendNow() }))
+        val btn = sendButton { sendNow() }
+        sendBtn = btn
+        pane.addView(composerRow(null, field, btn))
+        tickCooldown()   // вернулись на вкладку посреди паузы — отсчёт продолжается
     }
     loop()
     return pane

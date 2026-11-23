@@ -8,6 +8,9 @@ import java.net.URL
 /** Неверный код администратора. */
 class ChatAuthException(msg: String) : Exception(msg)
 
+/** Слишком частые сообщения в общий чат: сервер сказал, через сколько миллисекунд можно писать снова. */
+class ChatCooldownException(msg: String, val retryMs: Long) : Exception(msg)
+
 /** Клиент чата поддержки. Сервер: server/worker.js (Cloudflare Workers). */
 object ChatApi {
     /**
@@ -39,6 +42,9 @@ object ChatApi {
                 throw Exception("Сервер чата ответил неожиданно (код $code)")
             }
             if (code == 401) throw ChatAuthException(json.optString("error", "Неверный код"))
+            if (code == 429 && json.has("retry_ms")) {
+                throw ChatCooldownException(json.optString("error", "Слишком часто"), json.optLong("retry_ms"))
+            }
             if (code !in 200..299) {
                 AppLog.e("chat", "$path → HTTP $code: ${json.optString("error").take(120)}")
                 throw Exception(json.optString("error", "Ошибка $code"))
@@ -190,9 +196,20 @@ object ChatApi {
         if (it.optBoolean("registered")) { Store.chatNick = it.optString("nick"); noteMsgs(it) }
     }
 
-    /** Занять ник или сменить свой. Сервер отвечает ошибкой, если ник занят, зарезервирован или не подходит. */
-    fun chatRegister(nick: String): JSONObject =
-        post("/api/chat/register", dev().put("nick", nick)).also { Store.chatNick = it.optString("nick", nick) }
+    /**
+     * Занять ник или сменить свой. Сервер отвечает ошибкой, если ник занят, зарезервирован или не подходит.
+     * Новому пользователю нужен токен hCaptcha ([captcha]). check = true — только проверить ник (занят ли), ничего не создавая:
+     * так капча не тратится зря на занятый ник.
+     */
+    fun chatRegister(nick: String, captcha: String = "", check: Boolean = false): JSONObject {
+        val body = dev().put("nick", nick)
+        if (captcha.isNotEmpty()) body.put("captcha", captcha)
+        if (check) body.put("check", true)
+        return post("/api/chat/register", body).also { if (!check) Store.chatNick = it.optString("nick", nick) }
+    }
+
+    /** Сообщить серверу, собраны ли все достижения (зелёная корона рядом с ником в чате). */
+    fun crownSet(all: Boolean) { post("/api/chat/crown", dev().put("crown", all)) }
 
     /** {messages, rev, reset, me}. rev — ревизия ленты: если сервер вернул другую, ленту нужно перечитать (reset = true). */
     fun roomMessages(after: Long, rev: Long): JSONObject = post("/api/room/messages", dev().put("after", after).put("rev", rev))

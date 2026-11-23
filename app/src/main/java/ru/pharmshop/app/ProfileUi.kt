@@ -363,6 +363,13 @@ internal fun MainActivity.badgeList(orders: List<org.json.JSONObject>, stars: In
     return list
 }
 
+/** Собраны ли все достижения до одного: за это в чате выдаётся зелёная корона. */
+internal fun MainActivity.allBadgesGot(): Boolean {
+    val orders = Store.orders()
+    val all = badgeList(orders, paidStars(orders))
+    return all.isNotEmpty() && all.all { it.got }
+}
+
 /** Заголовок раздела: «Достижения · 7 из 20». */
 internal fun MainActivity.achievementsTitle(orders: List<org.json.JSONObject>, stars: Int): String {
     val all = badgeList(orders, stars)

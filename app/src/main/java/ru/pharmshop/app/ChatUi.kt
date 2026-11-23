@@ -235,13 +235,35 @@ private fun MainActivity.roundIcon(fill: Int, ring: Int, onClick: () -> Unit, bu
     }
 
 /** Круглая кнопка «отправить» со стрелкой. */
-internal fun MainActivity.sendButton(onClick: () -> Unit): View =
+internal fun MainActivity.sendButton(onClick: () -> Unit): FrameLayout =
     roundIcon(BLUE, 0, onClick) {
         contentDescription = "Отправить"
         addView(IconView(this@sendButton, Ic.SEND, Color.BLACK).apply {
             layoutParams = FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER)
         })
+        // поверх стрелки — число секунд до следующего сообщения (показывается только во время паузы)
+        addView(txt("", 16f, TEXT, true).apply {
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        })
     }
+
+/** Пауза между сообщениями: пока [sec] > 0, вместо стрелки на кнопке — оставшиеся секунды. 0 — обычный вид. */
+internal fun MainActivity.setSendCooldown(btn: View, sec: Int) {
+    val f = btn as? FrameLayout ?: return
+    val icon = f.getChildAt(0) ?: return
+    val label = f.getChildAt(1) as? TextView ?: return
+    val on = sec > 0
+    icon.visibility = if (on) View.GONE else View.VISIBLE
+    label.visibility = if (on) View.VISIBLE else View.GONE
+    if (on) label.text = sec.toString()
+    (f.background as? GradientDrawable)?.apply {
+        setColor(if (on) CARD else BLUE)
+        setStroke(if (on) dp(1) else 0, LINE)
+    }
+    f.contentDescription = if (on) "Следующее сообщение через $sec с" else "Отправить"
+}
 
 /** Круглая кнопка-скрепка. */
 internal fun MainActivity.attachButton(onClick: () -> Unit): View =

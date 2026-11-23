@@ -62,6 +62,7 @@ const MIGRATIONS = [
   `CREATE INDEX IF NOT EXISTS idx_threads_ip ON threads (last_ip, created)`,
   `ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT ''`,              // маленькая аватарка (JPEG в base64), та же, что в профиле приложения
   `ALTER TABLE users ADD COLUMN avatar_v INTEGER DEFAULT 0`,          // версия аватарки (время загрузки); 0 — аватарки нет
+  `ALTER TABLE users ADD COLUMN crown INTEGER DEFAULT 0`,             // 1 — «зелёная корона»: собраны все достижения (сообщает приложение)
 ];
 const MAX_AVATAR = 60_000;       // символов base64 (~45 КБ): приложение присылает 128×128
 const MAX_DIAG = 4000;            // символов JSON с диагностикой устройства
@@ -93,7 +94,10 @@ const RATE_ROOM_PER_MIN = 8;           // сообщений в общий ча�
 const RATE_DM_PER_MIN = 15;            // личных сообщений за минуту
 const RATE_NEW_USERS_PER_IP = 5;       // новых ников с одного IP за сутки
 const NICK_CHANGE_MS = 7 * 24 * 60 * 60 * 1000;   // сменить ник можно раз в 7 дней
+const ROOM_COOLDOWN_MS = 10_000;       // не чаще одного сообщения в общий чат раз в 10 секунд (у модераторов лимита нет)
 const CHAT_TEXT_MAX = 1000;
+// hCaptcha при первом входе в чат. Ключ сайта публичный, секрет — в переменной HCAPTCHA_SECRET (Variables and Secrets).
+const HCAPTCHA_SITEKEY = '3d88c4d4-c8f4-4e0a-8db6-21e62e840604';
 const MUTE_FOREVER = 4102444800000;    // 1 января 2100
 
 async function sha256(s) {
@@ -713,7 +717,7 @@ const RESERVED_WORDS = ['admin', 'administrator', 'moderator', 'moder', 'support
 const RESERVED_KEYS = RESERVED_WORDS.map(nickKey);
 const isReservedNick = (key) => RESERVED_KEYS.some((r) => key === r || key.startsWith(r));
 
-const CHAT_USER_SQL = `SELECT id, device, secret_hash, nick, badge, muted_until, nick_changed, last_seen, avatar_v FROM users WHERE device = ?`;
+const CHAT_USER_SQL = `SELECT id, device, secret_hash, nick, badge, muted_until, nick_changed, last_seen, avatar_v, crown FROM users WHERE device = ?`;
 
 // Проверка пользователя чата. Возвращает { u, ip, now } или { e: Response }.
 async function chatUser(body, env, request) {
@@ -732,7 +736,7 @@ async function chatUser(body, env, request) {
   return { u, ip, now };
 }
 
-const meOf = (u, now) => ({ registered: true, uid: u.id, nick: u.nick, badge: u.badge ? 1 : 0, av: u.avatar_v || 0, muted_until: u.muted_until > now ? u.muted_until : 0 });
+const meOf = (u, now) => ({ registered: true, uid: u.id, nick: u.nick, badge: u.badge ? 1 : 0, crown: u.crown ? 1 : 0, av: u.avatar_v || 0, muted_until: u.muted_until > now ? u.muted_until : 0 });
 // Сколько сообщений человек написал (общий чат + личные): для достижения «за общение».
 async function countMsgs(env, uid) {
   const r = await env.DB.prepare(
@@ -754,7 +758,19 @@ async function chatMe(body, env, request) {
   return json({ ...meOf(u, Date.now()), msgs: await countMsgs(env, u.id), nick_change_at: u.nick_changed ? u.nick_changed + NICK_CHANGE_MS : 0 });
 }
 
-// Занять ник или сменить свой (не чаще раза в 7 дней).
+// Проверка токена hCaptcha на сервере hCaptcha. Возвращает 'ok' | 'bad' | 'off' (нет секрета) | 'down' (hCaptcha недоступен).
+async function verifyCaptcha(env, token) {
+  if (!env.HCAPTCHA_SECRET) return 'off';
+  if (!token || token.length > 6000) return 'bad';
+  try {
+    const form = new URLSearchParams({ secret: env.HCAPTCHA_SECRET, response: token, sitekey: HCAPTCHA_SITEKEY });
+    const r = await fetch('https://api.hcaptcha.com/siteverify', { method: 'POST', body: form });
+    const j = await r.json();
+    return j && j.success === true ? 'ok' : 'bad';
+  } catch (e) { return 'down'; }
+}
+
+// Занять ник или сменить свой (не чаще раза в 7 дней). Новому пользователю нужен токен капчи (captcha).
 async function chatRegister(body, env, request) {
   const device = String(body.device || '');
   const secret = String(body.secret || '');
@@ -794,6 +810,14 @@ async function chatRegister(body, env, request) {
   const c = await env.DB.prepare('SELECT COUNT(*) AS n FROM users WHERE last_ip = ? AND created > ?').bind(ip, dayAgo).first();
   if (c && c.n >= RATE_NEW_USERS_PER_IP) return err('Слишком много новых ников с вашего адреса. Попробуйте завтра', 429);
   if (await env.DB.prepare('SELECT 1 AS x FROM users WHERE nick_key = ?').bind(key).first()) return err(taken, 409);
+  if (body.check === true) return json({ ok: true, check: true });   // приложение сперва проверяет ник и только потом показывает капчу
+  // капча — после всех дешёвых проверок, чтобы токен (он одноразовый) не сгорал зря на занятом нике
+  const captcha = String(body.captcha || '');
+  if (!captcha) return err('Пройдите проверку «я не робот»', 400);
+  const cv = await verifyCaptcha(env, captcha);
+  if (cv === 'off') return err('Проверка на сервере не настроена (нет HCAPTCHA_SECRET)', 503);
+  if (cv === 'down') return err('Не удалось проверить капчу. Попробуйте ещё раз', 503);
+  if (cv !== 'ok') return err('Проверка не пройдена. Попробуйте ещё раз', 403);
   try {
     await env.DB.prepare(
       'INSERT INTO users (device, secret_hash, nick, nick_key, created, last_seen, last_ip) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -825,8 +849,17 @@ async function avatarGet(body, env, request) {
   return json({ av: t ? t.avatar_v || 0 : 0, image: t ? t.avatar || '' : '' });
 }
 
+// «Зелёная корона»: приложение сообщает, что у человека собраны все достижения (оно считает их у себя). Только украшение.
+async function crownSet(body, env, request) {
+  const a = await chatUser(body, env, request);
+  if (a.e) return a.e;
+  const v = body.crown === true || body.crown === 1 ? 1 : 0;
+  if ((a.u.crown ? 1 : 0) !== v) await env.DB.prepare('UPDATE users SET crown = ? WHERE id = ?').bind(v, a.u.id).run();
+  return json({ ok: true, crown: v });
+}
+
 // ----- общий чат (одна комната) -----
-const ROOM_SQL = `SELECT r.id, r.uid, COALESCE(u.nick, 'удалён') AS nick, COALESCE(u.badge, 0) AS badge, COALESCE(u.avatar_v, 0) AS av, r.text, r.ts
+const ROOM_SQL = `SELECT r.id, r.uid, COALESCE(u.nick, 'удалён') AS nick, COALESCE(u.badge, 0) AS badge, COALESCE(u.crown, 0) AS crown, COALESCE(u.avatar_v, 0) AS av, r.text, r.ts
                     FROM room_messages r LEFT JOIN users u ON u.id = r.uid`;
 
 async function roomRev(env) {
@@ -871,10 +904,13 @@ async function roomSend(body, env, request) {
   if (!u.badge) {
     const r = await env.DB.prepare('SELECT COUNT(*) AS n, MAX(ts) AS last FROM room_messages WHERE uid = ? AND ts > ?').bind(u.id, now - 60_000).first();
     if (r && r.n >= RATE_ROOM_PER_MIN) return err('Слишком много сообщений. Подождите минуту', 429);
-    if (r && r.last && now - r.last < 1000) return err('Слишком часто, подождите секунду', 429);
+    if (r && r.last && now - r.last < ROOM_COOLDOWN_MS) {
+      const wait = ROOM_COOLDOWN_MS - (now - r.last);
+      return json({ error: `Подождите ${Math.ceil(wait / 1000)} с до следующего сообщения`, retry_ms: wait }, 429);
+    }
   }
   await env.DB.prepare('INSERT INTO room_messages (uid, text, ts) VALUES (?, ?, ?)').bind(u.id, text, now).run();
-  return json({ ok: true, msgs: await countMsgs(env, u.id) });
+  return json({ ok: true, msgs: await countMsgs(env, u.id), cooldown_ms: u.badge ? 0 : ROOM_COOLDOWN_MS });
 }
 
 // Удалить сообщение может автор или модератор («галочка»).
@@ -907,7 +943,7 @@ async function roomMute(body, env, request) {
 
 // ----- личные сообщения -----
 const pairOf = (x, y) => (x < y ? [x, y] : [y, x]);
-const DM_SQL = `SELECT d.id, d.sender AS uid, COALESCE(u.nick, 'удалён') AS nick, COALESCE(u.badge, 0) AS badge, COALESCE(u.avatar_v, 0) AS av, d.text, d.ts
+const DM_SQL = `SELECT d.id, d.sender AS uid, COALESCE(u.nick, 'удалён') AS nick, COALESCE(u.badge, 0) AS badge, COALESCE(u.crown, 0) AS crown, COALESCE(u.avatar_v, 0) AS av, d.text, d.ts
                   FROM dm_messages d LEFT JOIN users u ON u.id = d.sender WHERE d.a = ? AND d.b = ?`;
 async function dmFetch(env, a, b, after) {
   if (after > 0) {
@@ -923,10 +959,10 @@ async function dmFind(body, env, request) {
   if (a.e) return a.e;
   const nick = String(body.nick || '').replace(/^@/, '').trim().slice(0, 40);
   if (!nick) return err('Введите ник');
-  const t = await env.DB.prepare('SELECT id, nick, badge, avatar_v FROM users WHERE nick_key = ?').bind(nickKey(nick)).first();
+  const t = await env.DB.prepare('SELECT id, nick, badge, crown, avatar_v FROM users WHERE nick_key = ?').bind(nickKey(nick)).first();
   if (!t) return err('Пользователь не найден', 404);
   if (t.id === a.u.id) return err('Это вы');
-  return json({ uid: t.id, nick: t.nick, badge: t.badge ? 1 : 0, av: t.avatar_v || 0 });
+  return json({ uid: t.id, nick: t.nick, badge: t.badge ? 1 : 0, crown: t.crown ? 1 : 0, av: t.avatar_v || 0 });
 }
 
 async function dmList(body, env, request) {
@@ -934,7 +970,7 @@ async function dmList(body, env, request) {
   if (a.e) return a.e;
   const me = a.u.id;
   const { results } = await env.DB.prepare(
-    `SELECT p.peer AS uid, u.nick AS nick, u.badge AS badge, COALESCE(u.avatar_v, 0) AS av, m.text AS text, m.ts AS ts, m.sender AS sender,
+    `SELECT p.peer AS uid, u.nick AS nick, u.badge AS badge, COALESCE(u.crown, 0) AS crown, COALESCE(u.avatar_v, 0) AS av, m.text AS text, m.ts AS ts, m.sender AS sender,
             (SELECT COUNT(*) FROM dm_messages x
               WHERE x.sender = p.peer AND ((x.a = ? AND x.b = p.peer) OR (x.b = ? AND x.a = p.peer))
                 AND x.id > COALESCE((SELECT last_id FROM dm_reads r WHERE r.uid = ? AND r.peer = p.peer), 0)) AS unread
@@ -951,7 +987,7 @@ async function dmMessages(body, env, request) {
   const a = await chatUser(body, env, request);
   if (a.e) return a.e;
   const peerId = Number(body.with) || 0;
-  const peer = await env.DB.prepare('SELECT id, nick, badge, avatar_v FROM users WHERE id = ?').bind(peerId).first();
+  const peer = await env.DB.prepare('SELECT id, nick, badge, crown, avatar_v FROM users WHERE id = ?').bind(peerId).first();
   if (!peer) return err('Пользователь не найден', 404);
   const [x, y] = pairOf(a.u.id, peer.id);
   const messages = await dmFetch(env, x, y, Number(body.after) || 0);
@@ -963,7 +999,7 @@ async function dmMessages(body, env, request) {
     ).bind(a.u.id, peer.id, last.m).run();
   }
   const pr = await env.DB.prepare('SELECT last_id FROM dm_reads WHERE uid = ? AND peer = ?').bind(peer.id, a.u.id).first();
-  return json({ messages, peer: { uid: peer.id, nick: peer.nick, badge: peer.badge ? 1 : 0, av: peer.avatar_v || 0 }, peer_read: pr ? pr.last_id : 0 });
+  return json({ messages, peer: { uid: peer.id, nick: peer.nick, badge: peer.badge ? 1 : 0, crown: peer.crown ? 1 : 0, av: peer.avatar_v || 0 }, peer_read: pr ? pr.last_id : 0 });
 }
 
 async function dmSend(body, env, request) {
@@ -1093,6 +1129,7 @@ export default {
     if (path === '/api/chat/register') return chatRegister(body, env, request);
     if (path === '/api/chat/avatar_set') return avatarSet(body, env, request);
     if (path === '/api/chat/avatar_get') return avatarGet(body, env, request);
+    if (path === '/api/chat/crown') return crownSet(body, env, request);
     if (path === '/api/room/messages') return roomMessages(body, env, request);
     if (path === '/api/room/send') return roomSend(body, env, request);
     if (path === '/api/room/delete') return roomDelete(body, env, request);
