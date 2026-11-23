@@ -191,6 +191,31 @@ object Store {
         get() = sp.getInt("seen_code", -1)
         set(v) { sp.edit().putInt("seen_code", v).apply() }
 
+    // ----- вклад в развитие приложения (для достижений) -----
+    /** Сколько отчётов о реальных ошибках отправлено. Засчитывается не больше одного в сутки, чтобы нельзя было накрутить. */
+    var bugReports: Int
+        get() = sp.getInt("bug_reports", 0)
+        set(v) { sp.edit().putInt("bug_reports", v).apply() }
+
+    private var bugReportDay: Long
+        get() = sp.getLong("bug_report_day", 0L)
+        set(v) { sp.edit().putLong("bug_report_day", v).apply() }
+
+    /** Отчёт об ошибке отправлен. [real] — в нём была настоящая ошибка (сбой, запись в журнале) или описание проблемы. */
+    fun noteBugReport(real: Boolean) {
+        if (!real) return
+        val day = System.currentTimeMillis() / 86_400_000L
+        if (day == bugReportDay) return
+        sp.edit().putInt("bug_reports", bugReports + 1).putLong("bug_report_day", day).apply()
+    }
+
+    /** Сколько раз администратор отметил обращение в поддержку решённым. Число приходит с сервера и только растёт. */
+    var supportSolved: Int
+        get() = sp.getInt("support_solved", 0)
+        set(v) { sp.edit().putInt("support_solved", v).apply() }
+
+    fun noteSupportSolved(n: Int) { if (n > supportSolved) supportSolved = n }
+
     // ----- защита входа -----
     /** 0 — выключена, 1 — PIN, 2 — отпечаток (PIN остаётся запасным входом). */
     var lockMode: Int

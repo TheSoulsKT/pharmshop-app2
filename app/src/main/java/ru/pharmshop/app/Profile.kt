@@ -138,11 +138,9 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
 
     // достижения открываются сами; при скрытых данных не показываем, чтобы не выдавать покупки
     if (!hiddenData()) {
-        body.addView(profileTitle("Достижения"))
+        body.addView(profileTitle(achievementsTitle(orders, stars)))
         body.addView(achievementsRow(orders, stars))
     }
-
-    body.addView(linkTile("🤖", "Бот @pharmaishop_bot", "Заказы и подарки в Telegram") { openUrl("$BOT_URL?start=app") })
 
     // заголовок списка
     val listTitle = txt("Мои заказы", 18f, TEXT, true).apply {

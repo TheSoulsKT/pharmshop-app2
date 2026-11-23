@@ -84,7 +84,12 @@ object ChatApi {
 
     /** Фоновый опрос: {unread, last_id, text} — непрочитанные ответы поддержки. Ничего не помечает прочитанным. */
     fun userPoll(device: String, secret: String): JSONObject =
-        post("/api/chat/poll", JSONObject().put("device", device).put("secret", secret))
+        post("/api/chat/poll", JSONObject().put("device", device).put("secret", secret)).also { noteSolved(it) }
+
+    /** Сервер сообщает, сколько обращений администратор отметил решёнными: запоминаем для достижений. */
+    private fun noteSolved(r: JSONObject) {
+        if (r.has("solved")) Store.noteSupportSolved(r.optInt("solved"))
+    }
 
     fun userImage(device: String, secret: String, id: Long): String =
         post("/api/chat/image", JSONObject().put("device", device).put("secret", secret).put("id", id))
@@ -93,6 +98,7 @@ object ChatApi {
     fun userMessages(device: String, secret: String, after: Long): JSONArray {
         val r = post("/api/chat/messages", JSONObject().put("device", device).put("secret", secret).put("after", after))
         lastReadTs = r.optLong("read_ts")
+        noteSolved(r)
         return r.optJSONArray("messages") ?: JSONArray()
     }
 

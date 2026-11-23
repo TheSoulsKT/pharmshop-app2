@@ -24,6 +24,10 @@ object BugReport {
         }
     }
 
+    /** Настоящий ли это отчёт: есть сбой или записи об ошибках в журнале либо пользователь описал проблему. */
+    fun isReal(comment: String): Boolean =
+        AppLog.lastCrash().isNotBlank() || AppLog.recent(8).isNotEmpty() || comment.trim().length >= 20
+
     /** Полный текст сообщения; если не влезает в лимит — сначала режем журнал, потом стек сбоя. */
     fun build(c: Context, comment: String): String {
         val head = StringBuilder("🐞 Отчёт об ошибке")
@@ -82,11 +86,14 @@ internal fun MainActivity.openBugReport() {
             if (sending) return@gbtn
             sending = true
             send.text = "Отправляем…"
-            val text = BugReport.build(this, field.text.toString())
+            val comment = field.text.toString()
+            val text = BugReport.build(this, comment)
+            val real = BugReport.isReal(comment)
             val order = Store.orders().firstOrNull()?.optString("order_number").orEmpty()
             io.execute {
                 try {
                     ChatApi.userSend(Store.deviceId, Store.deviceSecret, Store.lastUser, order, BuildConfig.VERSION_NAME, text)
+                    Store.noteBugReport(real)
                     ui { toast("Отчёт отправлен. Ответ придёт в чат поддержки"); close() }
                 } catch (e: Exception) {
                     AppLog.e("report", e)

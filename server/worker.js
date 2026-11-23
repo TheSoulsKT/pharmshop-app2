@@ -37,6 +37,8 @@ const MIGRATIONS = [
   `ALTER TABLE threads ADD COLUMN user_read_ts INTEGER DEFAULT 0`,     // пользователь прочитал ответы админа до этого времени
   `ALTER TABLE threads ADD COLUMN diag TEXT DEFAULT ''`,               // диагностика и аналитика устройства (JSON из приложения)
   `ALTER TABLE threads ADD COLUMN diag_ts INTEGER DEFAULT 0`,          // когда блок получен в последний раз
+  `ALTER TABLE threads ADD COLUMN solved INTEGER DEFAULT 0`,           // сколько раз обращение отмечали «Решено» (для достижений в приложении)
+  `UPDATE threads SET solved = 1 WHERE status = 'done' AND COALESCE(solved, 0) = 0`,   // уже закрытые до этого обновления
   `CREATE INDEX IF NOT EXISTS idx_messages_ip ON messages (ip)`,
   `CREATE INDEX IF NOT EXISTS idx_threads_ip ON threads (last_ip, created)`,
 ];
@@ -363,8 +365,8 @@ async function userMessages(body, env) {
   const device = String(body.device || '');
   const secret = String(body.secret || '');
   if (!UUID.test(device) || secret.length < 16) return err('Некорректный запрос');
-  const t = await env.DB.prepare('SELECT secret_hash, admin_read_ts FROM threads WHERE device = ?').bind(device).first();
-  if (!t) return json({ messages: [], read_ts: 0 });
+  const t = await env.DB.prepare('SELECT secret_hash, admin_read_ts, solved FROM threads WHERE device = ?').bind(device).first();
+  if (!t) return json({ messages: [], read_ts: 0, solved: 0 });
   if (t.secret_hash !== (await sha256(secret))) return err('Нет доступа', 403);
   const { results } = await env.DB.prepare(MSG_SQL).bind(device, Number(body.after) || 0).all();
   // пользователь открыл чат — ответы админа прочитаны (пишем в базу, только если есть что отметить)
@@ -372,7 +374,7 @@ async function userMessages(body, env) {
     `UPDATE threads SET user_read_ts = ? WHERE device = ?
        AND user_read_ts < (SELECT COALESCE(MAX(ts), 0) FROM messages WHERE device = ? AND sender = 'admin')`
   ).bind(Date.now(), device, device).run();
-  return json({ messages: results, read_ts: t.admin_read_ts || 0 });
+  return json({ messages: results, read_ts: t.admin_read_ts || 0, solved: t.solved || 0 });
 }
 
 // Лёгкий опрос для фоновых уведомлений: сколько ответов админа пользователь ещё не прочитал.
@@ -381,8 +383,8 @@ async function userPoll(body, env) {
   const device = String(body.device || '');
   const secret = String(body.secret || '');
   if (!UUID.test(device) || secret.length < 16) return err('Некорректный запрос');
-  const t = await env.DB.prepare('SELECT secret_hash, user_read_ts FROM threads WHERE device = ?').bind(device).first();
-  if (!t) return json({ unread: 0, last_id: 0, text: '' });
+  const t = await env.DB.prepare('SELECT secret_hash, user_read_ts, solved FROM threads WHERE device = ?').bind(device).first();
+  if (!t) return json({ unread: 0, last_id: 0, text: '', solved: 0 });
   if (t.secret_hash !== (await sha256(secret))) return err('Нет доступа', 403);
   const n = await env.DB.prepare(
     `SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS last_id FROM messages WHERE device = ? AND sender = 'admin' AND ts > ?`
@@ -392,7 +394,7 @@ async function userPoll(body, env) {
     const m = await env.DB.prepare(`SELECT text, (image != '') AS has_image FROM messages WHERE id = ?`).bind(n.last_id).first();
     text = m ? (m.text || (m.has_image ? '📷 Фото' : '')).slice(0, 160) : '';
   }
-  return json({ unread: n ? n.n : 0, last_id: n ? n.last_id : 0, text });
+  return json({ unread: n ? n.n : 0, last_id: n ? n.last_id : 0, text, solved: t.solved || 0 });
 }
 
 async function userImage(body, env) {
@@ -518,7 +520,11 @@ async function adminSetStatus(body, env) {
   const device = String(body.device || '');
   const status = String(body.status || '');
   if (!UUID.test(device) || !STATUSES.includes(status)) return err('Некорректный запрос');
-  await env.DB.prepare('UPDATE threads SET status = ? WHERE device = ?').bind(status, device).run();
+  // «Решено» считаем, только когда статус меняется на done с другого: повторные нажатия счётчик не накручивают
+  await env.DB.prepare(
+    `UPDATE threads SET solved = COALESCE(solved, 0) + CASE WHEN ? = 'done' AND COALESCE(status, 'new') != 'done' THEN 1 ELSE 0 END,
+       status = ? WHERE device = ?`
+  ).bind(status, status, device).run();
   return json({ ok: true });
 }
 

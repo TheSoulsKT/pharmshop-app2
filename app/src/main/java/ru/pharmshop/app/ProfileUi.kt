@@ -1,5 +1,6 @@
 package ru.pharmshop.app
 
+import android.animation.ValueAnimator
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Outline
@@ -14,6 +15,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
+import android.view.animation.LinearInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -22,6 +24,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.graphics.ColorUtils
 import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.sin
 
 // Оформление профиля: карточка с обложкой, фото и ником, достижения, плитки статистики и аккуратные окна редактирования.
 
@@ -101,6 +105,67 @@ internal fun MainActivity.avatarView(sizeDp: Int, user: String, letterSize: Floa
 }
 
 /**
+ * Полученные достижения плавно плавают на обложке. Из каждой «лесенки» берётся высший значок, всего не больше восьми.
+ * Если анимированный фон выключен в настройках — значки просто лежат на месте. При скрытых данных не показываются.
+ */
+private fun MainActivity.floatBadges(cover: FrameLayout) {
+    if (hiddenData()) return
+    val orders = Store.orders()
+    val top = badgeList(orders, paidStars(orders)).filter { it.got }.groupBy { it.group }.values.map { it.last() }
+    val icons = top.reversed().take(8)           // сначала самые «личные»: помощь приложению, звёзды
+    if (icons.isEmpty()) return
+
+    val size = dp(26)
+    val views = icons.map { b ->
+        TextView(this).apply {
+            text = b.emoji
+            textSize = 15f
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            alpha = 0.92f
+            contentDescription = b.title
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(ColorUtils.setAlphaComponent(Color.WHITE, 52)) }
+            layoutParams = FrameLayout.LayoutParams(size, size, Gravity.START or Gravity.TOP)
+        }
+    }
+    views.forEach { cover.addView(it) }
+
+    var phase = 0f
+    val n = views.size
+    val loopMs = 16000L
+    fun place() {
+        val w = cover.width
+        if (w == 0) return
+        for ((i, v) in views.withIndex()) {
+            val baseX = (i + 0.5f) / n * w - size / 2f
+            val baseY = if (i % 2 == 0) dp(6).toFloat() else dp(24).toFloat()      // два «этажа» над фото
+            val shift = i * 0.37f
+            // целое число колебаний за круг, поэтому движение не дёргается при перезапуске
+            val tx = sin(2 * PI * (phase * (1 + i % 2) + shift)).toFloat()
+            val ty = sin(2 * PI * (phase * (2 + i % 3) + shift * 1.3f)).toFloat()
+            v.translationX = baseX + dp(9) * tx
+            v.translationY = baseY + dp(5) * ty
+            v.rotation = 9f * sin(2 * PI * (phase + shift)).toFloat()
+        }
+    }
+    cover.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> place() }
+    place()
+
+    if (!Store.fxEnabled) return
+    val anim = ValueAnimator.ofFloat(0f, 1f).apply {
+        duration = loopMs
+        repeatCount = ValueAnimator.INFINITE
+        interpolator = LinearInterpolator()
+        addUpdateListener { phase = it.animatedValue as Float; place() }
+    }
+    cover.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+        override fun onViewAttachedToWindow(v: View) { if (!anim.isStarted) anim.start() }
+        override fun onViewDetachedFromWindow(v: View) { anim.cancel() }
+    })
+    if (cover.isAttachedToWindow) anim.start()
+}
+
+/**
  * Главная карточка профиля: обложка, фото с кнопкой камеры, ник с карандашом, описание.
  * Если включено «Скрывать суммы и ники» — нажатие на карточку показывает и прячет данные.
  */
@@ -129,6 +194,7 @@ internal fun MainActivity.profileHero(body: LinearLayout, sid: Int, user: String
             bottomMargin = -dp(46); leftMargin = dp(20)
         }
     })
+    floatBadges(cover)
     cover.addView(roundBtn("🎨", 36, ColorUtils.setAlphaComponent(Color.BLACK, 110), Color.TRANSPARENT, "Сменить обложку") {
         coverSheet(body, sid)
     }.apply {
@@ -221,19 +287,66 @@ internal fun MainActivity.statCard(emoji: String, value: String, label: String, 
         addView(txt(label, 11f, MUTE).apply { gravity = Gravity.CENTER })
     }
 
-private class BadgeInfo(val emoji: String, val title: String, val hint: String, val got: Boolean)
+/** Одно достижение. [group] — «лесенка» значков одного вида (звёзды, отчёты…): на обложке плавает только высший из полученных. */
+internal class BadgeInfo(val emoji: String, val title: String, val hint: String, val got: Boolean, val group: String)
 
-/** Достижения: открываются сами по тому, что уже есть в приложении. Нажатие подсказывает, как получить. */
+private fun fmtNum(n: Int): String = n.toString().reversed().chunked(3).joinToString(" ").reversed()
+
+internal fun paidOrders(orders: List<org.json.JSONObject>): List<org.json.JSONObject> =
+    orders.filter { val k = statusKind(effStatus(it)); k == 1 || k == 2 }
+
+/** Сколько звёзд куплено в оплаченных заказах (Premium не считается). */
+internal fun paidStars(orders: List<org.json.JSONObject>): Int =
+    paidOrders(orders).filter { it.optString("product") != "premium" }.sumOf { it.optInt("quantity") }
+
+/** Все достижения. Открываются сами по тому, что уже есть в приложении; внутри «лесенки» идут по возрастанию. */
+internal fun MainActivity.badgeList(orders: List<org.json.JSONObject>, stars: Int): List<BadgeInfo> {
+    val paid = paidOrders(orders)
+    val paidCount = paid.size
+    val premiumBought = paid.any { it.optString("product") == "premium" }
+    val reports = Store.bugReports
+    val solved = Store.supportSolved
+    val list = ArrayList<BadgeInfo>()
+
+    // покупки
+    list += BadgeInfo("🛒", "Первый заказ", "Оформите любой заказ", orders.isNotEmpty(), "order")
+    list += BadgeInfo("🧾", "5 заказов", "Оплатите 5 заказов · сейчас $paidCount", paidCount >= 5, "order")
+    list += BadgeInfo("📦", "15 заказов", "Оплатите 15 заказов · сейчас $paidCount", paidCount >= 15, "order")
+    for ((emoji, need) in listOf("⭐" to 500, "🌟" to 1000, "💫" to 2500, "✨" to 5000, "🏆" to 10000)) {
+        list += BadgeInfo(emoji, "${fmtNum(need)} звёзд", "Купите звёзд на ${fmtNum(need)} и больше · сейчас ${fmtNum(stars)}", stars >= need, "stars")
+    }
+    list += BadgeInfo("👑", "Premium", "Оплатите подписку Premium", premiumBought, "premium")
+
+    // приложение
+    list += BadgeInfo("🛡", "VPN", "Войдите в личный кабинет VPN", VpnApi.loggedIn(), "vpn")
+    list += BadgeInfo("🔐", "Под защитой", "Включите PIN или отпечаток", lockEnabled(), "lock")
+    list += BadgeInfo("📸", "С фото", "Добавьте фото профиля", Avatar.has(), "photo")
+    list += BadgeInfo("🎨", "Свой стиль", "Выберите обложку профиля, оформление или свой цвет", Store.profileCover != 0 || Store.skin != 0 || Store.accentId != 0, "style")
+    list += BadgeInfo("✏️", "О себе", "Добавьте пару слов о себе в профиль", Store.bio.isNotEmpty(), "bio")
+
+    // помощь приложению
+    for ((emoji, title, need) in listOf(Triple("🐞", "Охотник за багами", 1), Triple("🔧", "Тестировщик", 3), Triple("🏅", "Золотой тестер", 10))) {
+        list += BadgeInfo(emoji, title,
+            "Отправьте отчёт о реальной ошибке: Настройки → Прочее → «Сообщить об ошибке». Засчитывается не чаще раза в сутки · сейчас $reports из $need",
+            reports >= need, "bugs")
+    }
+    for ((emoji, title, need) in listOf(Triple("💬", "Решённый вопрос", 1), Triple("🙌", "Друг проекта", 3), Triple("💎", "Опора проекта", 5))) {
+        list += BadgeInfo(emoji, title,
+            "Задайте вопрос в поддержке: когда его решат, значок откроется · сейчас $solved из $need",
+            solved >= need, "help")
+    }
+    return list
+}
+
+/** Заголовок раздела: «Достижения · 7 из 20». */
+internal fun MainActivity.achievementsTitle(orders: List<org.json.JSONObject>, stars: Int): String {
+    val all = badgeList(orders, stars)
+    return "Достижения · ${all.count { it.got }} из ${all.size}"
+}
+
+/** Достижения: полученные первыми. Нажатие подсказывает, как получить остальные. */
 internal fun MainActivity.achievementsRow(orders: List<org.json.JSONObject>, stars: Int): View {
-    val premiumBought = orders.any { it.optString("product") == "premium" && statusKind(effStatus(it)).let { k -> k == 1 || k == 2 } }
-    val list = listOf(
-        BadgeInfo("🛒", "Первый заказ", "Оформите любой заказ", orders.isNotEmpty()),
-        BadgeInfo("⭐", "500 звёзд", "Купите звёзд на 500 и больше", stars >= 500),
-        BadgeInfo("👑", "Premium", "Оплатите подписку Premium", premiumBought),
-        BadgeInfo("🛡", "VPN", "Войдите в личный кабинет VPN", VpnApi.loggedIn()),
-        BadgeInfo("🔐", "Под защитой", "Включите PIN или отпечаток", lockEnabled()),
-        BadgeInfo("📸", "С фото", "Добавьте фото профиля", Avatar.has())
-    )
+    val list = badgeList(orders, stars).sortedByDescending { it.got }
     val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
     for (b in list) {
         val col = if (b.got) GREEN else MUTE
