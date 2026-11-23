@@ -1,6 +1,5 @@
 package ru.pharmshop.app
 
-import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -137,42 +136,12 @@ internal fun MainActivity.bubbleMax(withAvatar: Boolean): Int {
 }
 
 /**
- * Контейнер пузыря: занимает не больше [maxW] и сжимается до самой длинной строки текста,
- * поэтому пузырь точно облегает сообщение (без пустого места справа), а текст всегда виден целиком.
- */
-internal class BubbleLayout(ctx: Context, private val maxW: Int) : LinearLayout(ctx) {
-    var textView: TextView? = null
-
-    override fun onMeasure(widthSpec: Int, heightSpec: Int) {
-        val parentW = if (MeasureSpec.getMode(widthSpec) == MeasureSpec.UNSPECIFIED) maxW
-                      else MeasureSpec.getSize(widthSpec)
-        val limit = minOf(maxW, parentW)
-        super.onMeasure(MeasureSpec.makeMeasureSpec(limit, MeasureSpec.AT_MOST), heightSpec)
-        val tv = textView
-        val lay = tv?.layout
-        if (tv != null && lay != null && lay.lineCount > 1) {
-            var widest = 0f
-            for (i in 0 until lay.lineCount) widest = maxOf(widest, lay.getLineWidth(i))
-            var need = Math.ceil(widest.toDouble()).toInt() + 2 + tv.paddingLeft + tv.paddingRight
-            for (i in 0 until childCount) {
-                val c = getChildAt(i)
-                if (c !== tv) need = maxOf(need, c.measuredWidth)
-            }
-            need += paddingLeft + paddingRight
-            if (need < measuredWidth) {
-                super.onMeasure(MeasureSpec.makeMeasureSpec(need, MeasureSpec.EXACTLY), heightSpec)
-            }
-        }
-    }
-}
-
-/**
  * Пузырь сообщения: небольшой «хвостик» со стороны автора, время внутри справа внизу.
  * [head] — необязательная строка сверху (ник или «Поддержка»). Возвращает пузырь и поле времени (под отметки «прочитано»).
  */
 internal fun MainActivity.messageBubble(
     body: String, own: Boolean, timeText: String, head: View?, maxW: Int
-): Pair<BubbleLayout, TextView> {
+): Pair<LinearLayout, TextView> {
     val r = corner(16)
     val t = dp(4).toFloat()
     val bg = GradientDrawable().apply {
@@ -185,7 +154,7 @@ internal fun MainActivity.messageBubble(
             gravity = Gravity.END; topMargin = dp(1)
         }
     }
-    val bubble = BubbleLayout(this, maxW).apply {
+    val bubble = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         background = bg
         setPadding(dp(11), dp(6), dp(11), dp(5))
@@ -196,7 +165,16 @@ internal fun MainActivity.messageBubble(
                 textSize = 14.5f * Theme.textScale
                 setTextColor(if (own) Color.BLACK else TEXT)
             }
-            textView = tv
+            // Ширину считаем сами: раскладываем текст по максимальной ширине и берём самую длинную строку.
+            // Так пузырь точно облегает сообщение и не зависит от того, как родитель его измеряет.
+            val avail = (maxW - dp(22)).coerceAtLeast(dp(60))
+            val widest = try {
+                val lay = android.text.StaticLayout.Builder.obtain(body, 0, body.length, android.text.TextPaint(tv.paint), avail).build()
+                var w = 0f
+                for (i in 0 until lay.lineCount) w = maxOf(w, lay.getLineWidth(i))
+                Math.ceil(w.toDouble()).toInt() + dp(2)
+            } catch (e: Exception) { avail }
+            tv.layoutParams = LinearLayout.LayoutParams(minOf(widest, avail), ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(tv)
         }
         addView(time)
