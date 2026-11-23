@@ -40,7 +40,7 @@ open class MainActivity : AppCompatActivity() {
 
     internal val BOT_URL = "https://t.me/pharmaishop_bot"
     /** Единая высота всех карточек главного меню */
-    internal val CARD_H get() = dp(96)
+    internal val CARD_H get() = dp(if (Store.cardSize == 1) 76 else 96)
 
     internal val io = Executors.newFixedThreadPool(3)
     internal val main = Handler(Looper.getMainLooper())

@@ -4,12 +4,17 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Outline
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.widget.EditText
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -104,18 +109,37 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
     val avatarDrawable = GradientDrawable()
     avatarDrawable.setShape(GradientDrawable.OVAL)
     avatarDrawable.setColor(BLUE)
-    val avatar = TextView(this).apply {
+    // своя аватарка (Профиль → «Добавить фото»); при скрытых данных показываем обычный кружок
+    val photo = if (hiddenData()) null else Avatar.bitmap()
+    val avatar: View = if (photo != null) ImageView(this).apply {
+        setImageBitmap(photo)
+        scaleType = ImageView.ScaleType.CENTER_CROP
+        outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(v: View, o: Outline) { o.setOval(0, 0, v.width, v.height) }
+        }
+        clipToOutline = true
+        contentDescription = "Аватарка"
+        layoutParams = LinearLayout.LayoutParams(dp(64), dp(64)).apply { rightMargin = dp(14) }
+    } else TextView(this).apply {
         text = if (hiddenData()) "•" else if (first != null) first.uppercaseChar().toString() else "?"
-        textSize = 22f
+        textSize = 26f
         setTextColor(Color.BLACK)
         gravity = Gravity.CENTER
         setTypeface(typeface, Typeface.BOLD)
         background = avatarDrawable
-        layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply { rightMargin = dp(14) }
+        layoutParams = LinearLayout.LayoutParams(dp(64), dp(64)).apply { rightMargin = dp(14) }
     }
-    val who = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+    val who = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+    }
     who.addView(txt(if (user.isEmpty()) "Telegram не указан" else hiddenNick(user), 18f, TEXT, true))
     who.addView(txt(if (user.isEmpty()) "Укажите ник — он подставится в заказы" else "Ник указан вручную, ботом не подтверждён", 12f, MUTE))
+    if (Store.bio.isNotEmpty()) {
+        who.addView(txt(if (hiddenData()) "••••••" else Store.bio, 14f, TEXT).apply {
+            layoutParams = lp(0).apply { topMargin = dp(6) }
+        })
+    }
     val userCard = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -143,6 +167,17 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
         isHorizontalScrollBarEnabled = false
         layoutParams = lp(16)
         addView(tgActions)
+    })
+
+    // аватарка и описание: хранятся только на этом устройстве
+    val profActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+    profActions.addView(chip(if (Avatar.has()) "Сменить фото" else "Добавить фото", false) { pickAvatar(body, sid) })
+    if (Avatar.has()) profActions.addView(chip("Убрать фото", false) { Avatar.remove(); renderProfile(body, sid) })
+    profActions.addView(chip(if (Store.bio.isEmpty()) "Добавить описание" else "Изменить описание", false) { editBio(body, sid) })
+    body.addView(HorizontalScrollView(this).apply {
+        isHorizontalScrollBarEnabled = false
+        layoutParams = lp(16)
+        addView(profActions)
     })
 
     // статистика
@@ -208,6 +243,37 @@ internal fun MainActivity.editUsername(body: LinearLayout, sid: Int) {
         Store.lastUser = t.trim().removePrefix("@")
         if (sid == screenId) renderProfile(body, sid)
         true
+    }
+}
+
+/** Выбор фото из галереи для аватарки. Фото обрезается до квадрата и остаётся только на устройстве. */
+internal fun MainActivity.pickAvatar(body: LinearLayout, sid: Int) {
+    onImagePicked = { uri ->
+        toast("Загружаем фото…")
+        io.execute {
+            val ok = Avatar.save(this, uri)
+            ui {
+                if (!ok) toast("Не удалось загрузить фото")
+                else if (sid == screenId) renderProfile(body, sid)
+            }
+        }
+    }
+    try { imagePicker.launch("image/*") } catch (e: Exception) { toast("Не удалось открыть галерею") }
+}
+
+internal fun MainActivity.editBio(body: LinearLayout, sid: Int) {
+    inputSheet(
+        "О себе", "Пара слов о себе (до 120 символов)", Store.bio, "Сохранить",
+        InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+    ) { t ->
+        if (t.length > 120) {
+            toast("Не больше 120 символов")
+            false
+        } else {
+            Store.bio = t
+            if (sid == screenId) renderProfile(body, sid)
+            true
+        }
     }
 }
 

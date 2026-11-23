@@ -50,7 +50,9 @@ internal fun MainActivity.renderSettings(body: LinearLayout, sid: Int) {
     when (settingsTab) {
         0 -> {
             appearanceBlock(body)
+            accentBlock(body)
             interfaceBlock(body, again)
+            sectionsBlock(body)
             iconBlock(body, again)
             effectsBlock(body, again)
             ordersBlock(body, again)
@@ -276,6 +278,17 @@ private fun MainActivity.interfaceBlock(body: LinearLayout, again: () -> Unit) {
         Theme.update(this)
         reopenSettings()   // экран строится заново уже с новым размером
     })
+    c.addView(caption("Скругление карточек"))
+    c.addView(segmented(listOf("Меньше", "Обычное", "Больше"), Store.cornerStyle.coerceIn(0, 2)) { i ->
+        Store.cornerStyle = i
+        Theme.update(this)
+        reopenSettings()
+    })
+    c.addView(caption("Карточки разделов на главной"))
+    c.addView(segmented(listOf("Обычные", "Компактные"), Store.cardSize.coerceIn(0, 1)) { i ->
+        Store.cardSize = i
+        again()
+    })
     c.addView(caption("Какая вкладка открывается при запуске"))
     val tabs = listOf(0, 4, 2, 1)
     c.addView(segmented(listOf("ТГ", "VPN", "Профиль", "Чат"), tabs.indexOf(Store.startTab).coerceAtLeast(0)) { i ->
@@ -284,6 +297,80 @@ private fun MainActivity.interfaceBlock(body: LinearLayout, again: () -> Unit) {
     })
     c.addView(switchRow("Скрывать поздравление", "Убрать цветную плашку на главном экране", Store.hideBanner) { on ->
         Store.hideBanner = on
+    })
+    body.addView(c)
+}
+
+// ---------- оформление: свой акцентный цвет ----------
+
+private fun MainActivity.accentBlock(body: LinearLayout) {
+    sectionLabel(body, "Акцентный цвет")
+    val c = groupCard()
+    val p = if (Theme.light) Theme.skin.light else Theme.skin.dark
+    val cur = Theme.ACCENTS.firstOrNull { it.id == Store.accentId }
+    c.addView(caption("Цвет кнопок и значков. Выбрано: ${cur?.title ?: "по теме"}"))
+    val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+    // первый кружок — цвет самой темы (сбрасывает свой выбор)
+    val options = listOf(Triple(0, "По теме", p.accent)) +
+        Theme.ACCENTS.map { Triple(it.id, it.title, if (Theme.light) it.light else it.dark) }
+    for ((optId, optTitle, optColor) in options) {
+        val sel = Store.accentId == optId
+        row.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { rightMargin = dp(10) }
+            background = GradientDrawable().apply {
+                setShape(GradientDrawable.OVAL)
+                setColor(optColor)
+                setStroke(dp(if (sel) 3 else 1), if (sel) TEXT else LINE)
+            }
+            contentDescription = optTitle
+            isClickable = true
+            setOnClickListener {
+                if (Store.accentId != optId) {
+                    Store.accentId = optId
+                    Theme.update(this@accentBlock)
+                    reopenSettings()
+                }
+            }
+            pressable(this)
+        })
+    }
+    c.addView(android.widget.HorizontalScrollView(this).apply {
+        isHorizontalScrollBarEnabled = false
+        layoutParams = lp(4)
+        addView(row)
+    })
+    body.addView(c)
+}
+
+// ---------- оформление: разделы на главной ----------
+
+/** Разделы главного меню: ключ из админ-панели и название. */
+private val HOME_SECTIONS = listOf(
+    "stars" to "Звёзды",
+    "premium" to "Купить Premium",
+    "gifts" to "Обычные подарки",
+    "nft_buy" to "Купить NFT",
+    "nft_rent" to "Аренда NFT",
+    "stars_sell" to "Продать звёзды",
+    "nft_sell" to "Скупка NFT"
+)
+
+private fun MainActivity.sectionsBlock(body: LinearLayout) {
+    sectionLabel(body, "Разделы на главной")
+    val c = groupCard()
+    c.addView(txt("Скройте то, чем не пользуетесь. Раздел снова появится, как только вы его включите.", 12f, MUTE).apply {
+        layoutParams = lp(8)
+    })
+    val hidden = Store.hiddenSections.split(',').filter { it.isNotEmpty() }
+    for ((key, title) in HOME_SECTIONS) {
+        c.addView(switchRow(title, "", key !in hidden) { on ->
+            val set = Store.hiddenSections.split(',').filter { it.isNotEmpty() }.toMutableSet()
+            if (on) set.remove(key) else set.add(key)
+            Store.hiddenSections = set.joinToString(",")
+        })
+    }
+    c.addView(switchRow("Скрыть блок «Скоро»", "Не показывать разделы, которые ещё не открыты", Store.hideSoon) { on ->
+        Store.hideSoon = on
     })
     body.addView(c)
 }

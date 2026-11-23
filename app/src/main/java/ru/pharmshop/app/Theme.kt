@@ -38,6 +38,9 @@ enum class Skin(val id: Int, val emoji: String, val title: String, val fx: Fx, v
     }
 }
 
+/** Свой акцентный цвет (Настройки → Оформление). Для светлого режима цвет чуть темнее, чтобы текст читался. */
+class AccentOpt(val id: Int, val title: String, val dark: Int, val light: Int)
+
 /** Плашка-поздравление на главном экране. */
 class Banner(val title: String, val sub: String, val c1: Int, val c2: Int, val on: Int, val onSub: Int)
 
@@ -50,6 +53,19 @@ object Theme {
     @JvmField var skin: Skin = Skin.CLASSIC
     /** Множитель размера текста (Настройки → Оформление → Размер текста). */
     @JvmField var textScale = 1f
+    /** Множитель скругления углов карточек (Настройки → Оформление → Скругление карточек). */
+    @JvmField var corner = 1f
+
+    val ACCENTS = listOf(
+        AccentOpt(1, "Синий", Color.parseColor("#3B8EF3"), Color.parseColor("#2F7DE0")),
+        AccentOpt(2, "Бирюзовый", Color.parseColor("#22C1DC"), Color.parseColor("#0C93AB")),
+        AccentOpt(3, "Зелёный", Color.parseColor("#34C759"), Color.parseColor("#1E9E45")),
+        AccentOpt(4, "Жёлтый", Color.parseColor("#FFC233"), Color.parseColor("#E0A000")),
+        AccentOpt(5, "Оранжевый", Color.parseColor("#FF9A3D"), Color.parseColor("#E0700C")),
+        AccentOpt(6, "Красный", Color.parseColor("#FF5A5F"), Color.parseColor("#E0352C")),
+        AccentOpt(7, "Розовый", Color.parseColor("#F472B6"), Color.parseColor("#E0489A")),
+        AccentOpt(8, "Фиолетовый", Color.parseColor("#8B7CFF"), Color.parseColor("#7C6CF5"))
+    )
 
     // текущие цвета (пересчитываются в update)
     @JvmField var bg: Int = Color.parseColor("#121214")
@@ -82,6 +98,9 @@ object Theme {
         textScale = when (Store.textSize) { 0 -> 0.9f; 2 -> 1.15f; else -> 1f }
         val p = if (light) skin.light else skin.dark
         bg = p.bg; card = p.card; line = p.line; accent = p.accent
+        // свой акцентный цвет перекрывает цвет темы
+        ACCENTS.firstOrNull { it.id == Store.accentId }?.let { accent = if (light) it.light else it.dark }
+        corner = when (Store.cornerStyle) { 0 -> 0.5f; 2 -> 1.5f; else -> 1f }
         text = if (light) L_TEXT else D_TEXT
         mute = if (light) L_MUTE else D_MUTE
     }
