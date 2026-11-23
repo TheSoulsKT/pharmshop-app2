@@ -290,13 +290,14 @@ internal fun MainActivity.input(hintText: String, type: Int): EditText = EditTex
     layoutParams = lp()
 }
 
-/** Вкладки нижней панели: 0 — ТГ (главная), 1 — Поддержка, 2 — Профиль, 3 — Настройки, 4 — VPN. */
+/** Вкладки нижней панели: 0 — ТГ (главная), 1 — Поддержка, 2 — Профиль, 3 — Настройки, 4 — VPN, 5 — Чат (общий и личные). */
 internal fun MainActivity.openTab(tab: Int) {
     when (tab) {
         0 -> showHome()
         1 -> showSupport()
         2 -> showProfile()
         3 -> showSettings()
+        5 -> showCommunity()
         4 -> {
             // раздел можно выключить удалённо (админ-панель → «Разделы»)
             val sv = sec("vpn", "VPN", "", true, "Временно недоступно")
@@ -306,13 +307,14 @@ internal fun MainActivity.openTab(tab: Int) {
 }
 
 /** Порядок вкладок слева направо (номера вкладок остаются прежними, VPN — пятая по номеру, вторая по месту). */
-private val TAB_ORDER = listOf(0, 4, 1, 2, 3)
+private val TAB_ORDER = listOf(0, 4, 1, 5, 2, 3)
 
 internal fun MainActivity.bottomNav(active: Int): LinearLayout {
     val items = listOf(
         Triple(Ic.BAG, "ТГ", 0),
         Triple(Ic.KEY, "VPN", 4),
         Triple(Ic.CHAT, "Поддержка", 1),
+        Triple(Ic.GROUP, "Чат", 5),
         Triple(Ic.USER, "Профиль", 2),
         Triple(Ic.GEAR, "Настройки", 3)
     )
@@ -338,7 +340,7 @@ internal fun MainActivity.bottomNav(active: Int): LinearLayout {
             addView(IconView(this@bottomNav, icon, color).apply {
                 layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply { bottomMargin = dp(2) }
             })
-            addView(txt(label, 11f, color, on).apply { gravity = Gravity.CENTER; textSize = 11f })
+            addView(txt(label, 10f, color, on).apply { gravity = Gravity.CENTER; textSize = 10f; maxLines = 1 })
         }
         row.addView(item)
     }

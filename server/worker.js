@@ -23,6 +23,25 @@ const SCHEMA = [
   // сессии админа: хранится только хэш токена; code_fp — отпечаток ADMIN_CODE (смена кода гасит все сессии)
   `CREATE TABLE IF NOT EXISTS sessions (
      hash TEXT PRIMARY KEY, code_fp TEXT NOT NULL, created INTEGER NOT NULL, exp INTEGER NOT NULL)`,
+  // ---- общий чат и личные сообщения ----
+  // users: один пользователь = одно устройство. nick_key — ник в «свёрнутом» виде (без регистра, с заменой похожих букв),
+  // UNIQUE по нему не даёт занять один ник дважды. badge = 1 — «галочка» (модератор чата).
+  `CREATE TABLE IF NOT EXISTS users (
+     id INTEGER PRIMARY KEY AUTOINCREMENT, device TEXT NOT NULL UNIQUE, secret_hash TEXT NOT NULL,
+     nick TEXT NOT NULL, nick_key TEXT NOT NULL UNIQUE, badge INTEGER NOT NULL DEFAULT 0,
+     muted_until INTEGER NOT NULL DEFAULT 0, nick_changed INTEGER NOT NULL DEFAULT 0,
+     created INTEGER NOT NULL, last_seen INTEGER NOT NULL DEFAULT 0, last_ip TEXT NOT NULL DEFAULT '')`,
+  `CREATE TABLE IF NOT EXISTS room_messages (
+     id INTEGER PRIMARY KEY AUTOINCREMENT, uid INTEGER NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_room_uid ON room_messages (uid, ts)`,
+  // личные сообщения: пара (a < b) — номера пользователей, sender — кто написал
+  `CREATE TABLE IF NOT EXISTS dm_messages (
+     id INTEGER PRIMARY KEY AUTOINCREMENT, a INTEGER NOT NULL, b INTEGER NOT NULL, sender INTEGER NOT NULL,
+     text TEXT NOT NULL, ts INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_dm_pair ON dm_messages (a, b, id)`,
+  `CREATE INDEX IF NOT EXISTS idx_dm_sender ON dm_messages (sender, ts)`,
+  // до какого сообщения uid прочитал переписку с peer
+  `CREATE TABLE IF NOT EXISTS dm_reads (uid INTEGER NOT NULL, peer INTEGER NOT NULL, last_id INTEGER NOT NULL, PRIMARY KEY (uid, peer))`,
 ];
 // Новые колонки для уже существующей базы (ошибка «колонка уже есть» игнорируется).
 const MIGRATIONS = [
@@ -66,6 +85,13 @@ const RATE_DEVICE_MSGS = 20;
 const RATE_DEVICE_IMAGES = 5;
 const RATE_IP_MSGS = 60;
 const RATE_IP_NEW_THREADS = 5;        // новых чатов с одного IP за час
+// Общий чат и лички
+const RATE_ROOM_PER_MIN = 8;           // сообщений в общий чат с одного пользователя за минуту (у модераторов лимита нет)
+const RATE_DM_PER_MIN = 15;            // личных сообщений за минуту
+const RATE_NEW_USERS_PER_IP = 5;       // новых ников с одного IP за сутки
+const NICK_CHANGE_MS = 7 * 24 * 60 * 60 * 1000;   // сменить ник можно раз в 7 дней
+const CHAT_TEXT_MAX = 1000;
+const MUTE_FOREVER = 4102444800000;    // 1 января 2100
 
 async function sha256(s) {
   const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -670,6 +696,349 @@ async function adminReply(body, env, ctx) {
   return json({ ok: true });
 }
 
+// ====================== общий чат, личные сообщения, ники, «галочка» ======================
+
+// Ник: 3–20 символов, либо только латиница, либо только кириллица, плюс цифры и «_».
+const NICK_LATIN = /^[A-Za-z0-9_]{3,20}$/;
+const NICK_CYR = /^[А-Яа-яЁё0-9_]{3,20}$/;
+const NICK_HAS_LETTER = /[A-Za-zА-Яа-яЁё]/;
+// Похожие кириллические буквы приводятся к латинским: «Аdmin» и «Admin», «кот» и «kot» — один и тот же ник.
+const LOOKALIKE = { 'а': 'a', 'в': 'b', 'е': 'e', 'ё': 'e', 'к': 'k', 'м': 'm', 'н': 'h', 'о': 'o', 'р': 'p', 'с': 'c', 'т': 't', 'у': 'y', 'х': 'x' };
+const nickKey = (n) => [...String(n).toLowerCase()].map((c) => LOOKALIKE[c] || c).join('');
+// Ники, которыми нельзя представляться: чтобы никто не выдавал себя за администрацию
+const RESERVED_WORDS = ['admin', 'administrator', 'moderator', 'moder', 'support', 'system', 'pharmshop', 'админ', 'администратор', 'модератор', 'модер', 'поддержка', 'система', 'фармшоп'];
+const RESERVED_KEYS = RESERVED_WORDS.map(nickKey);
+const isReservedNick = (key) => RESERVED_KEYS.some((r) => key === r || key.startsWith(r));
+
+const CHAT_USER_SQL = `SELECT id, device, secret_hash, nick, badge, muted_until, nick_changed, last_seen FROM users WHERE device = ?`;
+
+// Проверка пользователя чата. Возвращает { u, ip, now } или { e: Response }.
+async function chatUser(body, env, request) {
+  const device = String(body.device || '');
+  const secret = String(body.secret || '');
+  if (!UUID.test(device) || secret.length < 16) return { e: err('Некорректный запрос') };
+  const ip = (request.headers.get('cf-connecting-ip') || 'unknown').slice(0, 64);
+  if (await isBlocked(env, device, ip)) return { e: err('Доступ к чату ограничен', 403) };
+  const u = await env.DB.prepare(CHAT_USER_SQL).bind(device).first();
+  if (!u) return { e: err('Сначала выберите ник', 404) };
+  if (u.secret_hash !== (await sha256(secret))) return { e: err('Нет доступа', 403) };
+  const now = Date.now();
+  if (now - (u.last_seen || 0) > 60_000) {
+    await env.DB.prepare('UPDATE users SET last_seen = ?, last_ip = ? WHERE id = ?').bind(now, ip, u.id).run();
+  }
+  return { u, ip, now };
+}
+
+const meOf = (u, now) => ({ registered: true, uid: u.id, nick: u.nick, badge: u.badge ? 1 : 0, muted_until: u.muted_until > now ? u.muted_until : 0 });
+const cleanChatText = (v) => String(v || '').replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, CHAT_TEXT_MAX);
+
+async function chatMe(body, env, request) {
+  const device = String(body.device || '');
+  const secret = String(body.secret || '');
+  if (!UUID.test(device) || secret.length < 16) return err('Некорректный запрос');
+  const ip = (request.headers.get('cf-connecting-ip') || 'unknown').slice(0, 64);
+  if (await isBlocked(env, device, ip)) return err('Доступ к чату ограничен', 403);
+  const u = await env.DB.prepare(CHAT_USER_SQL).bind(device).first();
+  if (!u) return json({ registered: false });
+  if (u.secret_hash !== (await sha256(secret))) return err('Нет доступа', 403);
+  return json({ ...meOf(u, Date.now()), nick_change_at: u.nick_changed ? u.nick_changed + NICK_CHANGE_MS : 0 });
+}
+
+// Занять ник или сменить свой (не чаще раза в 7 дней).
+async function chatRegister(body, env, request) {
+  const device = String(body.device || '');
+  const secret = String(body.secret || '');
+  const nick = String(body.nick || '').replace(/^@/, '').trim();
+  if (!UUID.test(device) || secret.length < 16) return err('Некорректный запрос');
+  if (!(NICK_LATIN.test(nick) || NICK_CYR.test(nick)) || !NICK_HAS_LETTER.test(nick)) {
+    return err('Ник: 3–20 символов, только латиница или только кириллица, цифры и «_»');
+  }
+  const key = nickKey(nick);
+  if (isReservedNick(key)) return err('Этот ник зарезервирован');
+  const ip = (request.headers.get('cf-connecting-ip') || 'unknown').slice(0, 64);
+  if (await isBlocked(env, device, ip)) return err('Доступ к чату ограничен', 403);
+  const hash = await sha256(secret);
+  const now = Date.now();
+
+  const th = await env.DB.prepare('SELECT secret_hash FROM threads WHERE device = ?').bind(device).first();
+  if (th && th.secret_hash !== hash) return err('Нет доступа', 403);
+  const u = await env.DB.prepare(CHAT_USER_SQL).bind(device).first();
+  const taken = 'Этот ник уже занят или слишком похож на чужой';
+
+  if (u) {
+    if (u.secret_hash !== hash) return err('Нет доступа', 403);
+    if (nick === u.nick) return json({ ok: true, nick });
+    if (u.nick_changed && now - u.nick_changed < NICK_CHANGE_MS) {
+      const days = Math.ceil((NICK_CHANGE_MS - (now - u.nick_changed)) / DAY);
+      return err(`Ник можно менять раз в 7 дней. Подождите ещё ${days} дн.`, 429);
+    }
+    const other = await env.DB.prepare('SELECT id FROM users WHERE nick_key = ? AND id != ?').bind(key, u.id).first();
+    if (other) return err(taken, 409);
+    try {
+      await env.DB.prepare('UPDATE users SET nick = ?, nick_key = ?, nick_changed = ? WHERE id = ?').bind(nick, key, now, u.id).run();
+    } catch (e) { return err(taken, 409); }   // гонка: UNIQUE сработал
+    return json({ ok: true, nick });
+  }
+
+  const dayAgo = now - DAY;
+  const c = await env.DB.prepare('SELECT COUNT(*) AS n FROM users WHERE last_ip = ? AND created > ?').bind(ip, dayAgo).first();
+  if (c && c.n >= RATE_NEW_USERS_PER_IP) return err('Слишком много новых ников с вашего адреса. Попробуйте завтра', 429);
+  if (await env.DB.prepare('SELECT 1 AS x FROM users WHERE nick_key = ?').bind(key).first()) return err(taken, 409);
+  try {
+    await env.DB.prepare(
+      'INSERT INTO users (device, secret_hash, nick, nick_key, created, last_seen, last_ip) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(device, hash, nick, key, now, now, ip).run();
+  } catch (e) { return err(taken, 409); }       // двое заняли ник одновременно — второй получает отказ от UNIQUE
+  return json({ ok: true, nick });
+}
+
+// ----- общий чат (одна комната) -----
+const ROOM_SQL = `SELECT r.id, r.uid, COALESCE(u.nick, 'удалён') AS nick, COALESCE(u.badge, 0) AS badge, r.text, r.ts
+                    FROM room_messages r LEFT JOIN users u ON u.id = r.uid`;
+
+async function roomRev(env) {
+  const r = await env.DB.prepare(`SELECT v FROM settings WHERE k = 'room_rev'`).first();
+  return r ? Number(r.v) || 0 : 0;
+}
+// Любое удаление сообщений увеличивает «ревизию»: клиенты, увидев новое число, перечитывают ленту заново.
+async function bumpRoomRev(env) {
+  await env.DB.prepare(
+    `INSERT INTO settings (k, v) VALUES ('room_rev', '1') ON CONFLICT(k) DO UPDATE SET v = CAST(v AS INTEGER) + 1`
+  ).run();
+}
+async function roomFetch(env, after) {
+  if (after > 0) {
+    const { results } = await env.DB.prepare(`${ROOM_SQL} WHERE r.id > ? ORDER BY r.id LIMIT 100`).bind(after).all();
+    return results;
+  }
+  const { results } = await env.DB.prepare(`${ROOM_SQL} ORDER BY r.id DESC LIMIT 100`).all();
+  return results.reverse();
+}
+
+async function roomMessages(body, env, request) {
+  const a = await chatUser(body, env, request);
+  if (a.e) return a.e;
+  const rev = await roomRev(env);
+  let after = Number(body.after) || 0;
+  const reset = body.rev === undefined || Number(body.rev) !== rev;
+  if (reset) after = 0;
+  return json({ messages: await roomFetch(env, after), rev, reset, me: meOf(a.u, a.now) });
+}
+
+async function roomSend(body, env, request) {
+  const a = await chatUser(body, env, request);
+  if (a.e) return a.e;
+  const { u, now } = a;
+  const text = cleanChatText(body.text);
+  if (!text) return err('Пустое сообщение');
+  if (u.muted_until > now) {
+    const mins = Math.ceil((u.muted_until - now) / 60000);
+    return err(u.muted_until >= MUTE_FOREVER ? 'Вам закрыта отправка сообщений в общий чат' : `Вам закрыта отправка в общий чат ещё на ${mins} мин`, 403);
+  }
+  if (!u.badge) {
+    const r = await env.DB.prepare('SELECT COUNT(*) AS n, MAX(ts) AS last FROM room_messages WHERE uid = ? AND ts > ?').bind(u.id, now - 60_000).first();
+    if (r && r.n >= RATE_ROOM_PER_MIN) return err('Слишком много сообщений. Подождите минуту', 429);
+    if (r && r.last && now - r.last < 1000) return err('Слишком часто, подождите секунду', 429);
+  }
+  await env.DB.prepare('INSERT INTO room_messages (uid, text, ts) VALUES (?, ?, ?)').bind(u.id, text, now).run();
+  return json({ ok: true });
+}
+
+// Удалить сообщение может автор или модератор («галочка»).
+async function roomDelete(body, env, request) {
+  const a = await chatUser(body, env, request);
+  if (a.e) return a.e;
+  const id = Number(body.id) || 0;
+  const m = await env.DB.prepare('SELECT uid FROM room_messages WHERE id = ?').bind(id).first();
+  if (!m) return json({ ok: true });
+  if (m.uid !== a.u.id && !a.u.badge) return err('Нет прав', 403);
+  await env.DB.prepare('DELETE FROM room_messages WHERE id = ?').bind(id).run();
+  await bumpRoomRev(env);
+  return json({ ok: true });
+}
+
+// Модератор закрывает пользователю отправку в общий чат. minutes: 0 — снять, иначе из списка. Другого модератора заглушить нельзя.
+async function roomMute(body, env, request) {
+  const a = await chatUser(body, env, request);
+  if (a.e) return a.e;
+  if (!a.u.badge) return err('Нет прав', 403);
+  const uid = Number(body.uid) || 0;
+  const minutes = Number(body.minutes);
+  if (![0, 60, 1440, 10080].includes(minutes)) return err('Некорректный запрос');
+  const t = await env.DB.prepare('SELECT id, badge FROM users WHERE id = ?').bind(uid).first();
+  if (!t) return err('Пользователь не найден', 404);
+  if (t.id === a.u.id || t.badge) return err('Модератора может ограничить только администратор', 403);
+  await env.DB.prepare('UPDATE users SET muted_until = ? WHERE id = ?').bind(minutes ? a.now + minutes * 60_000 : 0, uid).run();
+  return json({ ok: true });
+}
+
+// ----- личные сообщения -----
+const pairOf = (x, y) => (x < y ? [x, y] : [y, x]);
+const DM_SQL = `SELECT d.id, d.sender AS uid, COALESCE(u.nick, 'удалён') AS nick, COALESCE(u.badge, 0) AS badge, d.text, d.ts
+                  FROM dm_messages d LEFT JOIN users u ON u.id = d.sender WHERE d.a = ? AND d.b = ?`;
+async function dmFetch(env, a, b, after) {
+  if (after > 0) {
+    const { results } = await env.DB.prepare(`${DM_SQL} AND d.id > ? ORDER BY d.id LIMIT 200`).bind(a, b, after).all();
+    return results;
+  }
+  const { results } = await env.DB.prepare(`${DM_SQL} ORDER BY d.id DESC LIMIT 200`).bind(a, b).all();
+  return results.reverse();
+}
+
+async function dmFind(body, env, request) {
+  const a = await chatUser(body, env, request);
+  if (a.e) return a.e;
+  const nick = String(body.nick || '').replace(/^@/, '').trim().slice(0, 40);
+  if (!nick) return err('Введите ник');
+  const t = await env.DB.prepare('SELECT id, nick, badge FROM users WHERE nick_key = ?').bind(nickKey(nick)).first();
+  if (!t) return err('Пользователь не найден', 404);
+  if (t.id === a.u.id) return err('Это вы');
+  return json({ uid: t.id, nick: t.nick, badge: t.badge ? 1 : 0 });
+}
+
+async function dmList(body, env, request) {
+  const a = await chatUser(body, env, request);
+  if (a.e) return a.e;
+  const me = a.u.id;
+  const { results } = await env.DB.prepare(
+    `SELECT p.peer AS uid, u.nick AS nick, u.badge AS badge, m.text AS text, m.ts AS ts, m.sender AS sender,
+            (SELECT COUNT(*) FROM dm_messages x
+              WHERE x.sender = p.peer AND ((x.a = ? AND x.b = p.peer) OR (x.b = ? AND x.a = p.peer))
+                AND x.id > COALESCE((SELECT last_id FROM dm_reads r WHERE r.uid = ? AND r.peer = p.peer), 0)) AS unread
+       FROM (SELECT CASE WHEN a = ? THEN b ELSE a END AS peer, MAX(id) AS last_id
+               FROM dm_messages WHERE a = ? OR b = ? GROUP BY peer) p
+       JOIN users u ON u.id = p.peer
+       JOIN dm_messages m ON m.id = p.last_id
+      ORDER BY p.last_id DESC LIMIT 100`
+  ).bind(me, me, me, me, me, me).all();
+  return json({ chats: results, unread: results.reduce((s, r) => s + (r.unread || 0), 0) });
+}
+
+async function dmMessages(body, env, request) {
+  const a = await chatUser(body, env, request);
+  if (a.e) return a.e;
+  const peerId = Number(body.with) || 0;
+  const peer = await env.DB.prepare('SELECT id, nick, badge FROM users WHERE id = ?').bind(peerId).first();
+  if (!peer) return err('Пользователь не найден', 404);
+  const [x, y] = pairOf(a.u.id, peer.id);
+  const messages = await dmFetch(env, x, y, Number(body.after) || 0);
+  // открыли переписку — всё, что написал собеседник, прочитано
+  const last = await env.DB.prepare('SELECT MAX(id) AS m FROM dm_messages WHERE a = ? AND b = ? AND sender = ?').bind(x, y, peer.id).first();
+  if (last && last.m) {
+    await env.DB.prepare(
+      'INSERT INTO dm_reads (uid, peer, last_id) VALUES (?, ?, ?) ON CONFLICT(uid, peer) DO UPDATE SET last_id = MAX(last_id, excluded.last_id)'
+    ).bind(a.u.id, peer.id, last.m).run();
+  }
+  const pr = await env.DB.prepare('SELECT last_id FROM dm_reads WHERE uid = ? AND peer = ?').bind(peer.id, a.u.id).first();
+  return json({ messages, peer: { uid: peer.id, nick: peer.nick, badge: peer.badge ? 1 : 0 }, peer_read: pr ? pr.last_id : 0 });
+}
+
+async function dmSend(body, env, request) {
+  const a = await chatUser(body, env, request);
+  if (a.e) return a.e;
+  const text = cleanChatText(body.text);
+  if (!text) return err('Пустое сообщение');
+  const to = Number(body.to) || 0;
+  if (to === a.u.id) return err('Нельзя писать самому себе');
+  const peer = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(to).first();
+  if (!peer) return err('Пользователь не найден', 404);
+  const r = await env.DB.prepare('SELECT COUNT(*) AS n, MAX(ts) AS last FROM dm_messages WHERE sender = ? AND ts > ?').bind(a.u.id, a.now - 60_000).first();
+  if (r && r.n >= RATE_DM_PER_MIN) return err('Слишком много сообщений. Подождите минуту', 429);
+  if (r && r.last && a.now - r.last < 700) return err('Слишком часто, подождите секунду', 429);
+  const [x, y] = pairOf(a.u.id, peer.id);
+  await env.DB.prepare('INSERT INTO dm_messages (a, b, sender, text, ts) VALUES (?, ?, ?, ?, ?)').bind(x, y, a.u.id, text, a.now).run();
+  return json({ ok: true });
+}
+
+// ----- админ: пользователи, галочки, личные чаты -----
+const USERS_PAGE = 50;
+
+async function adminUsers(body, env) {
+  const q = String(body.q || '').trim().replace(/^@/, '').slice(0, 40);
+  const offset = Math.max(0, Math.floor(Number(body.offset) || 0));
+  const where = q ? `WHERE u.nick LIKE ? ESCAPE '\\'` : '';
+  const args = q ? [likeOf(q)] : [];
+  const { results } = await env.DB.prepare(
+    `SELECT u.id, u.nick, u.badge, u.muted_until, u.created, u.last_seen, u.last_ip, u.device,
+            (SELECT COUNT(*) FROM room_messages r WHERE r.uid = u.id) AS room_msgs,
+            (SELECT COUNT(*) FROM dm_messages d WHERE d.sender = u.id) AS dm_msgs
+       FROM users u ${where} ORDER BY u.badge DESC, u.last_seen DESC LIMIT ? OFFSET ?`
+  ).bind(...args, USERS_PAGE + 1, offset).all();
+  const total = await env.DB.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(badge), 0) AS badges FROM users`).first();
+  const { results: bl } = await env.DB.prepare(`SELECT value FROM blocks WHERE kind = 'device'`).all();
+  const blocked = new Set(bl.map((b) => b.value));
+  const now = Date.now();
+  const users = results.slice(0, USERS_PAGE).map(({ device, ...u }) => ({
+    ...u, muted_until: u.muted_until > now ? u.muted_until : 0, blocked_device: blocked.has(device),
+  }));
+  return json({ users, more: results.length > USERS_PAGE, total: total ? total.n : 0, badges: total ? total.badges : 0 });
+}
+
+async function adminUserBadge(body, env) {
+  const uid = Number(body.uid) || 0;
+  const r = await env.DB.prepare('UPDATE users SET badge = ? WHERE id = ?').bind(body.badge ? 1 : 0, uid).run();
+  if (!r.meta || !r.meta.changes) return err('Пользователь не найден', 404);
+  return json({ ok: true });
+}
+
+// minutes: 0 — снять ограничение, -1 — навсегда
+async function adminUserMute(body, env) {
+  const uid = Number(body.uid) || 0;
+  const m = Number(body.minutes);
+  if (!Number.isFinite(m) || m < -1 || m > 525_600) return err('Некорректный запрос');
+  const until = m === 0 ? 0 : m === -1 ? MUTE_FOREVER : Date.now() + m * 60_000;
+  const r = await env.DB.prepare('UPDATE users SET muted_until = ? WHERE id = ?').bind(until, uid).run();
+  if (!r.meta || !r.meta.changes) return err('Пользователь не найден', 404);
+  return json({ ok: true });
+}
+
+// Освободить ник: удаляет пользователя и его сообщения в общем чате. Личные переписки остаются у администрации.
+async function adminUserReset(body, env) {
+  const uid = Number(body.uid) || 0;
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM room_messages WHERE uid = ?').bind(uid),
+    env.DB.prepare('DELETE FROM dm_reads WHERE uid = ? OR peer = ?').bind(uid, uid),
+    env.DB.prepare('DELETE FROM users WHERE id = ?').bind(uid),
+  ]);
+  await bumpRoomRev(env);
+  return json({ ok: true });
+}
+
+async function adminRoomMessages(body, env) {
+  const rev = await roomRev(env);
+  let after = Number(body.after) || 0;
+  const reset = body.rev === undefined || Number(body.rev) !== rev;
+  if (reset) after = 0;
+  return json({ messages: await roomFetch(env, after), rev, reset });
+}
+async function adminRoomDelete(body, env) {
+  await env.DB.prepare('DELETE FROM room_messages WHERE id = ?').bind(Number(body.id) || 0).run();
+  await bumpRoomRev(env);
+  return json({ ok: true });
+}
+
+// Список личных переписок (все пары пользователей)
+async function adminDmThreads(body, env) {
+  const q = String(body.q || '').trim().replace(/^@/, '').slice(0, 40);
+  const like = q ? likeOf(q) : '';
+  const { results } = await env.DB.prepare(
+    `SELECT c.a AS a, c.b AS b, COALESCE(ua.nick, 'удалён') AS nick_a, COALESCE(ub.nick, 'удалён') AS nick_b,
+            m.text AS text, m.ts AS ts, c.n AS n
+       FROM (SELECT a, b, MAX(id) AS last_id, COUNT(*) AS n FROM dm_messages GROUP BY a, b) c
+       JOIN dm_messages m ON m.id = c.last_id
+       LEFT JOIN users ua ON ua.id = c.a
+       LEFT JOIN users ub ON ub.id = c.b
+      WHERE (? = '' OR ua.nick LIKE ? ESCAPE '\\' OR ub.nick LIKE ? ESCAPE '\\')
+      ORDER BY c.last_id DESC LIMIT 100`
+  ).bind(q, like, like).all();
+  return json({ chats: results });
+}
+
+async function adminDmMessages(body, env) {
+  const [x, y] = pairOf(Number(body.a) || 0, Number(body.b) || 0);
+  return json({ messages: await dmFetch(env, x, y, Number(body.after) || 0) });
+}
+
 export default {
   async fetch(request, env, ctx) {
     if (request.method === 'GET') return new Response('PharmShop chat OK');
@@ -687,6 +1056,16 @@ export default {
     if (path === '/api/chat/poll') return userPoll(body, env);
     if (path === '/api/push/register') return pushRegister(body, env);
     if (path === '/api/app/config') return appConfig(env);
+    if (path === '/api/chat/me') return chatMe(body, env, request);
+    if (path === '/api/chat/register') return chatRegister(body, env, request);
+    if (path === '/api/room/messages') return roomMessages(body, env, request);
+    if (path === '/api/room/send') return roomSend(body, env, request);
+    if (path === '/api/room/delete') return roomDelete(body, env, request);
+    if (path === '/api/room/mute') return roomMute(body, env, request);
+    if (path === '/api/dm/find') return dmFind(body, env, request);
+    if (path === '/api/dm/list') return dmList(body, env, request);
+    if (path === '/api/dm/messages') return dmMessages(body, env, request);
+    if (path === '/api/dm/send') return dmSend(body, env, request);
 
     if (path.startsWith('/api/admin/')) {
       const a = await adminAuth(request, env, path);
@@ -709,6 +1088,14 @@ export default {
       if (path === '/api/admin/messages') return adminMessages(body, env);
       if (path === '/api/admin/reply') return adminReply(body, env, ctx);
       if (path === '/api/admin/image') return adminImage(body, env);
+      if (path === '/api/admin/users') return adminUsers(body, env);
+      if (path === '/api/admin/user_badge') return adminUserBadge(body, env);
+      if (path === '/api/admin/user_mute') return adminUserMute(body, env);
+      if (path === '/api/admin/user_reset') return adminUserReset(body, env);
+      if (path === '/api/admin/room_messages') return adminRoomMessages(body, env);
+      if (path === '/api/admin/room_delete') return adminRoomDelete(body, env);
+      if (path === '/api/admin/dm_threads') return adminDmThreads(body, env);
+      if (path === '/api/admin/dm_messages') return adminDmMessages(body, env);
     }
     return err('Not found', 404);
   },

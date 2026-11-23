@@ -26,11 +26,11 @@ object Diag {
     private const val SESSION_GAP_MS = 30_000L
     private const val MAX_PAYLOAD = 3800
 
-    private val TABS = mapOf(0 to "home", 1 to "support", 2 to "profile", 3 to "settings", 4 to "vpn")
+    private val TABS = mapOf(0 to "home", 1 to "support", 2 to "profile", 3 to "settings", 4 to "vpn", 5 to "community")
 
     /** Подписи для разделов и функций (и в окне «Что уйдёт сейчас», и в админке). */
     private val LABELS = mapOf(
-        "home" to "Главная", "support" to "Поддержка", "profile" to "Профиль", "settings" to "Настройки", "vpn" to "VPN",
+        "home" to "Главная", "support" to "Поддержка", "profile" to "Профиль", "settings" to "Настройки", "vpn" to "VPN", "community" to "Чат",
         "stars" to "Звёзды", "premium" to "Premium", "bug_report" to "Отчёт об ошибке", "speed_test" to "Скорость VPN",
         "avatar" to "Фото профиля"
     )

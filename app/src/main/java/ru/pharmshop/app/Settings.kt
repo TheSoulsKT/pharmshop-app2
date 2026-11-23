@@ -740,6 +740,10 @@ private fun MainActivity.dataBlock(body: LinearLayout) {
     c.addView(LinearLayout(this).apply {
         addView(chip("Какие данные собирает приложение", false) { showDataInfo() })
     })
+    c.addView(LinearLayout(this).apply {
+        layoutParams = lp(0).apply { topMargin = dp(8) }
+        addView(chip("Приватность чатов", false) { showChatPrivacy() })
+    })
     body.addView(c)
 }
 
@@ -770,7 +774,8 @@ private fun MainActivity.showDataInfo() {
             "IP-адрес и страна или город: определяются автоматически, когда вы пишете в поддержку",
             "ник в Telegram и номер последнего заказа, если они указаны",
             "заказы из приложения (получатель, количество, сумма, статус): отправляются, чтобы поддержка видела их в админ-панели",
-            "токен push-уведомлений устройства, если они включены"
+            "токен push-уведомлений устройства, если они включены",
+            "ник и сообщения общего и личных чатов: личные чаты остаются в приложении, администрация может получить к ним доступ"
         ))
         dataGroup(box, "🚫", "Не собираем", RED, listOf(
             "PIN и пароли, ссылку подписки VPN, данные банковских карт",

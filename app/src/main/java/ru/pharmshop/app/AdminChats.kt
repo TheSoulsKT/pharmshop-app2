@@ -64,6 +64,9 @@ internal fun MainActivity.adminToolsRow(): HorizontalScrollView {
     row.addView(chip("🧩 Разделы", false) { showAdminSections() })
     row.addView(chip("⬆ Обновление", false) { showAdminForceUpdate() })
     row.addView(chip("🧾 Заказы", false) { showAdminOrders() })
+    row.addView(chip("👥 Пользователи", false) { showAdminUsers() })
+    row.addView(chip("💬 Личные чаты", false) { showAdminDmThreads() })
+    row.addView(chip("🌐 Общий чат", false) { showAdminRoom() })
     row.addView(chip("⛔ Блокировки", false) { showAdminBlocks() })
     return HorizontalScrollView(this).apply {
         isHorizontalScrollBarEnabled = false

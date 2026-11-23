@@ -182,4 +182,66 @@ object ChatApi {
     /** patch: любые из announcement, sections, min_version_code, update_message. Возвращает сохранённые настройки. */
     fun adminSaveSettings(code: String, patch: JSONObject): JSONObject =
         post("/api/admin/settings_save", patch, code)
+    // ----- общий чат и личные сообщения -----
+    private fun dev() = JSONObject().put("device", Store.deviceId).put("secret", Store.deviceSecret)
+
+    /** {registered, uid, nick, badge, muted_until, nick_change_at}. registered = false — ник ещё не выбран. */
+    fun chatMe(): JSONObject = post("/api/chat/me", dev())
+
+    /** Занять ник или сменить свой. Сервер отвечает ошибкой, если ник занят, зарезервирован или не подходит. */
+    fun chatRegister(nick: String): JSONObject = post("/api/chat/register", dev().put("nick", nick))
+
+    /** {messages, rev, reset, me}. rev — ревизия ленты: если сервер вернул другую, ленту нужно перечитать (reset = true). */
+    fun roomMessages(after: Long, rev: Long): JSONObject = post("/api/room/messages", dev().put("after", after).put("rev", rev))
+
+    fun roomSend(text: String) { post("/api/room/send", dev().put("text", text)) }
+
+    fun roomDelete(id: Long) { post("/api/room/delete", dev().put("id", id)) }
+
+    /** Модератор («галочка»): minutes = 0 снимает ограничение, иначе 60 / 1440 / 10080. */
+    fun roomMute(uid: Long, minutes: Int) { post("/api/room/mute", dev().put("uid", uid).put("minutes", minutes)) }
+
+    /** Найти пользователя по нику: {uid, nick, badge}. */
+    fun dmFind(nick: String): JSONObject = post("/api/dm/find", dev().put("nick", nick))
+
+    /** {chats: [{uid, nick, badge, text, ts, sender, unread}], unread}. */
+    fun dmList(): JSONObject = post("/api/dm/list", dev())
+
+    /** {messages, peer: {uid, nick, badge}, peer_read}. Открытие переписки помечает сообщения собеседника прочитанными. */
+    fun dmMessages(peer: Long, after: Long): JSONObject = post("/api/dm/messages", dev().put("with", peer).put("after", after))
+
+    fun dmSend(peer: Long, text: String) { post("/api/dm/send", dev().put("to", peer).put("text", text)) }
+
+    // ----- администратор: пользователи, галочки, личные чаты -----
+    /** {users: [{id, nick, badge, muted_until, created, last_seen, last_ip, room_msgs, dm_msgs, blocked_device}], more, total, badges}. */
+    fun adminUsers(token: String, query: String, offset: Int): JSONObject =
+        post("/api/admin/users", JSONObject().put("q", query).put("offset", offset), token)
+
+    fun adminUserBadge(token: String, uid: Long, badge: Boolean) {
+        post("/api/admin/user_badge", JSONObject().put("uid", uid).put("badge", badge), token)
+    }
+
+    /** minutes: 0 — снять, -1 — навсегда. */
+    fun adminUserMute(token: String, uid: Long, minutes: Int) {
+        post("/api/admin/user_mute", JSONObject().put("uid", uid).put("minutes", minutes), token)
+    }
+
+    /** Освобождает ник и удаляет пользователя вместе с его сообщениями в общем чате. */
+    fun adminUserReset(token: String, uid: Long) {
+        post("/api/admin/user_reset", JSONObject().put("uid", uid), token)
+    }
+
+    fun adminRoomMessages(token: String, after: Long, rev: Long): JSONObject =
+        post("/api/admin/room_messages", JSONObject().put("after", after).put("rev", rev), token)
+
+    fun adminRoomDelete(token: String, id: Long) {
+        post("/api/admin/room_delete", JSONObject().put("id", id), token)
+    }
+
+    /** {chats: [{a, b, nick_a, nick_b, text, ts, n}]} — все личные переписки. */
+    fun adminDmThreads(token: String, query: String): JSONObject =
+        post("/api/admin/dm_threads", JSONObject().put("q", query), token)
+
+    fun adminDmMessages(token: String, a: Long, b: Long, after: Long): JSONObject =
+        post("/api/admin/dm_messages", JSONObject().put("a", a).put("b", b).put("after", after), token)
 }

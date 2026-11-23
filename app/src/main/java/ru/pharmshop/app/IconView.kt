@@ -12,7 +12,7 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
-enum class Ic { STAR, GIFT, CROWN, BOX, KEY, DB, AT, SEND, USER, BACK, GEAR, BAG, CHAT }
+enum class Ic { STAR, GIFT, CROWN, BOX, KEY, DB, AT, SEND, USER, BACK, GEAR, BAG, CHAT, GROUP }
 
 /** Линейные иконки в стиле сайта. Рисуются в сетке 24x24. */
 class IconView(ctx: Context, private val kind: Ic, private val tint: Int) : View(ctx) {
@@ -171,6 +171,12 @@ class IconView(ctx: Context, private val kind: Ic, private val tint: Int) : View
                 p.quadTo(3f, 4.5f, 5f, 4.5f)
                 p.close()
                 c.drawPath(p, stroke)
+            }
+            Ic.GROUP -> {
+                c.drawCircle(8f, 8f, 3.4f, stroke)
+                c.drawArc(RectF(1f, 14.5f, 15f, 28.5f), 180f, 180f, false, stroke)
+                c.drawCircle(17f, 8.5f, 2.7f, stroke)
+                c.drawArc(RectF(13f, 14.5f, 21f, 22.5f), 180f, 180f, false, stroke)
             }
             Ic.BACK -> {
                 val p = Path()
