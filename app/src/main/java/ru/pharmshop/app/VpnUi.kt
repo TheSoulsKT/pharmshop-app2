@@ -67,7 +67,7 @@ internal fun MainActivity.dropRow(
 internal fun MainActivity.gbtn(t: String, primary: Boolean = false, onClick: () -> Unit): TextView =
     TextView(this).apply {
         text = t
-        textSize = 14f
+        textSize = 14f * Theme.textScale
         gravity = Gravity.CENTER
         maxLines = 2
         setTextColor(if (primary) Color.BLACK else TEXT)

@@ -14,11 +14,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.graphics.ColorUtils
 
-// Настройки: оформление, шаги заказа, уведомления, защита входа, обновления.
+// Настройки по категориям: Оформление, Безопасность, Прочее (уведомления и обновления).
 
 internal fun MainActivity.showSettings() {
     onHome = false
@@ -28,6 +27,7 @@ internal fun MainActivity.showSettings() {
     val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     col.addView(body)
     renderSettings(body, sid)
+    appFooter(col)
     riseIn(body)
 }
 
@@ -37,18 +37,35 @@ internal fun MainActivity.reopenSettings() {
     showSettings()
 }
 
+/** Открытая категория настроек: 0 — Оформление, 1 — Безопасность, 2 — Прочее. Помнится, пока открыто приложение. */
+private var settingsTab = 0
+
 internal fun MainActivity.renderSettings(body: LinearLayout, sid: Int) {
     body.removeAllViews()
     val again: () -> Unit = { if (sid == screenId) renderSettings(body, sid) }
-    appearanceBlock(body)
-    ordersBlock(body, again)
-    notificationsBlock(body)
-    securityBlock(body, again)
-    updatesBlock(body, again)
-    body.addView(txt("Версия ${BuildConfig.VERSION_NAME} (сборка ${BuildConfig.VERSION_CODE})", 12f, MUTE).apply {
-        gravity = Gravity.CENTER
-        layoutParams = lp(0).apply { topMargin = dp(6) }
+    body.addView(segmented(listOf("Оформление", "Безопасность", "Прочее"), settingsTab) { i ->
+        settingsTab = i
+        again()
     })
+    when (settingsTab) {
+        0 -> {
+            appearanceBlock(body)
+            interfaceBlock(body, again)
+            iconBlock(body, again)
+            effectsBlock(body, again)
+            ordersBlock(body, again)
+        }
+        1 -> {
+            securityBlock(body, again)
+            dataProtectionBlock(body, again)
+        }
+        else -> {
+            notificationsBlock(body)
+            updatesBlock(body, again)
+            helpBlock(body)
+            resetBlock(body)
+        }
+    }
 }
 
 // ---------- общие элементы ----------
@@ -78,7 +95,7 @@ internal fun MainActivity.segmented(options: List<String>, selected: Int, onSele
         val on = i == selected
         box.addView(TextView(this).apply {
             text = label
-            textSize = 13f
+            textSize = 13f * Theme.textScale
             gravity = Gravity.CENTER
             setTextColor(if (on) Color.BLACK else TEXT)
             if (on) setTypeface(typeface, Typeface.BOLD)
@@ -128,7 +145,7 @@ internal fun MainActivity.switchRow(
 // ---------- оформление ----------
 
 private fun MainActivity.appearanceBlock(body: LinearLayout) {
-    sectionLabel(body, "Оформление")
+    sectionLabel(body, "Тема")
     val c = groupCard()
 
     c.addView(caption("Режим"))
@@ -248,6 +265,199 @@ private fun MainActivity.ordersBlock(body: LinearLayout, again: () -> Unit) {
     body.addView(c)
 }
 
+// ---------- оформление: интерфейс ----------
+
+private fun MainActivity.interfaceBlock(body: LinearLayout, again: () -> Unit) {
+    sectionLabel(body, "Интерфейс")
+    val c = groupCard()
+    c.addView(caption("Размер текста"))
+    c.addView(segmented(listOf("Мелкий", "Обычный", "Крупный"), Store.textSize.coerceIn(0, 2)) { i ->
+        Store.textSize = i
+        Theme.update(this)
+        reopenSettings()   // экран строится заново уже с новым размером
+    })
+    c.addView(caption("Какая вкладка открывается при запуске"))
+    val tabs = listOf(0, 4, 2, 1)
+    c.addView(segmented(listOf("ТГ", "VPN", "Профиль", "Чат"), tabs.indexOf(Store.startTab).coerceAtLeast(0)) { i ->
+        Store.startTab = tabs[i]
+        again()
+    })
+    c.addView(switchRow("Скрывать поздравление", "Убрать цветную плашку на главном экране", Store.hideBanner) { on ->
+        Store.hideBanner = on
+    })
+    body.addView(c)
+}
+
+// ---------- оформление: иконка приложения ----------
+
+private fun MainActivity.iconBlock(body: LinearLayout, again: () -> Unit) {
+    sectionLabel(body, "Иконка приложения")
+    val c = groupCard()
+    c.addView(txt("Выберите кота для значка на рабочем столе", 12f, MUTE).apply { layoutParams = lp(10) })
+    val cur = AppIcon.current(this)
+    for (row in 0 until 2) {
+        val r = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = lp(if (row == 0) 8 else 0)
+        }
+        for (col in 0 until 3) {
+            val i = row * 3 + col
+            val e = AppIcon.all[i]
+            val sel = i == cur
+            val preview = android.widget.FrameLayout(this).apply {
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(resources.getColor(e.bgColor, theme))
+                }
+                clipToOutline = true
+                addView(android.widget.ImageView(this@iconBlock).apply {
+                    setImageResource(e.fg)
+                    scaleType = android.widget.ImageView.ScaleType.FIT_XY
+                    scaleX = 1.45f
+                    scaleY = 1.45f
+                    layoutParams = android.widget.FrameLayout.LayoutParams(dp(64), dp(64))
+                })
+                layoutParams = LinearLayout.LayoutParams(dp(64), dp(64))
+            }
+            val tile = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                background = shape(BG, 16, if (sel) edge(BLUE) else LINE)
+                setPadding(dp(6), dp(10), dp(6), dp(8))
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    setMargins(dp(4), 0, dp(4), 0)
+                }
+                addView(preview)
+                addView(txt(e.title + if (sel) " ✓" else "", 12f, if (sel) TEXT else MUTE, sel).apply {
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
+                })
+                isClickable = true
+                setOnClickListener {
+                    if (sel) return@setOnClickListener
+                    confirmSheet(
+                        "Сменить иконку?",
+                        "Значок «${e.title}» появится на рабочем столе через несколько секунд. На некоторых телефонах приложение при этом закроется — просто откройте его снова.",
+                        "Сменить"
+                    ) {
+                        AppIcon.set(this@iconBlock, i)
+                        toast("Иконка «${e.title}» выбрана")
+                        again()
+                    }
+                }
+                pressable(this)
+            }
+            r.addView(tile)
+        }
+        c.addView(r)
+    }
+    body.addView(c)
+}
+
+// ---------- оформление: анимации и отклик ----------
+
+private fun MainActivity.effectsBlock(body: LinearLayout, again: () -> Unit) {
+    sectionLabel(body, "Анимации и отклик")
+    val c = groupCard()
+    c.addView(switchRow("Анимированный фон", "Снег, листья, звёзды и другие эффекты выбранной темы", Store.fxEnabled) { on ->
+        Store.fxEnabled = on
+        reopenSettings()   // фон рисуется поверх экрана — пересоздаём экран, чтобы он сразу появился или пропал
+    })
+    if (Store.fxEnabled) {
+        c.addView(caption("Сколько частиц на фоне"))
+        c.addView(segmented(listOf("Меньше", "Обычно", "Больше"), Store.fxDensity.coerceIn(0, 2)) { i ->
+            Store.fxDensity = i
+            reopenSettings()
+        })
+    }
+    c.addView(switchRow("Плавные переходы", "Экраны и карточки появляются с анимацией", Store.uiAnim) { on ->
+        Store.uiAnim = on
+    })
+    c.addView(switchRow("Вибрация при нажатии", "Лёгкий отклик на касание кнопок и карточек", Store.haptics) { on ->
+        Store.haptics = on
+        if (on) c.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+    })
+    body.addView(c)
+}
+
+// ---------- безопасность: защита данных ----------
+
+private fun MainActivity.dataProtectionBlock(body: LinearLayout, again: () -> Unit) {
+    sectionLabel(body, "Защита данных")
+    val c = groupCard()
+    val lock = lockEnabled()
+    c.addView(switchRow("Скрывать экран в «Недавних»", "Запрещает скриншоты и прячет содержимое в списке приложений", Store.secureScreen) { on ->
+        Store.secureScreen = on
+        applySecureScreen()
+    })
+    c.addView(switchRow("Скрывать суммы и ники", "В профиле вместо них точки, пока не нажмёте на карточку", Store.hideSensitive) { on ->
+        Store.hideSensitive = on
+        AppState.revealed = false
+    })
+    c.addView(switchRow("Подтверждать оплату", "Окно с суммой перед переходом к оплате", Store.confirmPay) { on ->
+        Store.confirmPay = on
+    })
+    c.addView(switchRow("Прятать ссылку подписки VPN", "Ссылка показывается только после нажатия на неё", Store.vpnMaskLink) { on ->
+        Store.vpnMaskLink = on
+    })
+    c.addView(switchRow("Очищать буфер обмена", "Через минуту после копирования ссылки подписки", Store.clipAutoClear) { on ->
+        Store.clipAutoClear = on
+    })
+    c.addView(switchRow(
+        "PIN для выхода из VPN",
+        if (lock) "Спрашивать PIN при выходе из аккаунта и смене ссылки" else "Сначала включите вход по PIN или отпечатку",
+        Store.vpnPinGuard && lock, lock
+    ) { on -> Store.vpnPinGuard = on })
+    c.addView(switchRow(
+        "Показывать неудачные попытки входа",
+        if (lock) "После входа скажем, сколько раз PIN вводили неверно" else "Сначала включите вход по PIN или отпечатку",
+        Store.showFailedPins && lock, lock
+    ) { on -> Store.showFailedPins = on })
+    body.addView(c)
+}
+
+// ---------- помощь ----------
+
+private fun MainActivity.helpBlock(body: LinearLayout) {
+    sectionLabel(body, "Помощь")
+    val c = groupCard()
+    c.addView(txt(
+        "Что-то работает не так? Отправьте отчёт: версия, телефон и последние ошибки уйдут в поддержку.",
+        12f, MUTE
+    ).apply { layoutParams = lp(10) })
+    c.addView(btnGrid(listOf(
+        gbtn("Сообщить об ошибке", true) { openBugReport() },
+        gbtn("Что нового", false) { showWhatsNew(true) }
+    ), 10))
+    c.addView(txt(
+        "Виджет VPN: удерживайте палец на рабочем столе → «Виджеты» → PharmShop.",
+        12f, MUTE
+    ).apply { layoutParams = lp(0) })
+    body.addView(c)
+}
+
+// ---------- сброс настроек ----------
+
+private fun MainActivity.resetBlock(body: LinearLayout) {
+    sectionLabel(body, "Сброс")
+    val c = groupCard()
+    c.addView(txt(
+        "Вернёт тему, размер текста и переключатели оформления и безопасности к исходным. " +
+            "Заказы, PIN, вход в VPN, уведомления и обновления не затрагиваются.",
+        12f, MUTE
+    ).apply { layoutParams = lp(10) })
+    c.addView(LinearLayout(this).apply {
+        addView(chipTint("Сбросить настройки", RED) {
+            confirmSheet("Сбросить настройки?", "Внешний вид и переключатели вернутся к исходным значениям.", "Сбросить", danger = true) {
+                Store.resetSettings()
+                applySecureScreen()
+                applyAppearance()
+            }
+        })
+    })
+    body.addView(c)
+}
+
 // ---------- уведомления ----------
 
 internal fun MainActivity.openNotificationSettings() {
@@ -283,6 +493,12 @@ private fun MainActivity.notificationsBlock(body: LinearLayout) {
             toast("Push-уведомления выключены")
         }
     })
+    c.addView(switchRow("VPN: подписка заканчивается", "За 3 дня и за 1 день до конца. Нужны push и вход в VPN", Store.vpnNotifyExpiry) { on ->
+        Store.vpnNotifyExpiry = on
+    })
+    c.addView(switchRow("VPN: трафик заканчивается", "Когда использовано 90% и когда трафик закончился", Store.vpnNotifyTraffic) { on ->
+        Store.vpnNotifyTraffic = on
+    })
     c.addView(switchRow("Напоминания о покупке", "Редкие напоминания про звёзды и Premium, не ночью", Reminders.enabled(this)) { on ->
         Reminders.setEnabled(this, on)
     })
@@ -300,21 +516,30 @@ private fun MainActivity.notificationsBlock(body: LinearLayout) {
 // ---------- защита входа ----------
 
 private fun MainActivity.securityBlock(body: LinearLayout, again: () -> Unit) {
-    sectionLabel(body, "Безопасность")
+    sectionLabel(body, "Вход в приложение")
     val c = groupCard()
-    c.addView(txt("Вход в приложение", 16f, TEXT, true).apply { layoutParams = lp(2) })
+    c.addView(txt("PIN-код и отпечаток", 16f, TEXT, true).apply { layoutParams = lp(2) })
     c.addView(txt("Защитите историю заказов и чат с поддержкой от посторонних", 12f, MUTE).apply { layoutParams = lp(10) })
     val mode = if (Store.lockMode != 0 && Store.hasPin) Store.lockMode.coerceIn(1, 2) else 0
     c.addView(segmented(listOf("Выкл", "PIN", "Отпечаток"), mode) { i -> chooseLock(i, again) })
 
     if (mode != 0) {
-        c.addView(caption("Просить вход, если приложение было свёрнуто дольше"))
-        val delays = listOf(15, 60, 300)
-        val di = delays.indexOf(Store.lockDelaySec).let { if (it < 0) 1 else it }
-        c.addView(segmented(listOf("15 сек", "1 мин", "5 мин"), di) { i ->
-            Store.lockDelaySec = delays[i]
+        c.addView(switchRow("Блокировать сразу при сворачивании", "Вход нужен каждый раз, без ожидания", Store.lockOnLeave) { on ->
+            Store.lockOnLeave = on
             again()
         })
+        c.addView(switchRow("Блокировать при выключении экрана", "Когда гасите экран телефона кнопкой", Store.lockOnScreenOff) { on ->
+            Store.lockOnScreenOff = on
+        })
+        if (!Store.lockOnLeave) {
+            c.addView(caption("Просить вход, если приложение было свёрнуто дольше"))
+            val delays = listOf(15, 60, 300)
+            val di = delays.indexOf(Store.lockDelaySec).let { if (it < 0) 1 else it }
+            c.addView(segmented(listOf("15 сек", "1 мин", "5 мин"), di) { i ->
+                Store.lockDelaySec = delays[i]
+                again()
+            })
+        }
         c.addView(LinearLayout(this).apply {
             addView(chip("Сменить PIN", false) { showPinSetup(true) { _ -> reopenSettings() } })
         })
@@ -347,14 +572,13 @@ private fun MainActivity.chooseLock(i: Int, again: () -> Unit) {
         }
         else -> {
             if (!biometricAvailable()) {
-                AlertDialog.Builder(this)
-                    .setTitle("Отпечаток не настроен")
-                    .setMessage("Добавьте отпечаток пальца в настройках телефона (Безопасность → Биометрия), затем вернитесь сюда. Пока можно использовать PIN.")
-                    .setPositiveButton("Открыть настройки") { _, _ ->
-                        try { startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS)) } catch (e: Exception) { toast("Не удалось открыть настройки") }
-                    }
-                    .setNegativeButton("Отмена", null)
-                    .show()
+                confirmSheet(
+                    "Отпечаток не настроен",
+                    "Добавьте отпечаток пальца в настройках телефона (Безопасность → Биометрия), затем вернитесь сюда. Пока можно использовать PIN.",
+                    "Открыть настройки"
+                ) {
+                    try { startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS)) } catch (e: Exception) { toast("Не удалось открыть настройки") }
+                }
                 return
             }
             // сначала запасной PIN, затем проверяем, что отпечаток действительно срабатывает

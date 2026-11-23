@@ -40,6 +40,121 @@ object Store {
         get() = sp.getInt("steps_style", 0)
         set(v) { sp.edit().putInt("steps_style", v).apply() }
 
+    // ----- переключатели в настройках (Оформление / Безопасность) -----
+    /** Анимированный фон темы (снег, листья, звёзды…). */
+    var fxEnabled: Boolean
+        get() = sp.getBoolean("fx_enabled", true)
+        set(v) { sp.edit().putBoolean("fx_enabled", v).apply() }
+
+    /** Плавное появление экранов и элементов. */
+    var uiAnim: Boolean
+        get() = sp.getBoolean("ui_anim", true)
+        set(v) { sp.edit().putBoolean("ui_anim", v).apply() }
+
+    /** Лёгкая вибрация при нажатии на кнопки. */
+    var haptics: Boolean
+        get() = sp.getBoolean("haptics", false)
+        set(v) { sp.edit().putBoolean("haptics", v).apply() }
+
+    /** Запретить скриншоты и скрыть содержимое в списке «Недавние». */
+    var secureScreen: Boolean
+        get() = sp.getBoolean("secure_screen", false)
+        set(v) { sp.edit().putBoolean("secure_screen", v).apply() }
+
+    /** Прятать ссылку подписки VPN, пока на неё не нажали. */
+    var vpnMaskLink: Boolean
+        get() = sp.getBoolean("vpn_mask_link", false)
+        set(v) { sp.edit().putBoolean("vpn_mask_link", v).apply() }
+
+    /** Очищать буфер обмена через минуту после копирования ссылки подписки. */
+    var clipAutoClear: Boolean
+        get() = sp.getBoolean("clip_auto_clear", false)
+        set(v) { sp.edit().putBoolean("clip_auto_clear", v).apply() }
+
+    /** Размер текста: 0 — мелкий, 1 — обычный, 2 — крупный. */
+    var textSize: Int
+        get() = sp.getInt("text_size", 1)
+        set(v) { sp.edit().putInt("text_size", v).apply() }
+
+    /** Сколько частиц у анимированного фона: 0 — меньше, 1 — как раньше, 2 — больше. */
+    var fxDensity: Int
+        get() = sp.getInt("fx_density", 1)
+        set(v) { sp.edit().putInt("fx_density", v).apply() }
+
+    /** Какая вкладка открывается при запуске: 0 — ТГ, 4 — VPN, 2 — Профиль, 1 — Поддержка. */
+    var startTab: Int
+        get() = sp.getInt("start_tab", 0)
+        set(v) { sp.edit().putInt("start_tab", v).apply() }
+
+    /** Не показывать плашку-поздравление на главной. */
+    var hideBanner: Boolean
+        get() = sp.getBoolean("hide_banner", false)
+        set(v) { sp.edit().putBoolean("hide_banner", v).apply() }
+
+    /** Скрывать ники и суммы в профиле, пока не нажмёшь на карточку. */
+    var hideSensitive: Boolean
+        get() = sp.getBoolean("hide_sensitive", false)
+        set(v) { sp.edit().putBoolean("hide_sensitive", v).apply() }
+
+    /** Спрашивать подтверждение с суммой перед переходом к оплате. */
+    var confirmPay: Boolean
+        get() = sp.getBoolean("confirm_pay", false)
+        set(v) { sp.edit().putBoolean("confirm_pay", v).apply() }
+
+    /** Просить PIN / отпечаток перед выходом из VPN-аккаунта и сменой ссылки подписки. */
+    var vpnPinGuard: Boolean
+        get() = sp.getBoolean("vpn_pin_guard", false)
+        set(v) { sp.edit().putBoolean("vpn_pin_guard", v).apply() }
+
+    /** Блокировать приложение сразу, как только его свернули (без задержки). */
+    var lockOnLeave: Boolean
+        get() = sp.getBoolean("lock_on_leave", false)
+        set(v) { sp.edit().putBoolean("lock_on_leave", v).apply() }
+
+    /** Блокировать приложение, когда выключили экран телефона. */
+    var lockOnScreenOff: Boolean
+        get() = sp.getBoolean("lock_on_screen_off", false)
+        set(v) { sp.edit().putBoolean("lock_on_screen_off", v).apply() }
+
+    /** После входа сообщать, сколько раз PIN вводили неверно. */
+    var showFailedPins: Boolean
+        get() = sp.getBoolean("show_failed_pins", false)
+        set(v) { sp.edit().putBoolean("show_failed_pins", v).apply() }
+
+    // ----- VPN: уведомления, кэш для виджета -----
+    /** Предупреждать, что подписка VPN скоро закончится. */
+    var vpnNotifyExpiry: Boolean
+        get() = sp.getBoolean("vpn_notify_expiry", true)
+        set(v) { sp.edit().putBoolean("vpn_notify_expiry", v).apply() }
+
+    /** Предупреждать, что трафик VPN заканчивается. */
+    var vpnNotifyTraffic: Boolean
+        get() = sp.getBoolean("vpn_notify_traffic", true)
+        set(v) { sp.edit().putBoolean("vpn_notify_traffic", v).apply() }
+
+    /** Краткие данные подписок для виджета (без ссылок подписки): JSON-массив. */
+    var vpnCache: String
+        get() = sp.getString("vpn_cache", "") ?: ""
+        set(v) { sp.edit().putString("vpn_cache", v).apply() }
+
+    var vpnCacheAt: Long
+        get() = sp.getLong("vpn_cache_at", 0L)
+        set(v) { sp.edit().putLong("vpn_cache_at", v).apply() }
+
+    /** О чём уже предупредили (ключи «подписка|событие|дата окончания»), чтобы не повторять. */
+    var vpnNotified: String
+        get() = sp.getString("vpn_notified", "") ?: ""
+        set(v) { sp.edit().putString("vpn_notified", v).apply() }
+
+    var vpnCheckedAt: Long
+        get() = sp.getLong("vpn_checked_at", 0L)
+        set(v) { sp.edit().putLong("vpn_checked_at", v).apply() }
+
+    /** Номер сборки, для которой уже показали «Что нового» (-1 — ещё не показывали). */
+    var seenCode: Int
+        get() = sp.getInt("seen_code", -1)
+        set(v) { sp.edit().putInt("seen_code", v).apply() }
+
     // ----- защита входа -----
     /** 0 — выключена, 1 — PIN, 2 — отпечаток (PIN остаётся запасным входом). */
     var lockMode: Int
@@ -97,10 +212,24 @@ object Store {
         e.apply()
     }
 
+    /** Сколько раз PIN вводили неверно с последнего успешного входа. */
+    fun pinFails(): Int = sp.getInt("pin_fails", 0)
+
     fun pinFailsReset() { sp.edit().putInt("pin_fails", 0).putLong("pin_lock_until", 0L).apply() }
 
     /** Сколько миллисекунд ещё действует блокировка после неверных попыток (0 — можно вводить). */
     fun pinLockLeftMs(): Long = (sp.getLong("pin_lock_until", 0L) - System.currentTimeMillis()).coerceAtLeast(0L)
+
+    /** Сброс внешнего вида и переключателей. PIN, заказы, вход в VPN, уведомления и обновления не трогаем. */
+    fun resetSettings() {
+        val e = sp.edit()
+        for (k in listOf(
+            "theme", "skin", "steps_style", "fx_enabled", "fx_density", "ui_anim", "haptics", "text_size",
+            "start_tab", "hide_banner", "secure_screen", "hide_sensitive", "confirm_pay", "vpn_mask_link",
+            "clip_auto_clear", "vpn_pin_guard", "lock_on_leave", "lock_on_screen_off", "show_failed_pins", "lock_delay"
+        )) e.remove(k)
+        e.apply()
+    }
 
     /** Полный сброс данных приложения (если забыли PIN). */
     fun wipeAll() { sp.edit().clear().commit() }

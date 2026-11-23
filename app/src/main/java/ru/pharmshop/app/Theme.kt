@@ -48,6 +48,8 @@ class Banner(val title: String, val sub: String, val c1: Int, val c2: Int, val o
 object Theme {
     @JvmField var light = false
     @JvmField var skin: Skin = Skin.CLASSIC
+    /** Множитель размера текста (Настройки → Оформление → Размер текста). */
+    @JvmField var textScale = 1f
 
     // текущие цвета (пересчитываются в update)
     @JvmField var bg: Int = Color.parseColor("#121214")
@@ -70,13 +72,14 @@ object Theme {
     val snowColor get() = if (light) Color.parseColor("#8FA6C4") else Color.WHITE
 
     /** Вызывать в onCreate после Store.init и при смене настроек: определяет режим и палитру. */
-    fun update(a: Activity) {
+    fun update(a: android.content.Context) {
         light = when (Store.theme) {
             2 -> true
             1 -> false
             else -> (a.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) != Configuration.UI_MODE_NIGHT_YES
         }
         skin = Skin.byId(Store.skin)
+        textScale = when (Store.textSize) { 0 -> 0.9f; 2 -> 1.15f; else -> 1f }
         val p = if (light) skin.light else skin.dark
         bg = p.bg; card = p.card; line = p.line; accent = p.accent
         text = if (light) L_TEXT else D_TEXT

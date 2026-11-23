@@ -103,33 +103,23 @@ private val sectionDefs = listOf(
 
 internal fun MainActivity.editSection(key: String, name: String, secs: JSONObject, done: () -> Unit) {
     val cur = secs.optJSONObject(key) ?: JSONObject()
-    fun field(h: String, v: String) = EditText(this).apply {
-        hint = h
-        setText(v)
-        setSingleLine()
-    }
-    val fTitle = field("Название (пусто — «$name»)", cur.optString("title"))
-    val fSub = field("Подпись под названием", cur.optString("sub"))
-    val fUrl = field("Ссылка при нажатии (https://…)", cur.optString("url"))
-    val fMsg = field("Сообщение, если раздел выключен", cur.optString("message"))
-    val box = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(20), dp(8), dp(20), 0)
-        for (f in listOf(fTitle, fSub, fUrl, fMsg)) addView(f)
-    }
-    AlertDialog.Builder(this)
-        .setTitle(name)
-        .setView(box)
-        .setPositiveButton("Сохранить") { _, _ ->
-            val o = secs.optJSONObject(key) ?: JSONObject().also { secs.put(key, it) }
-            for ((k, f) in listOf("title" to fTitle, "sub" to fSub, "url" to fUrl, "message" to fMsg)) {
-                val v = f.text.toString().trim()
-                if (v.isEmpty()) o.remove(k) else o.put(k, v)
-            }
-            done()
+    formSheet(
+        name,
+        listOf(
+            "Название (пусто — «$name»)" to cur.optString("title"),
+            "Подпись под названием" to cur.optString("sub"),
+            "Ссылка при нажатии (https://…)" to cur.optString("url"),
+            "Сообщение, если раздел выключен" to cur.optString("message")
+        )
+    ) { vals ->
+        val o = secs.optJSONObject(key) ?: JSONObject().also { secs.put(key, it) }
+        for ((k, raw) in listOf("title", "sub", "url", "message").zip(vals)) {
+            val v = raw.trim()
+            if (v.isEmpty()) o.remove(k) else o.put(k, v)
         }
-        .setNegativeButton("Отмена", null)
-        .show()
+        done()
+        true
+    }
 }
 
 internal fun MainActivity.showAdminSections() {
@@ -215,15 +205,12 @@ internal fun MainActivity.showAdminForceUpdate() {
             if (n <= 0) {
                 adminSave(patch) { toast("Требование отключено") }
             } else {
-                AlertDialog.Builder(this)
-                    .setTitle("Требовать сборку $n?")
-                    .setMessage(
-                        "Все, у кого сборка ниже $n, не смогут пользоваться приложением, пока не обновятся. " +
-                            "Убедитесь, что релиз build-$n уже опубликован на GitHub."
-                    )
-                    .setPositiveButton("Требовать") { _, _ -> adminSave(patch) { toast("Сохранено") } }
-                    .setNegativeButton("Отмена", null)
-                    .show()
+                confirmSheet(
+                    "Требовать сборку $n?",
+                    "Все, у кого сборка ниже $n, не смогут пользоваться приложением, пока не обновятся. " +
+                        "Убедитесь, что релиз build-$n уже опубликован на GitHub.",
+                    "Требовать"
+                ) { adminSave(patch) { toast("Сохранено") } }
             }
         })
     }

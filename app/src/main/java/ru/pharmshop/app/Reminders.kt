@@ -143,7 +143,7 @@ object Reminders {
                 }
             )
         }
-        val open = Intent(c, MainActivity::class.java)
+        val open = Intent(c, LauncherActivity::class.java)
             .putExtra(EXTRA_OPEN, if (stars) "stars" else "premium")
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val pi = PendingIntent.getActivity(

@@ -105,7 +105,7 @@ internal fun MainActivity.userField(): Pair<LinearLayout, EditText> {
         inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         setTextColor(TEXT)
         setHintTextColor(MUTE)
-        textSize = 16f
+        textSize = 16f * Theme.textScale
         background = null
         setPadding(0, dp(14), 0, dp(14))
         layoutParams = LinearLayout.LayoutParams(0, WC, 1f)
@@ -175,7 +175,7 @@ internal fun MainActivity.stepChips(steps: List<Int>, onStep: (Int) -> Unit): Li
     steps.forEachIndexed { i, v ->
         row.addView(TextView(this).apply {
             text = "+$v"
-            textSize = 14f
+            textSize = 14f * Theme.textScale
             gravity = Gravity.CENTER
             setTextColor(TEXT)
             background = ripple(CARD, 14, LINE)
@@ -376,7 +376,7 @@ internal fun MainActivity.payBar(onPay: (TextView) -> Unit): PayBar {
     val pay = Button(this).apply {
         text = "Оплатить"
         setAllCaps(false)
-        textSize = 16f
+        textSize = 16f * Theme.textScale
         gravity = Gravity.CENTER
         setTextColor(Color.BLACK)   // на акценте темы текст чёрный
         setTypeface(typeface, Typeface.BOLD)
@@ -388,7 +388,14 @@ internal fun MainActivity.payBar(onPay: (TextView) -> Unit): PayBar {
         stateListAnimator = null
         setPadding(dp(24), dp(14), dp(24), dp(14))
         layoutParams = LinearLayout.LayoutParams(WC, WC)
-        setOnClickListener { onPay(info) }
+        setOnClickListener {
+            val sum = total.text.toString()
+            if (Store.confirmPay && sum.any { it.isDigit() }) {
+                confirmSheet("Перейти к оплате?", "${cap.text}: $sum", "Оплатить") { onPay(info) }
+            } else {
+                onPay(info)
+            }
+        }
         pressable(this)
     }
     val row = LinearLayout(this).apply {

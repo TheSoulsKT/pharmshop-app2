@@ -88,6 +88,8 @@ object VpnApi {
         tokenExp = 0L
         Store.vpnRefresh = ""
         Store.vpnPay = ""
+        Store.vpnCache = ""
+        Store.vpnNotified = ""
     }
 
     /** Берёт токен из ответа входа/продления и новый ключ входа из Set-Cookie. */
@@ -181,6 +183,7 @@ object VpnApi {
     private class ApiFail(msg: String, val captcha: Boolean) : Exception(msg)
 
     private fun failOf(r: Resp, path: String): ApiFail {
+        AppLog.e("vpn", "$path → HTTP ${r.code}")
         if (r.code == 429) return ApiFail("Слишком много попыток. Подождите немного.", false)
         var code = ""
         var reason = ""

@@ -21,6 +21,12 @@ object AppState {
     /** Когда приложение ушло с экрана (elapsedRealtime) — для автоблокировки. */
     @Volatile var stoppedAt = 0L
 
+    /** Экран выключали — при возврате снова просить вход (если включено «Блокировать при выключении экрана»). */
+    @Volatile var relock = false
+
+    /** Ники и суммы в профиле показаны (до сворачивания приложения). */
+    @Volatile var revealed = false
+
     /** Экран, который надо открыть после пересоздания Activity (например, смена темы в настройках). */
     @Volatile var reopen: String? = null
 }
@@ -31,6 +37,7 @@ object Notifier {
     const val CH_ORDERS = "orders"
     const val CH_ADMIN = "admin"
     const val CH_UPDATE = "updates"
+    const val CH_VPN = "vpn"
 
     private const val ID_SUPPORT = 2001
     private const val ID_ADMIN = 2002
@@ -47,6 +54,7 @@ object Notifier {
         nm.createNotificationChannel(ch(CH_SUPPORT, "Ответы поддержки", "Когда поддержка ответила в чате"))
         nm.createNotificationChannel(ch(CH_ORDERS, "Статусы заказов", "Когда заказ выполнен или отменён"))
         nm.createNotificationChannel(ch(CH_ADMIN, "Новые обращения", "Для администратора: новые сообщения в чатах"))
+        nm.createNotificationChannel(ch(CH_VPN, "VPN: подписка и трафик", "Когда подписка или трафик VPN подходят к концу"))
         nm.createNotificationChannel(ch(CH_UPDATE, "Обновления приложения", "Новая версия скачана и готова к установке", NotificationManager.IMPORTANCE_DEFAULT))
     }
 
@@ -54,7 +62,7 @@ object Notifier {
     private fun post(c: Context, channel: String, id: Int, title: String, text: String, open: String) {
         if (!enabled(c)) return
         ensureChannels(c)
-        val intent = Intent(c, MainActivity::class.java)
+        val intent = Intent(c, LauncherActivity::class.java)
             .putExtra(Reminders.EXTRA_OPEN, open)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val pi = PendingIntent.getActivity(c, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -84,6 +92,10 @@ object Notifier {
         val title = if (kind == 2) "Заказ $num выполнен" else "Заказ $num отменён"
         val id = ID_ORDER_BASE + (o.optString("id").hashCode() and 0x3FF)
         post(c, CH_ORDERS, id, title, what, "profile")
+    }
+
+    fun vpn(c: Context, key: String, title: String, text: String) {
+        post(c, CH_VPN, 4000 + (key.hashCode() and 0x3FF), title, text, "vpn")
     }
 
     fun update(c: Context, versionName: String) {

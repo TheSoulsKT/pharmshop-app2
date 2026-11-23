@@ -272,7 +272,7 @@ internal fun MainActivity.showSplash() {
     root.addView(column, FrameLayout.LayoutParams(-1, -2).apply { gravity = Gravity.CENTER_VERTICAL })
     column.translationY = -dp(70).toFloat()
 
-    val beta = txt("BETA", 11f, BLUE, true).apply {
+    val beta = txt("STABLE", 11f, BLUE, true).apply {
         letterSpacing = 0.25f
         background = shape(ColorUtils.setAlphaComponent(BLUE, 36), 12, ColorUtils.setAlphaComponent(BLUE, 120))
         setPadding(dp(12), dp(5), dp(12), dp(5))

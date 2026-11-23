@@ -2,6 +2,7 @@ package ru.pharmshop.app
 
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
+import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
@@ -32,13 +33,55 @@ internal class SecView(val title: String, val sub: String, val enabled: Boolean,
 
 internal class MethodRow(val id: String, val name: String, val row: LinearLayout, val dot: View, val tint: Int = 0)
 
+/** ScrollView, который умеет «потянуть вниз, чтобы обновить»: в самом верху тянется содержимое, отпустили далеко — вызывается onPull. */
+internal class PullScrollView(ctx: Context) : ScrollView(ctx) {
+    var onPull: (() -> Unit)? = null
+    private var startY = 0f
+    private var pulling = false
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        val d = resources.displayMetrics.density
+        val content = getChildAt(0)
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { startY = ev.rawY; pulling = false }
+            MotionEvent.ACTION_MOVE -> if (onPull != null) {
+                if (scrollY > 0) {
+                    startY = ev.rawY
+                } else {
+                    val dy = ev.rawY - startY
+                    if (dy > 12 * d) {
+                        pulling = true
+                        content?.translationY = minOf(dy * 0.35f, 70 * d)
+                    }
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val fire = pulling && ev.actionMasked == MotionEvent.ACTION_UP && (ev.rawY - startY) * 0.35f >= 45 * d
+                if (pulling) content?.animate()?.translationY(0f)?.setDuration(200)?.start()
+                pulling = false
+                if (fire) {
+                    performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                    onPull?.invoke()
+                }
+            }
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+}
+
+/** Включает на текущем экране «потянуть вниз, чтобы обновить». */
+internal fun MainActivity.setPullRefresh(f: () -> Unit) { pullView?.onPull = f }
+
 // ---------- анимации ----------
 /** Лёгкое «вдавливание» при касании. Клики не перехватывает (возвращает false). */
 internal fun MainActivity.pressable(v: View) {
     v.setOnTouchListener { view, e ->
         when (e.actionMasked) {
-            MotionEvent.ACTION_DOWN -> view.animate().scaleX(0.97f).scaleY(0.97f)
+            MotionEvent.ACTION_DOWN -> {
+                if (Store.haptics) view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                view.animate().scaleX(0.97f).scaleY(0.97f)
                 .setStartDelay(0).setDuration(110).setInterpolator(DecelerateInterpolator()).start()
+            }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> view.animate().scaleX(1f).scaleY(1f)
                 .setStartDelay(0).setDuration(240).setInterpolator(OvershootInterpolator(2.5f)).start()
         }
@@ -48,6 +91,7 @@ internal fun MainActivity.pressable(v: View) {
 
 /** Поочерёдное появление дочерних элементов (снизу вверх с проявлением), начиная с индекса from. */
 internal fun MainActivity.riseIn(col: LinearLayout, from: Int = 0) {
+    if (!Store.uiAnim) return
     var n = 0
     for (i in from until col.childCount) {
         val v = col.getChildAt(i)
@@ -132,7 +176,7 @@ internal fun MainActivity.lp(bottom: Int = 10) = LinearLayout.LayoutParams(
 internal fun MainActivity.txt(t: String, size: Float, color: Int = TEXT, bold: Boolean = false): TextView =
     TextView(this).apply {
         text = t
-        textSize = size
+        textSize = size * Theme.textScale
         setTextColor(color)
         if (bold) setTypeface(typeface, Typeface.BOLD)
     }
@@ -144,7 +188,7 @@ internal fun MainActivity.btn(t: String, primary: Boolean = false, onClick: () -
     Button(this).apply {
         text = t
         setAllCaps(false)
-        textSize = 16f
+        textSize = 16f * Theme.textScale
         gravity = Gravity.START or Gravity.CENTER_VERTICAL
         setTextColor(if (primary) Color.BLACK else TEXT)
         background = ripple(if (primary) BLUE else CARD, 18, if (primary) BLUE else LINE)
@@ -157,7 +201,7 @@ internal fun MainActivity.btn(t: String, primary: Boolean = false, onClick: () -
 internal fun MainActivity.chip(t: String, primary: Boolean, onClick: () -> Unit): TextView =
     TextView(this).apply {
         text = t
-        textSize = 13f
+        textSize = 13f * Theme.textScale
         gravity = Gravity.CENTER
         setTextColor(if (primary) Color.BLACK else TEXT)
         background = ripple(if (primary) BLUE else Color.TRANSPARENT, 12, if (primary) BLUE else LINE)
@@ -211,7 +255,7 @@ internal fun MainActivity.gradBtn(t: String, c1: Int, c2: Int, textColor: Int, o
     Button(this).apply {
         text = t
         setAllCaps(false)
-        textSize = 16f
+        textSize = 16f * Theme.textScale
         gravity = Gravity.CENTER
         setTextColor(textColor)
         background = RippleDrawable(
@@ -236,7 +280,7 @@ internal fun MainActivity.input(hintText: String, type: Int): EditText = EditTex
     inputType = type
     setTextColor(TEXT)
     setHintTextColor(MUTE)
-    textSize = 16f
+    textSize = 16f * Theme.textScale
     background = shape(CARD, 14, LINE)
     setPadding(dp(14), dp(14), dp(14), dp(14))
     layoutParams = lp()
@@ -290,7 +334,7 @@ internal fun MainActivity.bottomNav(active: Int): LinearLayout {
             addView(IconView(this@bottomNav, icon, color).apply {
                 layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply { bottomMargin = dp(2) }
             })
-            addView(txt(label, 11f, color, on).apply { gravity = Gravity.CENTER })
+            addView(txt(label, 11f, color, on).apply { gravity = Gravity.CENTER; textSize = 11f })
         }
         row.addView(item)
     }
@@ -341,11 +385,12 @@ internal fun MainActivity.screen(tab: Int = -1, bottomBar: Boolean = false): Lin
         orientation = LinearLayout.VERTICAL
         setPadding(dp(18), dp(28), dp(18), dp(24))
     }
-    val sv = ScrollView(this).apply {
+    val sv = PullScrollView(this).apply {
         setBackgroundColor(BG)
         isFillViewport = true
         addView(col)
     }
+    pullView = sv
     val host = if (bottomBar) FrameLayout(this).apply {
         setBackgroundColor(BG)
         setPadding(dp(18), dp(8), dp(18), dp(12))
@@ -358,20 +403,37 @@ internal fun MainActivity.screen(tab: Int = -1, bottomBar: Boolean = false): Lin
     }
     setContentView(withNav(body, tab))
     // переход между экранами: вперёд — выезд справа, назад — слева
-    sv.alpha = 0f
-    sv.translationX = if (firstScreen) 0f else dp(28).toFloat() * (if (navBack) -1 else 1)
-    sv.animate().alpha(1f).translationX(0f).setDuration(320)
-        .setInterpolator(DecelerateInterpolator(2f)).start()
+    if (Store.uiAnim) {
+        sv.alpha = 0f
+        sv.translationX = if (firstScreen) 0f else dp(28).toFloat() * (if (navBack) -1 else 1)
+        sv.animate().alpha(1f).translationX(0f).setDuration(320)
+            .setInterpolator(DecelerateInterpolator(2f)).start()
+    }
     firstScreen = false
     navBack = false
     addFx()
     return col
 }
 
+/** Подвал экрана: «Приложение в активной разработке», версия и кнопка «Проверить обновления». Одинаков на всех вкладках. */
+internal fun MainActivity.appFooter(col: LinearLayout) {
+    col.addView(txt("Приложение в активной разработке\nВерсия ${BuildConfig.VERSION_NAME} (сборка ${BuildConfig.VERSION_CODE})", 12f, MUTE).apply {
+        gravity = Gravity.CENTER
+        layoutParams = lp(0).apply { topMargin = dp(14) }
+    })
+    col.addView(LinearLayout(this).apply {
+        gravity = Gravity.CENTER
+        layoutParams = lp(0).apply { topMargin = dp(10) }
+        addView(chip("Проверить обновления", false) { checkForUpdate(false) }.apply {
+            (layoutParams as LinearLayout.LayoutParams).rightMargin = 0
+        })
+    })
+}
+
 /** Анимированный фон выбранного оформления (снег, листья, звёзды…). У «Стандарта» его нет. */
 internal fun MainActivity.addFx() {
     val kind = Theme.skin.fx
-    if (kind == Fx.NONE || !FxView.allowed(this)) return
+    if (kind == Fx.NONE || !Store.fxEnabled || !FxView.allowed(this)) return
     findViewById<ViewGroup>(android.R.id.content).addView(
         FxView(this, kind),
         android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)

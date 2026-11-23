@@ -22,11 +22,13 @@ class PollWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
     override fun doWork(): Result {
         val c = applicationContext
         Store.init(c)
+        AppLog.init(c)
         if (!Store.pushEnabled || AppState.visible || !Notifier.enabled(c)) return Result.success()
         // каждая проверка независима: сбой одной (нет сети, 401) не мешает остальным
         try { checkSupport(c) } catch (e: Exception) { }
         try { checkOrders(c) } catch (e: Exception) { }
         try { checkAdmin(c) } catch (e: Exception) { }
+        try { VpnWatch.check(c) } catch (e: Exception) { AppLog.e("vpn", e) }
         return Result.success()
     }
 

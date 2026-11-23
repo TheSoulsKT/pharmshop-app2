@@ -46,12 +46,14 @@ object Api {
                 val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
                 val where = "$method ${url.path}"
                 if (!text.trimStart().startsWith("{")) {
+                    AppLog.e("api", "$where → не JSON (код $code)")
                     throw Exception("Сервер вернул не JSON (код $code, $where). Возможно, сайт не пустил приложение.")
                 }
                 val json = JSONObject(text)
                 if (code !in 200..299) {
                     // JSONObject сам декодирует \uXXXX, так что сообщение читается по-русски
                     val msg = json.optString("error").ifEmpty { text.take(300) }
+                    AppLog.e("api", "$where → HTTP $code: ${msg.take(120)}")
                     throw Exception("HTTP $code ($where): $msg")
                 }
                 return json

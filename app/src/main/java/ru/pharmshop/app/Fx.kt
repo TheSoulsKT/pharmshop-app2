@@ -104,7 +104,8 @@ class FxView(ctx: Context, private val kind: Fx) : View(ctx) {
             Fx.SNOW -> 45; Fx.LEAVES -> 26; Fx.PETALS -> 30; Fx.SUN -> 22
             Fx.STARS -> 70; Fx.RAP -> 22; Fx.NONE -> 0
         }
-        repeat(n) { ps.add(make(w, h, true)) }
+        val k = when (Store.fxDensity) { 0 -> 0.5f; 2 -> 1.7f; else -> 1f }
+        repeat(if (n > 0) maxOf(1, (n * k).toInt()) else 0) { ps.add(make(w, h, true)) }
     }
 
     override fun onDraw(c: Canvas) {

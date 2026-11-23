@@ -138,7 +138,7 @@ internal fun MainActivity.showHome() {
     }
     col.addView(head)
     // плашка выбранной темы (у «Стандарта» — новогодняя в сезон)
-    Theme.banner()?.let { bn ->
+    (if (Store.hideBanner) null else Theme.banner())?.let { bn ->
         col.addView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = gradient(bn.c1, bn.c2, 18)
@@ -230,23 +230,13 @@ internal fun MainActivity.showHome() {
         gravity = Gravity.CENTER
         layoutParams = lp(0)
     })
-    col.addView(txt("Приложение в активной разработке\nВерсия ${BuildConfig.VERSION_NAME} (сборка ${BuildConfig.VERSION_CODE})", 12f, MUTE).apply {
-        gravity = Gravity.CENTER
-        layoutParams = lp(0).apply { topMargin = dp(14) }
-    })
-    col.addView(LinearLayout(this).apply {
-        gravity = Gravity.CENTER
-        layoutParams = lp(0).apply { topMargin = dp(10) }
-        addView(chip("Проверить обновления", false) { checkForUpdate(false) }.apply {
-            (layoutParams as LinearLayout.LayoutParams).rightMargin = 0
-        })
-    })
+    appFooter(col)
 
     floatForever(logo)
     riseIn(col)
 
     // «Стандарт»: в новогодний сезон — снегопад, как раньше (у остальных тем фон добавляет screen())
-    if (Theme.skin == Skin.CLASSIC && isNewYear() && FxView.allowed(this)) {
+    if (Theme.skin == Skin.CLASSIC && isNewYear() && Store.fxEnabled && FxView.allowed(this)) {
         findViewById<ViewGroup>(android.R.id.content).addView(
             FxView(this, Fx.SNOW),
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)

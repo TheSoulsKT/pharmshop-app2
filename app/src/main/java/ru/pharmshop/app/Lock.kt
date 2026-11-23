@@ -171,7 +171,18 @@ internal fun MainActivity.showLock() {
     fun unlock() {
         AppState.unlocked = true
         bioBusy = false
+        val fails = Store.pinFails()
         Store.pinFailsReset()
+        if (fails > 0 && Store.showFailedPins) {
+            main.postDelayed({
+                infoSheet(
+                    "Были неудачные попытки входа",
+                    "С прошлого входа PIN вводили неверно: $fails. Если это были не вы, смените PIN в настройках."
+                )
+            }, 500)
+        } else {
+            main.postDelayed({ maybeShowWhatsNew() }, 700)
+        }
         (window.decorView as ViewGroup).removeView(root)
         if (lockView === root) lockView = null
     }
@@ -233,23 +244,57 @@ internal fun MainActivity.showLock() {
     if (bioOn) main.postDelayed({ if (lockView === root) bio() }, 300)
 }
 
+/**
+ * Просит PIN (или отпечаток) перед важным действием в VPN, если это включено в Настройки → Безопасность.
+ * Если защита выключена или вход в приложение не настроен — просто выполняет действие.
+ */
+internal fun MainActivity.requirePin(onOk: () -> Unit) {
+    if (!Store.vpnPinGuard || !lockEnabled()) { onOk(); return }
+    sheet("Подтвердите действие", scroll = true) { box, close ->
+        val bio: (() -> Unit)? = if (Store.lockMode == 2 && biometricAvailable()) ({
+            if (!bioBusy) {
+                bioBusy = true
+                askBiometric("Подтверждение", "Приложите палец к сканеру", { bioBusy = false }) {
+                    bioBusy = false
+                    close()
+                    onOk()
+                }
+            }
+        }) else null
+        pinPad(box, "Введите PIN", "Он нужен для этого действия", bio) { pin, p ->
+            val left = Store.pinLockLeftMs()
+            if (left > 0) {
+                p.clear()
+                p.sub.setTextColor(RED)
+                p.sub.text = "Слишком много попыток. Подождите ${(left + 999) / 1000} с"
+            } else if (Store.checkPin(pin)) {
+                close()
+                onOk()
+            } else {
+                Store.pinFailed()
+                p.shake()
+                p.clear()
+                p.sub.setTextColor(RED)
+                p.sub.text = "Неверный PIN"
+            }
+        }
+    }
+}
+
 /** Без PIN войти нельзя — единственный выход это сброс данных приложения. */
 internal fun MainActivity.forgotPin() {
-    AlertDialog.Builder(this)
-        .setTitle("Сбросить данные приложения?")
-        .setMessage(
-            "Восстановить PIN нельзя. Если сбросить данные, на этом устройстве пропадут история заказов, " +
-                "ник и настройки. Заказы на сервере не удаляются."
-        )
-        .setPositiveButton("Сбросить") { _, _ ->
-            Store.wipeAll()
-            PollWorker.cancel(this)
-            UpdateWorker.cancel(this)
-            AppState.unlocked = true
-            recreate()
-        }
-        .setNegativeButton("Отмена", null)
-        .show()
+    confirmSheet(
+        "Сбросить данные приложения?",
+        "Восстановить PIN нельзя. Если сбросить данные, на этом устройстве пропадут история заказов, " +
+            "ник и настройки. Заказы на сервере не удаляются.",
+        "Сбросить", danger = true
+    ) {
+        Store.wipeAll()
+        PollWorker.cancel(this)
+        UpdateWorker.cancel(this)
+        AppState.unlocked = true
+        recreate()
+    }
 }
 
 /**

@@ -249,12 +249,11 @@ internal fun MainActivity.toggleBlock(kind: String, value: String, currently: Bo
     if (currently) { doBlock(false); return }
     val what = if (kind == "ip") "IP $value" else "это устройство"
     val warn = if (kind == "ip") "\n\nОсторожно: с одного IP (например, мобильный интернет) могут сидеть разные люди." else ""
-    AlertDialog.Builder(this)
-        .setTitle("Заблокировать?")
-        .setMessage("Пользователь с $what больше не сможет писать в поддержку.$warn")
-        .setPositiveButton("Заблокировать") { _, _ -> doBlock(true) }
-        .setNegativeButton("Отмена", null)
-        .show()
+    confirmSheet(
+        "Заблокировать?",
+        "Пользователь с $what больше не сможет писать в поддержку.$warn",
+        "Заблокировать", danger = true
+    ) { doBlock(true) }
 }
 
 internal fun MainActivity.showAdminChat(t: JSONObject) {

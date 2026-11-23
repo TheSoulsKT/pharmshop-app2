@@ -12,15 +12,90 @@
         android:label="${appLabel}"
         android:theme="@style/Theme.PharmShop"
         android:usesCleartextTraffic="false">
+        <!-- Настоящая активность без значка в лаунчере. Значок задают activity-alias ниже: включён всегда ровно один (Настройки → Оформление → Иконка). -->
         <activity
-            android:name=".MainActivity"
+            android:name=".LauncherActivity"
             android:exported="true"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="adjustResize" />
+        <!-- «Классика»: имя .MainActivity сохранено, чтобы ярлыки на рабочем столе после обновления не пропали -->
+        <activity-alias
+            android:name=".MainActivity"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:roundIcon="@mipmap/ic_launcher_round"
+            android:label="${appLabel}"
+            android:targetActivity=".LauncherActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
+        <activity-alias
+            android:name=".IconCat2"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_cat_2"
+            android:roundIcon="@mipmap/ic_cat_2"
+            android:label="${appLabel}"
+            android:targetActivity=".LauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".IconCat3"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_cat_3"
+            android:roundIcon="@mipmap/ic_cat_3"
+            android:label="${appLabel}"
+            android:targetActivity=".LauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".IconCat4"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_cat_4"
+            android:roundIcon="@mipmap/ic_cat_4"
+            android:label="${appLabel}"
+            android:targetActivity=".LauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".IconCat5"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_cat_5"
+            android:roundIcon="@mipmap/ic_cat_5"
+            android:label="${appLabel}"
+            android:targetActivity=".LauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".IconCat6"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_cat_6"
+            android:roundIcon="@mipmap/ic_cat_6"
+            android:label="${appLabel}"
+            android:targetActivity=".LauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -36,6 +111,14 @@
             </intent-filter>
         </service>
         <receiver android:name=".ReminderReceiver" android:exported="false" />
+        <receiver android:name=".VpnWidget" android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/vpn_widget_info" />
+        </receiver>
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

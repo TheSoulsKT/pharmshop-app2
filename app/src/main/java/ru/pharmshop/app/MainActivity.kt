@@ -13,7 +13,8 @@ import com.hcaptcha.sdk.HCaptcha
 import org.json.JSONObject
 import java.util.concurrent.Executors
 
-class MainActivity : AppCompatActivity() {
+/** Весь экранный код живёт здесь. В манифесте зарегистрирован наследник LauncherActivity (значок приложения выбирается через activity-alias). */
+open class MainActivity : AppCompatActivity() {
     // цвета берутся из выбранного оформления (Настройки → Тема) и режима (тёмная/светлая)
     internal val BG get() = Theme.bg
     internal val CARD get() = Theme.card
@@ -66,16 +67,20 @@ class MainActivity : AppCompatActivity() {
     internal var updateChecked = false
     internal var remoteAt = 0L          // когда последний раз спрашивали удалённые настройки
     internal var forceShown = false     // показан экран обязательного обновления
+    internal var pullView: PullScrollView? = null      // прокручиваемая область текущего экрана (потянуть вниз = обновить)
     internal var lockView: android.view.View? = null   // экран входа по PIN/отпечатку (поверх всего)
     internal var bioBusy = false                       // окно отпечатка уже на экране
     internal var splashSkip: (() -> Unit)? = null      // пока показана стартовая заставка — как её пропустить
 
     override fun onCreate(savedInstanceState: Bundle?) {
         Store.init(this)
+        AppLog.init(this)
         Theme.update(this)
         androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(Theme.nightMode())
         super.onCreate(savedInstanceState)
         applyWindowTheme()
+        applySecureScreen()
+        registerReceiver(screenOffReceiver, android.content.IntentFilter(Intent.ACTION_SCREEN_OFF))
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 splashSkip?.let { it(); return }                         // на заставке «назад» её пропускает
@@ -102,11 +107,19 @@ class MainActivity : AppCompatActivity() {
         Push.init(this)
         if (!enforceUpdate() && !openFromIntent(intent)) {
             // после смены темы в настройках возвращаемся в настройки, а не на главную
-            if (AppState.reopen == "settings") showSettings() else showHome()
+            if (AppState.reopen == "settings") showSettings() else showStart()
         }
         AppState.reopen = null
         showSplashIfFirstRun()   // только при самом первом запуске
         showLockIfNeeded()
+    }
+
+    /** Запрет скриншотов и скрытие содержимого в «Недавних» (Настройки → Безопасность). */
+    internal fun applySecureScreen() {
+        if (Store.secureScreen) window.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+            android.view.WindowManager.LayoutParams.FLAG_SECURE
+        ) else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
     }
 
     /** Цвета строки состояния и навигации под текущую тему. */
@@ -117,6 +130,18 @@ class MainActivity : AppCompatActivity() {
             isAppearanceLightStatusBars = Theme.light
             isAppearanceLightNavigationBars = Theme.light
         }
+    }
+
+    /** Выключили экран телефона: если включено — при возврате снова нужен вход. */
+    private val screenOffReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context, i: Intent) {
+            if (Store.lockOnScreenOff && lockEnabled() && AppState.unlocked) AppState.relock = true
+        }
+    }
+
+    override fun onDestroy() {
+        try { unregisterReceiver(screenOffReceiver) } catch (e: Exception) { }
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -145,8 +170,9 @@ class MainActivity : AppCompatActivity() {
         super.onStart()
         AppState.visible = true
         // вернулись в приложение после паузы — снова просим PIN / отпечаток
+        val delayMs = if (Store.lockOnLeave) 0L else Store.lockDelaySec * 1000L
         if (lockEnabled() && AppState.unlocked && AppState.stoppedAt > 0L &&
-            android.os.SystemClock.elapsedRealtime() - AppState.stoppedAt >= Store.lockDelaySec * 1000L
+            android.os.SystemClock.elapsedRealtime() - AppState.stoppedAt >= delayMs
         ) {
             AppState.unlocked = false
             showLock()
@@ -155,12 +181,18 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         AppState.visible = false
+        AppState.revealed = false
         AppState.stoppedAt = android.os.SystemClock.elapsedRealtime()
         super.onStop()
     }
 
     override fun onResume() {
         super.onResume()
+        if (AppState.relock) {
+            AppState.relock = false
+            if (lockEnabled()) { AppState.unlocked = false; showLock() }
+        }
+        main.postDelayed({ maybeShowWhatsNew() }, 900)   // после обновления один раз покажет «Что нового»
         if (vpnReturn) {
             vpnReturn = false
             showVpn()
@@ -171,4 +203,19 @@ class MainActivity : AppCompatActivity() {
         refreshRemote()
     }
 
+    /** Первый экран при запуске: вкладка, выбранная в Настройки → Оформление. */
+    internal fun showStart() {
+        val tab = Store.startTab
+        val vpnOk = tab == 4 && sec("vpn", "VPN", "", true, "").enabled
+        when {
+            tab == 4 && vpnOk -> showVpn()
+            tab == 1 -> showSupport()
+            tab == 2 -> showProfile()
+            else -> showHome()
+        }
+        if (tab != 0 && !updateChecked) {
+            updateChecked = true
+            checkForUpdate(true)   // тихая проверка обновлений, которую обычно делает главная
+        }
+    }
 }

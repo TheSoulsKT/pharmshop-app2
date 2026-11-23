@@ -39,7 +39,10 @@ object ChatApi {
                 throw Exception("Сервер чата ответил неожиданно (код $code)")
             }
             if (code == 401) throw ChatAuthException(json.optString("error", "Неверный код"))
-            if (code !in 200..299) throw Exception(json.optString("error", "Ошибка $code"))
+            if (code !in 200..299) {
+                AppLog.e("chat", "$path → HTTP $code: ${json.optString("error").take(120)}")
+                throw Exception(json.optString("error", "Ошибка $code"))
+            }
             return json
         } finally {
             c.disconnect()

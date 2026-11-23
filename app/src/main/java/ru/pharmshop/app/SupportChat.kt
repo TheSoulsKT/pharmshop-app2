@@ -105,7 +105,12 @@ internal fun MainActivity.showFullImage(bmp: Bitmap) {
         scaleType = ImageView.ScaleType.FIT_CENTER
         setPadding(dp(8), dp(8), dp(8), dp(8))
     }
-    AlertDialog.Builder(this).setView(iv).setPositiveButton("Закрыть", null).show()
+    sheet("Изображение") { box, close ->
+        iv.maxHeight = dp(440)
+        iv.layoutParams = lp(14)
+        box.addView(iv)
+        box.addView(btnGrid(listOf(gbtn("Закрыть", true) { close() }), 0))
+    }
 }
 
 /**
@@ -182,7 +187,7 @@ internal fun MainActivity.chatPane(
         if (body.isNotEmpty()) {
             wrap.addView(TextView(this).apply {
                 text = body
-                textSize = 15f
+                textSize = 15f * Theme.textScale
                 setTextColor(if (own) Color.BLACK else TEXT)
                 background = shape(if (own) BLUE else CARD, 16, if (own) BLUE else LINE)
                 setPadding(dp(12), dp(8), dp(12), dp(8))

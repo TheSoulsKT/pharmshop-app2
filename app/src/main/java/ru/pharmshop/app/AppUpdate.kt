@@ -20,11 +20,7 @@ internal fun MainActivity.checkForUpdate(silent: Boolean) {
                 if (isFinishing || isDestroyed) return@ui
                 if (info == null) {
                     if (!silent) {
-                        AlertDialog.Builder(this)
-                            .setTitle("Обновлений нет")
-                            .setMessage(Updater.lastNote.ifEmpty { "У вас последняя версия." })
-                            .setPositiveButton("Ок", null)
-                            .show()
+                        infoSheet("Обновлений нет", Updater.lastNote.ifEmpty { "У вас последняя версия." }, "Ок")
                     }
                 }
                 else offerUpdate(info)
@@ -38,29 +34,19 @@ internal fun MainActivity.checkForUpdate(silent: Boolean) {
 internal fun MainActivity.offerUpdate(info: Updater.Info) {
     val mb = if (info.size > 0) " (%.1f МБ)".format(info.size / 1048576.0) else ""
     val notes = if (info.notes.isNotEmpty()) "\n\n${info.notes.take(600)}" else ""
-    AlertDialog.Builder(this)
-        .setTitle("Доступно обновление")
-        .setMessage("${info.versionName}$mb$notes")
-        .setPositiveButton("Обновить") { _, _ -> startUpdate(info) }
-        .setNegativeButton("Позже", null)
-        .show()
+    confirmSheet("Доступно обновление", "${info.versionName}$mb$notes", "Обновить", "Позже") { startUpdate(info) }
 }
 
 internal fun MainActivity.startUpdate(info: Updater.Info) {
     if (!Updater.canInstall(this)) {
-        AlertDialog.Builder(this)
-            .setTitle("Нужно разрешение")
-            .setMessage("Разрешите приложению устанавливать обновления, затем вернитесь и нажмите «Проверить обновления» ещё раз.")
-            .setPositiveButton("Открыть настройки") { _, _ -> Updater.openInstallPermissionSettings(this) }
-            .setNegativeButton("Отмена", null)
-            .show()
+        confirmSheet(
+            "Нужно разрешение",
+            "Разрешите приложению устанавливать обновления, затем вернитесь и нажмите «Проверить обновления» ещё раз.",
+            "Открыть настройки"
+        ) { Updater.openInstallPermissionSettings(this) }
         return
     }
-    val dialog = AlertDialog.Builder(this)
-        .setTitle("Скачиваем обновление")
-        .setMessage("0%")
-        .setCancelable(false)
-        .show()
+    val dialog = progressSheet("Скачиваем обновление", "0%")
     io.execute {
         try {
             val apk = Updater.download(this, info) { pct -> ui { dialog.setMessage("$pct%") } }
@@ -148,12 +134,11 @@ internal fun MainActivity.installPendingUpdate() {
         return
     }
     if (!Updater.canInstall(this)) {
-        AlertDialog.Builder(this)
-            .setTitle("Нужно разрешение")
-            .setMessage("Разрешите приложению устанавливать обновления, затем вернитесь и нажмите «Установить» ещё раз.")
-            .setPositiveButton("Открыть настройки") { _, _ -> Updater.openInstallPermissionSettings(this) }
-            .setNegativeButton("Отмена", null)
-            .show()
+        confirmSheet(
+            "Нужно разрешение",
+            "Разрешите приложению устанавливать обновления, затем вернитесь и нажмите «Установить» ещё раз.",
+            "Открыть настройки"
+        ) { Updater.openInstallPermissionSettings(this) }
         return
     }
     try { Updater.install(this, apk) } catch (e: Exception) { toast("Не удалось запустить установку") }

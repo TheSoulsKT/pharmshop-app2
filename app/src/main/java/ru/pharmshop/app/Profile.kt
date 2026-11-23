@@ -50,6 +50,10 @@ internal fun MainActivity.fmtDate(iso: String): String = try {
 internal fun MainActivity.money(total: String, cur: String): String =
     "$total ${if (cur.isEmpty() || cur == "RUB") "₽" else cur}"
 
+private fun hiddenData() = Store.hideSensitive && !AppState.revealed
+private fun hiddenNick(u: String) = if (hiddenData()) "@••••••" else "@$u"
+private fun hiddenMoney(shown: String) = if (hiddenData()) "••• ₽" else shown
+
 internal fun MainActivity.showProfile() {
     onHome = false
     val col = screen(2)
@@ -57,9 +61,11 @@ internal fun MainActivity.showProfile() {
     titleRow(col, "Профиль")
     val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     col.addView(body)
+    appFooter(col)
     renderProfile(body, sid, true)
     refreshOrders(body, sid, false)
     startAutoRefresh(body, sid)
+    setPullRefresh { if (sid == screenId) refreshOrders(body, sid, true) }   // потянуть экран вниз — обновить статусы
 }
 
 /** Пока открыт профиль и есть незавершённые заказы — обновляем статусы каждые 5 секунд. */
@@ -99,7 +105,7 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
     avatarDrawable.setShape(GradientDrawable.OVAL)
     avatarDrawable.setColor(BLUE)
     val avatar = TextView(this).apply {
-        text = if (first != null) first.uppercaseChar().toString() else "?"
+        text = if (hiddenData()) "•" else if (first != null) first.uppercaseChar().toString() else "?"
         textSize = 22f
         setTextColor(Color.BLACK)
         gravity = Gravity.CENTER
@@ -108,7 +114,7 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
         layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply { rightMargin = dp(14) }
     }
     val who = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-    who.addView(txt(if (user.isEmpty()) "Telegram не указан" else "@$user", 18f, TEXT, true))
+    who.addView(txt(if (user.isEmpty()) "Telegram не указан" else hiddenNick(user), 18f, TEXT, true))
     who.addView(txt(if (user.isEmpty()) "Укажите ник — он подставится в заказы" else "Ник указан вручную, ботом не подтверждён", 12f, MUTE))
     val userCard = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -119,6 +125,15 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
     }
     userCard.addView(avatar)
     userCard.addView(who)
+    if (Store.hideSensitive) {
+        body.addView(txt(
+            if (AppState.revealed) "Нажмите на карточку, чтобы снова скрыть ники и суммы"
+            else "Ники и суммы скрыты. Нажмите на карточку, чтобы показать",
+            12f, MUTE
+        ).apply { layoutParams = lp(8) })
+        userCard.isClickable = true
+        userCard.setOnClickListener { AppState.revealed = !AppState.revealed; renderProfile(body, sid) }
+    }
     body.addView(userCard)
 
     val tgActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -135,8 +150,8 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
     val spent = paid.sumOf { it.optString("total").toDoubleOrNull() ?: 0.0 }
     val stars = paid.filter { it.optString("product") != "premium" }.sumOf { it.optInt("quantity") }
     val t1 = statTile(orders.size.toString(), "Заказов")
-    val t2 = statTile(String.format(Locale.US, "%.2f ₽", spent), "Оплачено")
-    val t3 = statTile(stars.toString(), "Звёзд куплено")
+    val t2 = statTile(hiddenMoney(String.format(Locale.US, "%.2f ₽", spent)), "Оплачено")
+    val t3 = statTile(if (hiddenData()) "•••" else stars.toString(), "Звёзд куплено")
     t1.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(5) }
     t2.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(5); rightMargin = dp(5) }
     t3.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(5) }
@@ -175,49 +190,36 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
     body.addView(tv("История хранится только на этом устройстве: заказы с сайта и из бота здесь не видны.", 12f, MUTE))
     if (orders.isNotEmpty()) {
         body.addView(btn("Очистить историю") {
-            AlertDialog.Builder(this)
-                .setTitle("Очистить историю?")
-                .setMessage("Заказы на сервере не удаляются, пропадёт только список в приложении.")
-                .setPositiveButton("Очистить") { _, _ ->
-                    Store.clear()
-                    renderProfile(body, sid)
-                }
-                .setNegativeButton("Отмена", null)
-                .show()
+            confirmSheet(
+                "Очистить историю?",
+                "Заказы на сервере не удаляются, пропадёт только список в приложении.",
+                "Очистить", danger = true
+            ) {
+                Store.clear()
+                renderProfile(body, sid)
+            }
         })
     }
     if (animate) riseIn(body)
 }
 
 internal fun MainActivity.editUsername(body: LinearLayout, sid: Int) {
-    val et = EditText(this)
-    et.setText(Store.lastUser)
-    et.hint = "Ник без @"
-    et.setSingleLine()
-    AlertDialog.Builder(this)
-        .setTitle("Ваш Telegram")
-        .setView(et)
-        .setPositiveButton("Сохранить") { _, _ ->
-            Store.lastUser = et.text.toString().trim().removePrefix("@")
-            if (sid == screenId) renderProfile(body, sid)
-        }
-        .setNegativeButton("Отмена", null)
-        .show()
+    inputSheet("Ваш Telegram", "Ник без @", Store.lastUser, "Сохранить", android.text.InputType.TYPE_CLASS_TEXT) { t ->
+        Store.lastUser = t.trim().removePrefix("@")
+        if (sid == screenId) renderProfile(body, sid)
+        true
+    }
 }
 
 /** Показывает всё, что сайт вернул по заказу (для диагностики статуса). */
 internal fun MainActivity.showRaw(o: JSONObject) {
-    val t = TextView(this).apply {
-        text = o.toString(2)
-        textSize = 12f
-        setTextIsSelectable(true)
-        setPadding(dp(20), dp(12), dp(20), dp(12))
+    sheet("Данные заказа", scroll = true) { box, close ->
+        box.addView(txt(o.toString(2), 12f, MUTE).apply {
+            setTextIsSelectable(true)
+            layoutParams = lp(14)
+        })
+        box.addView(btnGrid(listOf(gbtn("Закрыть", true) { close() }), 0))
     }
-    AlertDialog.Builder(this)
-        .setTitle("Данные заказа")
-        .setView(ScrollView(this).apply { addView(t) })
-        .setPositiveButton("Закрыть", null)
-        .show()
 }
 
 internal fun MainActivity.orderCard(o: JSONObject, body: LinearLayout, sid: Int): LinearLayout {
@@ -250,12 +252,12 @@ internal fun MainActivity.orderCard(o: JSONObject, body: LinearLayout, sid: Int)
         .ifEmpty { o.optString("method_id") }
     val isPremium = o.optString("product") == "premium"
     val line1 = tv(
-        if (isPremium) "Premium · ${o.optInt("months", o.optInt("quantity"))} мес.  →  @${o.optString("username")}"
-        else "${o.optInt("quantity")} ★  →  @${o.optString("username")}",
+        if (isPremium) "Premium · ${o.optInt("months", o.optInt("quantity"))} мес.  →  ${hiddenNick(o.optString("username"))}"
+        else "${o.optInt("quantity")} ★  →  ${hiddenNick(o.optString("username"))}",
         15f, TEXT
     )
     val line2 = tv(
-        listOf(money(o.optString("total"), o.optString("currency")), method, fmtDate(o.optString("created_at")))
+        listOf(hiddenMoney(money(o.optString("total"), o.optString("currency"))), method, fmtDate(o.optString("created_at")))
             .filter { it.isNotBlank() }.joinToString("  •  "),
         12f, MUTE
     )
@@ -266,7 +268,12 @@ internal fun MainActivity.orderCard(o: JSONObject, body: LinearLayout, sid: Int)
     }
     val url = o.optString("payment_url")
     if (statusKind(status) == 0 && url.startsWith("https://")) {
-        actions.addView(chip("Оплатить", true) { returnFromPay = true; openUrl(url) })
+        actions.addView(chip("Оплатить", true) {
+            confirmPayThen("Заказ $num · ${money(o.optString("total"), o.optString("currency"))}") {
+                returnFromPay = true
+                openUrl(url)
+            }
+        })
     }
     if (statusKind(status) == 2 || statusKind(status) == 3) {
         actions.addView(chip("Повторить", true) {
@@ -287,6 +294,10 @@ internal fun MainActivity.orderCard(o: JSONObject, body: LinearLayout, sid: Int)
         background = shape(CARD, 18, LINE)
         setPadding(dp(16), dp(14), dp(16), dp(14))
         layoutParams = lp(10)
+    }
+    if (Store.hideSensitive) {
+        card.isClickable = true
+        card.setOnClickListener { AppState.revealed = !AppState.revealed; renderProfile(body, sid) }
     }
     card.addView(top)
     card.addView(line1)
