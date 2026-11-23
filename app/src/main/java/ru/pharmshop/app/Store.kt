@@ -91,6 +91,42 @@ object Store {
         get() = sp.getBoolean("hide_banner", false)
         set(v) { sp.edit().putBoolean("hide_banner", v).apply() }
 
+    // ----- профиль и оформление разделов -----
+    /** Описание в профиле (до 120 символов). Хранится только на этом устройстве. */
+    var bio: String
+        get() = sp.getString("bio", "") ?: ""
+        set(v) { sp.edit().putString("bio", v.take(120)).apply() }
+
+    /** Свой акцентный цвет (номер из Theme.ACCENTS). 0 — цвет берётся из выбранной темы. */
+    var accentId: Int
+        get() = sp.getInt("accent_id", 0)
+        set(v) { sp.edit().putInt("accent_id", v).apply() }
+
+    /** Скругление углов карточек: 0 — меньше, 1 — как раньше, 2 — больше. */
+    var cornerStyle: Int
+        get() = sp.getInt("corner_style", 1)
+        set(v) { sp.edit().putInt("corner_style", v).apply() }
+
+    /** Размер карточек разделов на главной: 0 — обычные, 1 — компактные. */
+    var cardSize: Int
+        get() = sp.getInt("card_size", 0)
+        set(v) { sp.edit().putInt("card_size", v).apply() }
+
+    /** Не показывать на главной блок «Скоро». */
+    var hideSoon: Boolean
+        get() = sp.getBoolean("hide_soon", false)
+        set(v) { sp.edit().putBoolean("hide_soon", v).apply() }
+
+    /** Разделы главной, которые пользователь скрыл у себя: ключи через запятую. */
+    var hiddenSections: String
+        get() = sp.getString("hidden_sections", "") ?: ""
+        set(v) { sp.edit().putString("hidden_sections", v).apply() }
+
+    /** Обложка карточки профиля (номер из ProfileCovers). 0 — по цвету темы. */
+    var profileCover: Int
+        get() = sp.getInt("profile_cover", 0)
+        set(v) { sp.edit().putInt("profile_cover", v).apply() }
+
     /** Скрывать ники и суммы в профиле, пока не нажмёшь на карточку. */
     var hideSensitive: Boolean
         get() = sp.getBoolean("hide_sensitive", false)
@@ -226,13 +262,14 @@ object Store {
         for (k in listOf(
             "theme", "skin", "steps_style", "fx_enabled", "fx_density", "ui_anim", "haptics", "text_size",
             "start_tab", "hide_banner", "secure_screen", "hide_sensitive", "confirm_pay", "vpn_mask_link",
-            "clip_auto_clear", "vpn_pin_guard", "lock_on_leave", "lock_on_screen_off", "show_failed_pins", "lock_delay"
+            "clip_auto_clear", "vpn_pin_guard", "lock_on_leave", "lock_on_screen_off", "show_failed_pins", "lock_delay",
+            "accent_id", "corner_style", "card_size", "hide_soon", "hidden_sections", "profile_cover"
         )) e.remove(k)
         e.apply()
     }
 
     /** Полный сброс данных приложения (если забыли PIN). */
-    fun wipeAll() { sp.edit().clear().commit() }
+    fun wipeAll() { sp.edit().clear().commit(); Avatar.remove(); Diag.reset() }
 
     // ----- обновления в фоне -----
     /** Скачивать новые версии в фоне, когда телефон на Wi-Fi. */
@@ -251,6 +288,7 @@ object Store {
 
     fun init(ctx: Context) {
         sp = ctx.applicationContext.getSharedPreferences("pharmshop", Context.MODE_PRIVATE)
+        Avatar.init(ctx.applicationContext)
         // старые версии хранили сам код админа открытым текстом — стираем; админ войдёт заново и получит токен
         if (sp.contains("admin_code")) sp.edit().remove("admin_code").apply()
     }

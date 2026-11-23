@@ -35,9 +35,12 @@ const MIGRATIONS = [
   `ALTER TABLE threads ADD COLUMN status TEXT DEFAULT 'new'`,          // new | work | done
   `ALTER TABLE threads ADD COLUMN admin_read_ts INTEGER DEFAULT 0`,    // админ прочитал сообщения пользователя до этого времени
   `ALTER TABLE threads ADD COLUMN user_read_ts INTEGER DEFAULT 0`,     // пользователь прочитал ответы админа до этого времени
+  `ALTER TABLE threads ADD COLUMN diag TEXT DEFAULT ''`,               // диагностика и аналитика устройства (JSON из приложения)
+  `ALTER TABLE threads ADD COLUMN diag_ts INTEGER DEFAULT 0`,          // когда блок получен в последний раз
   `CREATE INDEX IF NOT EXISTS idx_messages_ip ON messages (ip)`,
   `CREATE INDEX IF NOT EXISTS idx_threads_ip ON threads (last_ip, created)`,
 ];
+const MAX_DIAG = 4000;            // символов JSON с диагностикой устройства
 const MAX_IMAGE = 1_400_000; // символов base64 (~1 МБ картинки); лимит строки в D1 — 2 МБ
 const B64 = /^[A-Za-z0-9+/=]+$/;
 let ready = false;
@@ -281,6 +284,16 @@ async function adminPushUnregister(body, env) {
 }
 
 // ---------- клиент ----------
+// Диагностика и аналитика из приложения: принимаем только JSON-объект разумного размера, иначе игнорируем (сообщение всё равно уходит)
+function cleanDiag(v) {
+  const s = typeof v === 'string' ? v : '';
+  if (!s || s.length > MAX_DIAG) return '';
+  try {
+    const o = JSON.parse(s);
+    return o && typeof o === 'object' && !Array.isArray(o) ? JSON.stringify(o) : '';
+  } catch (e) { return ''; }
+}
+
 async function userSend(body, env, ctx, request) {
   const device = String(body.device || '');
   const secret = String(body.secret || '');
@@ -294,6 +307,7 @@ async function userSend(body, env, ctx, request) {
   if (blockedBy) return err('Доступ к поддержке ограничен', 403);
   const nick = String(body.nick || '').replace(/^@/, '').trim().slice(0, 40);
   const order = String(body.order || '').trim().slice(0, 40);
+  const diag = cleanDiag(body.diag);
   const now = Date.now();
 
   // что известно об отправителе: IP и страна/город — от Cloudflare, модель и версии — от приложения
@@ -327,8 +341,9 @@ async function userSend(body, env, ctx, request) {
       `UPDATE threads SET nick = CASE WHEN ? != '' THEN ? ELSE nick END,
          last_order = CASE WHEN ? != '' THEN ? ELSE last_order END,
          last_text = ?, last_ts = ?, last_user_ts = ?, unread = unread + 1, last_ip = ?, last_dev = ?,
-         status = CASE WHEN status = 'done' THEN 'new' ELSE status END WHERE device = ?`
-    ).bind(nick, nick, order, order, shown, now, now, ip, dev, device),
+         status = CASE WHEN status = 'done' THEN 'new' ELSE status END,
+         diag = CASE WHEN ? != '' THEN ? ELSE diag END, diag_ts = CASE WHEN ? != '' THEN ? ELSE diag_ts END WHERE device = ?`
+    ).bind(nick, nick, order, order, shown, now, now, ip, dev, diag, diag, diag, now, device),
   ]);
 
   // уведомление в Telegram (по желанию)
@@ -447,6 +462,23 @@ async function adminThreads(body, env) {
   const c2 = await env.DB.prepare(`SELECT COUNT(*) AS n FROM threads WHERE last_text != '' AND unread > 0`).first();
   counts.unread = c2 ? c2.n : 0;
   return json({ threads, counts });
+}
+
+// Что известно о пользователе: диагностика и аналитика из приложения + сводка по чату
+async function adminProfile(body, env) {
+  const device = String(body.device || '');
+  if (!UUID.test(device)) return err('Некорректный запрос');
+  const t = await env.DB.prepare('SELECT diag, diag_ts, created, last_ip, last_dev FROM threads WHERE device = ?').bind(device).first();
+  if (!t) return err('Чат не найден', 404);
+  let diag = null;
+  try { diag = t.diag ? JSON.parse(t.diag) : null; } catch (e) { /* повреждённый блок не показываем */ }
+  const m = await env.DB.prepare(`SELECT COUNT(*) AS n, MIN(ts) AS first_ts FROM messages WHERE device = ? AND sender = 'user'`).bind(device).first();
+  const geo = await env.DB.prepare(`SELECT geo FROM messages WHERE device = ? AND sender = 'user' AND geo != '' ORDER BY id DESC LIMIT 1`).bind(device).first();
+  return json({
+    diag, diag_ts: t.diag_ts || 0, created: t.created || 0,
+    messages: m ? m.n : 0, first_message: m ? m.first_ts || 0 : 0,
+    last_ip: t.last_ip || '', geo: geo ? geo.geo : '',
+  });
 }
 
 // Другие устройства, писавшие с тех же IP, что и этот чат (за 30 дней)
@@ -661,6 +693,7 @@ export default {
       if (path === '/api/admin/push_register') return adminPushRegister(body, env);
       if (path === '/api/admin/push_unregister') return adminPushUnregister(body, env);
       if (path === '/api/admin/related') return adminRelated(body, env);
+      if (path === '/api/admin/profile') return adminProfile(body, env);
       if (path === '/api/admin/status') return adminSetStatus(body, env);
       if (path === '/api/admin/block') return adminBlock(body, env);
       if (path === '/api/admin/unblock') return adminUnblock(body, env);

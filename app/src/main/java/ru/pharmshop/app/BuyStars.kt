@@ -12,6 +12,7 @@ import org.json.JSONObject
 // ---------- покупка звёзд ----------
 internal fun MainActivity.showStars() {
     onHome = false
+    Diag.feature("stars")
     val col = screen(bottomBar = true)
     val sid = screenId
     buyHeader(col, "Купить звёзды")

@@ -61,9 +61,9 @@ internal fun MainActivity.tile(icon: Ic, title: String, sub: String, onClick: ()
 }
 
 internal fun MainActivity.gridRow(a: View, b: View): LinearLayout {
-    a.layoutParams = LinearLayout.LayoutParams(0, CARD_H, 1f)
+    a.layoutParams = LinearLayout.LayoutParams(0, dp(96), 1f)
         .apply { rightMargin = dp(5) }
-    b.layoutParams = LinearLayout.LayoutParams(0, CARD_H, 1f)
+    b.layoutParams = LinearLayout.LayoutParams(0, dp(96), 1f)
         .apply { leftMargin = dp(5) }
     return LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -163,7 +163,8 @@ internal fun MainActivity.showHome() {
     }
     col.addView(tv("Выберите, что вам нужно", 15f, MUTE))
 
-    // разделы можно включать и выключать удалённо (админ-панель → «Разделы»)
+    // разделы можно включать и выключать удалённо (админ-панель → «Разделы»), а ещё скрывать у себя (Настройки → Оформление)
+    val hiddenSet = Store.hiddenSections.split(',').filter { it.isNotEmpty() }.toSet()
     class Entry(val key: String, val icon: Ic, val sv: SecView, val wide: Boolean, val action: (SecView) -> Unit)
     val external = { v: SecView -> openUrl(v.url.ifEmpty { BOT_URL }) }
     val entries = listOf(
@@ -174,7 +175,7 @@ internal fun MainActivity.showHome() {
         Entry("nft_rent", Ic.KEY, sec("nft_rent", "Аренда NFT", "", false), false, external),
         Entry("stars_sell", Ic.DB, sec("stars_sell", "Продать звёзды", "", false), false, external),
         Entry("nft_sell", Ic.AT, sec("nft_sell", "Скупка NFT", "", false), false, external)
-    )
+    ).filter { it.key !in hiddenSet }
     var starsSub: TextView? = null
     fun click(e: Entry) {
         if (e.sv.enabled) e.action(e.sv) else toast(e.sv.message.ifEmpty { "Скоро будет доступно" })
@@ -191,7 +192,7 @@ internal fun MainActivity.showHome() {
         col.addView(sectionTitle("Купить", 4))
         for (e in on) col.addView(wideCard(e))
     }
-    if (off.isNotEmpty()) {
+    if (off.isNotEmpty() && !Store.hideSoon) {
         col.addView(sectionTitle("Скоро", if (on.isNotEmpty()) 10 else 4))
         for (e in off.filter { it.wide }) col.addView(wideCard(e))
         val tiles = off.filter { !it.wide }

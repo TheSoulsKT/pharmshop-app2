@@ -17,7 +17,7 @@ import android.widget.TextView
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.graphics.ColorUtils
 
-// Настройки по категориям: Оформление, Безопасность, Прочее (уведомления и обновления).
+// Настройки по категориям: Оформление, Безопасность, Прочее (уведомления, обновления, помощь, данные приложения).
 
 internal fun MainActivity.showSettings() {
     onHome = false
@@ -50,7 +50,9 @@ internal fun MainActivity.renderSettings(body: LinearLayout, sid: Int) {
     when (settingsTab) {
         0 -> {
             appearanceBlock(body)
+            accentBlock(body)
             interfaceBlock(body, again)
+            sectionsBlock(body)
             iconBlock(body, again)
             effectsBlock(body, again)
             ordersBlock(body, again)
@@ -64,6 +66,7 @@ internal fun MainActivity.renderSettings(body: LinearLayout, sid: Int) {
             updatesBlock(body, again)
             helpBlock(body)
             resetBlock(body)
+            dataBlock(body)
         }
     }
 }
@@ -276,6 +279,17 @@ private fun MainActivity.interfaceBlock(body: LinearLayout, again: () -> Unit) {
         Theme.update(this)
         reopenSettings()   // экран строится заново уже с новым размером
     })
+    c.addView(caption("Скругление карточек"))
+    c.addView(segmented(listOf("Меньше", "Обычное", "Больше"), Store.cornerStyle.coerceIn(0, 2)) { i ->
+        Store.cornerStyle = i
+        Theme.update(this)
+        reopenSettings()
+    })
+    c.addView(caption("Карточки разделов на главной"))
+    c.addView(segmented(listOf("Обычные", "Компактные"), Store.cardSize.coerceIn(0, 1)) { i ->
+        Store.cardSize = i
+        again()
+    })
     c.addView(caption("Какая вкладка открывается при запуске"))
     val tabs = listOf(0, 4, 2, 1)
     c.addView(segmented(listOf("ТГ", "VPN", "Профиль", "Чат"), tabs.indexOf(Store.startTab).coerceAtLeast(0)) { i ->
@@ -284,6 +298,80 @@ private fun MainActivity.interfaceBlock(body: LinearLayout, again: () -> Unit) {
     })
     c.addView(switchRow("Скрывать поздравление", "Убрать цветную плашку на главном экране", Store.hideBanner) { on ->
         Store.hideBanner = on
+    })
+    body.addView(c)
+}
+
+// ---------- оформление: свой акцентный цвет ----------
+
+private fun MainActivity.accentBlock(body: LinearLayout) {
+    sectionLabel(body, "Акцентный цвет")
+    val c = groupCard()
+    val p = if (Theme.light) Theme.skin.light else Theme.skin.dark
+    val cur = Theme.ACCENTS.firstOrNull { it.id == Store.accentId }
+    c.addView(caption("Цвет кнопок и значков. Выбрано: ${cur?.title ?: "по теме"}"))
+    val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+    // первый кружок — цвет самой темы (сбрасывает свой выбор)
+    val options = listOf(Triple(0, "По теме", p.accent)) +
+        Theme.ACCENTS.map { Triple(it.id, it.title, if (Theme.light) it.light else it.dark) }
+    for ((optId, optTitle, optColor) in options) {
+        val sel = Store.accentId == optId
+        row.addView(View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { rightMargin = dp(10) }
+            background = GradientDrawable().apply {
+                setShape(GradientDrawable.OVAL)
+                setColor(optColor)
+                setStroke(dp(if (sel) 3 else 1), if (sel) TEXT else LINE)
+            }
+            contentDescription = optTitle
+            isClickable = true
+            setOnClickListener {
+                if (Store.accentId != optId) {
+                    Store.accentId = optId
+                    Theme.update(this@accentBlock)
+                    reopenSettings()
+                }
+            }
+            pressable(this)
+        })
+    }
+    c.addView(android.widget.HorizontalScrollView(this).apply {
+        isHorizontalScrollBarEnabled = false
+        layoutParams = lp(4)
+        addView(row)
+    })
+    body.addView(c)
+}
+
+// ---------- оформление: разделы на главной ----------
+
+/** Разделы главного меню: ключ из админ-панели и название. */
+private val HOME_SECTIONS = listOf(
+    "stars" to "Звёзды",
+    "premium" to "Купить Premium",
+    "gifts" to "Обычные подарки",
+    "nft_buy" to "Купить NFT",
+    "nft_rent" to "Аренда NFT",
+    "stars_sell" to "Продать звёзды",
+    "nft_sell" to "Скупка NFT"
+)
+
+private fun MainActivity.sectionsBlock(body: LinearLayout) {
+    sectionLabel(body, "Разделы на главной")
+    val c = groupCard()
+    c.addView(txt("Скройте то, чем не пользуетесь. Раздел снова появится, как только вы его включите.", 12f, MUTE).apply {
+        layoutParams = lp(8)
+    })
+    val hidden = Store.hiddenSections.split(',').filter { it.isNotEmpty() }
+    for ((key, title) in HOME_SECTIONS) {
+        c.addView(switchRow(title, "", key !in hidden) { on ->
+            val set = Store.hiddenSections.split(',').filter { it.isNotEmpty() }.toMutableSet()
+            if (on) set.remove(key) else set.add(key)
+            Store.hiddenSections = set.joinToString(",")
+        })
+    }
+    c.addView(switchRow("Скрыть блок «Скоро»", "Не показывать разделы, которые ещё не открыты", Store.hideSoon) { on ->
+        Store.hideSoon = on
     })
     body.addView(c)
 }
@@ -625,4 +713,75 @@ private fun MainActivity.updatesBlock(body: LinearLayout, again: () -> Unit) {
         addView(chip("Проверить обновления", false) { checkForUpdate(false) })
     })
     body.addView(c)
+}
+
+// ---------- какие данные собирает приложение ----------
+
+/** Группа в плашке данных: цветной заголовок и список пунктов. */
+private fun MainActivity.dataGroup(c: LinearLayout, emoji: String, title: String, color: Int, lines: List<String>) {
+    c.addView(LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = shape(mix(color, 0.10f), 14, edge(color))
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        layoutParams = lp(10)
+        addView(txt("$emoji  $title", 15f, color, true).apply { layoutParams = lp(6) })
+        for (l in lines) addView(txt("•  $l", 13f, TEXT).apply { layoutParams = lp(3) })
+    })
+}
+
+/** Плашка внизу «Прочее»: что именно собирает приложение, когда это уходит администратору и что не собирается. */
+private fun MainActivity.dataBlock(body: LinearLayout) {
+    sectionLabel(body, "Какие данные собирает приложение")
+    val c = groupCard()
+    c.addView(txt(
+        "Мы собираем только то, что помогает быстрее решать проблемы и понимать, чем пользуются в приложении. " +
+            "Эти сведения хранятся на телефоне и уходят администратору вместе с вашим обращением в поддержку: " +
+            "сообщением в чате или отчётом об ошибке. Без обращения диагностика и аналитика не отправляются.",
+        13f, MUTE
+    ).apply { layoutParams = lp(12) })
+
+    dataGroup(c, "📱", "Диагностика", BLUE, listOf(
+        "версия приложения и версия Android",
+        "модель телефона",
+        "язык и часовой пояс",
+        "дата первого и последнего запуска, число запусков",
+        "ошибки и сбои приложения без личных данных: адреса, e-mail и токены из текста вырезаются"
+    ))
+    dataGroup(c, "📊", "Использование", GREEN, listOf(
+        "сколько раз открывали приложение, сколько времени проводите в нём и в какие дни",
+        "какие разделы и функции открываете: ТГ, VPN, профиль, звёзды, Premium. Только счётчики, без содержимого",
+        "сколько заказов оформлено через приложение",
+        "какие настройки включены: тема, защита входа, push-уведомления. Сам PIN не передаётся"
+    ))
+    dataGroup(c, "🌐", "Что видит сервер", AMBER, listOf(
+        "IP-адрес и страна или город: определяются автоматически, когда вы пишете в поддержку",
+        "ник в Telegram и номер последнего заказа, если они указаны",
+        "заказы из приложения (получатель, количество, сумма, статус): отправляются, чтобы поддержка видела их в админ-панели",
+        "токен push-уведомлений устройства, если они включены"
+    ))
+    dataGroup(c, "🚫", "Не собираем", RED, listOf(
+        "PIN и пароли, ссылку подписки VPN, данные банковских карт",
+        "контакты, геолокацию, список установленных приложений, рекламный идентификатор",
+        "фото из галереи: аватарка остаётся только на телефоне"
+    ))
+
+    c.addView(LinearLayout(this).apply {
+        addView(chip("Показать, что уйдёт сейчас", false) { showDataPreview() })
+    })
+    body.addView(c)
+}
+
+/** Окно с тем, что в этот момент добавится к обращению в поддержку. */
+private fun MainActivity.showDataPreview() {
+    val text = try { Diag.render(Diag.payload(this)) } catch (e: Exception) { "Не удалось собрать данные" }
+    sheet("Что уйдёт сейчас", scroll = true) { box, close ->
+        box.addView(txt("Так выглядят данные, которые добавятся к вашему следующему обращению в поддержку.", 13f, MUTE).apply { layoutParams = lp(10) })
+        box.addView(txt(text, 12f, TEXT).apply {
+            setTextIsSelectable(true)
+            background = shape(CARD, 12, LINE)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            layoutParams = lp(14)
+        })
+        box.addView(btnGrid(listOf(gbtn("Закрыть", true) { close() }), 0))
+    }
 }

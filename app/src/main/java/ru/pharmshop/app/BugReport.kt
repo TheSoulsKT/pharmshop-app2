@@ -53,10 +53,11 @@ object BugReport {
 
 /** Окно «Сообщить об ошибке»: комментарий, предпросмотр того, что уйдёт, кнопка отправки в поддержку. */
 internal fun MainActivity.openBugReport() {
+    Diag.feature("bug_report")
     sheet("Сообщить об ошибке", scroll = true, focusInput = false) { box, close ->
         box.addView(txt(
             "Опишите, что пошло не так. К сообщению добавится техническая информация — так причину найти быстрее. " +
-                "Ответ придёт в чат поддержки.",
+                "Какие данные собирает приложение: Настройки → Прочее. Ответ придёт в чат поддержки.",
             13f, MUTE
         ).apply { layoutParams = lp(10) })
         val field = input("Что случилось? (по желанию)", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES).apply {

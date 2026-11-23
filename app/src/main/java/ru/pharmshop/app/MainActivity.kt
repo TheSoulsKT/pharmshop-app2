@@ -40,7 +40,7 @@ open class MainActivity : AppCompatActivity() {
 
     internal val BOT_URL = "https://t.me/pharmaishop_bot"
     /** Единая высота всех карточек главного меню */
-    internal val CARD_H get() = dp(96)
+    internal val CARD_H get() = dp(if (Store.cardSize == 1) 76 else 96)
 
     internal val io = Executors.newFixedThreadPool(3)
     internal val main = Handler(Looper.getMainLooper())
@@ -75,6 +75,8 @@ open class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         Store.init(this)
         AppLog.init(this)
+        Diag.init(this)
+        Diag.onLaunch()
         Theme.update(this)
         androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(Theme.nightMode())
         super.onCreate(savedInstanceState)
@@ -169,6 +171,7 @@ open class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         AppState.visible = true
+        Diag.onStart()
         // вернулись в приложение после паузы — снова просим PIN / отпечаток
         val delayMs = if (Store.lockOnLeave) 0L else Store.lockDelaySec * 1000L
         if (lockEnabled() && AppState.unlocked && AppState.stoppedAt > 0L &&
@@ -183,6 +186,7 @@ open class MainActivity : AppCompatActivity() {
         AppState.visible = false
         AppState.revealed = false
         AppState.stoppedAt = android.os.SystemClock.elapsedRealtime()
+        Diag.onStop()
         super.onStop()
     }
 

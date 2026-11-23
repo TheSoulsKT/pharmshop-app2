@@ -41,6 +41,7 @@ internal fun MainActivity.faqCard(title: String, body: String, color: Int): Line
 /** Экран с фиксированной шапкой и полем ввода внизу (для чатов). */
 internal fun MainActivity.chatScreen(tab: Int = -1): LinearLayout {
     screenId++
+    if (tab >= 0) Diag.tab(tab)
     backAction = null
     navBack = false
     val root = LinearLayout(this).apply {
@@ -378,7 +379,7 @@ internal fun MainActivity.showSupport() {
         sid, "user",
         "Напишите нам, ответ придёт сюда, в чат. Если вопрос по заказу, укажите его номер. " +
             "Можно прикрепить фото (скрин ошибки, чек) кнопкой 📎.\n\n" +
-            "Вместе с обращением мы получаем ваш IP-адрес и модель устройства — это помогает разобраться с проблемой.",
+            "Вместе с обращением уходят технические данные устройства. Что именно: Настройки → Прочее.",
         { after -> ChatApi.userMessages(Store.deviceId, Store.deviceSecret, after) },
         { text, image -> ChatApi.userSend(Store.deviceId, Store.deviceSecret, nick, order, BuildConfig.VERSION_NAME, text, image) },
         { id -> ChatApi.userImage(Store.deviceId, Store.deviceSecret, id) },

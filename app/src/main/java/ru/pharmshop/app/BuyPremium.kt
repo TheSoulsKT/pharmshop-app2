@@ -18,6 +18,7 @@ import org.json.JSONObject
 // ---------- покупка Premium ----------
 internal fun MainActivity.showPremium() {
     onHome = false
+    Diag.feature("premium")
     val col = screen(bottomBar = true)
     val sid = screenId
     buyHeader(col, "Купить Premium")

@@ -157,9 +157,13 @@ internal fun MainActivity.ui(r: () -> Unit) { main.post { r() } }
 internal fun MainActivity.dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 internal fun MainActivity.toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
 
+/** Радиус угла с учётом настройки «Скругление карточек». Большие радиусы (круглые кнопки) не меняем. */
+internal fun MainActivity.corner(radius: Int): Float =
+    dp(radius).toFloat() * (if (radius >= 30) 1f else Theme.corner)
+
 internal fun MainActivity.shape(fill: Int, radius: Int, stroke: Int = 0) = GradientDrawable().apply {
     setColor(fill)
-    cornerRadius = dp(radius).toFloat()
+    cornerRadius = corner(radius)
     if (stroke != 0) setStroke(dp(1), stroke)
 }
 
@@ -221,7 +225,7 @@ internal fun MainActivity.edge(accent: Int) = ColorUtils.blendARGB(LINE, accent,
 
 internal fun MainActivity.gradient(c1: Int, c2: Int, radius: Int) =
     GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(c1, c2)).apply {
-        cornerRadius = dp(radius).toFloat()
+        cornerRadius = corner(radius)
     }
 
 /** Цветная плашка-заголовок экрана покупки. */
@@ -380,6 +384,7 @@ internal fun MainActivity.titleRow(col: LinearLayout, title: String) {
  */
 internal fun MainActivity.screen(tab: Int = -1, bottomBar: Boolean = false): LinearLayout {
     screenId++
+    if (tab >= 0) Diag.tab(tab)   // аналитика: какие вкладки открывают
     backAction = null
     val col = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL

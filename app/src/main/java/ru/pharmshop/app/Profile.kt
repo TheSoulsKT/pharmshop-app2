@@ -4,12 +4,17 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Outline
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
+import android.view.ViewOutlineProvider
 import android.widget.EditText
 import android.widget.HorizontalScrollView
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -22,6 +27,10 @@ import java.util.TimeZone
 // Профиль и заказы.
 
 // ---------- профиль и заказы ----------
+
+/** Фильтр списка заказов в профиле: 0 — все, 1 — в работе, 2 — завершённые. Помнится, пока открыто приложение. */
+private var profileFilter = 0
+
 internal fun MainActivity.statusLabel(s: String): String = when (statusKind(s)) {
     0 -> "Ожидает оплаты"
     1 -> "Оплачен · выдаём"
@@ -50,9 +59,9 @@ internal fun MainActivity.fmtDate(iso: String): String = try {
 internal fun MainActivity.money(total: String, cur: String): String =
     "$total ${if (cur.isEmpty() || cur == "RUB") "₽" else cur}"
 
-private fun hiddenData() = Store.hideSensitive && !AppState.revealed
-private fun hiddenNick(u: String) = if (hiddenData()) "@••••••" else "@$u"
-private fun hiddenMoney(shown: String) = if (hiddenData()) "••• ₽" else shown
+internal fun hiddenData() = Store.hideSensitive && !AppState.revealed
+internal fun hiddenNick(u: String) = if (hiddenData()) "@••••••" else "@$u"
+internal fun hiddenMoney(shown: String) = if (hiddenData()) "••• ₽" else shown
 
 internal fun MainActivity.showProfile() {
     onHome = false
@@ -99,70 +108,41 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
     val orders = Store.orders()
     val user = Store.lastUser
 
-    // карточка пользователя
-    val first = user.firstOrNull()
-    val avatarDrawable = GradientDrawable()
-    avatarDrawable.setShape(GradientDrawable.OVAL)
-    avatarDrawable.setColor(BLUE)
-    val avatar = TextView(this).apply {
-        text = if (hiddenData()) "•" else if (first != null) first.uppercaseChar().toString() else "?"
-        textSize = 22f
-        setTextColor(Color.BLACK)
-        gravity = Gravity.CENTER
-        setTypeface(typeface, Typeface.BOLD)
-        background = avatarDrawable
-        layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply { rightMargin = dp(14) }
-    }
-    val who = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-    who.addView(txt(if (user.isEmpty()) "Telegram не указан" else hiddenNick(user), 18f, TEXT, true))
-    who.addView(txt(if (user.isEmpty()) "Укажите ник — он подставится в заказы" else "Ник указан вручную, ботом не подтверждён", 12f, MUTE))
-    val userCard = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        background = shape(CARD, 18, LINE)
-        setPadding(dp(16), dp(16), dp(16), dp(16))
-        layoutParams = lp(12)
-    }
-    userCard.addView(avatar)
-    userCard.addView(who)
+    // карточка пользователя: обложка, фото, ник, описание (см. ProfileUi.kt)
+    body.addView(profileHero(body, sid, user))
     if (Store.hideSensitive) {
         body.addView(txt(
             if (AppState.revealed) "Нажмите на карточку, чтобы снова скрыть ники и суммы"
             else "Ники и суммы скрыты. Нажмите на карточку, чтобы показать",
             12f, MUTE
-        ).apply { layoutParams = lp(8) })
-        userCard.isClickable = true
-        userCard.setOnClickListener { AppState.revealed = !AppState.revealed; renderProfile(body, sid) }
+        ).apply { gravity = Gravity.CENTER; layoutParams = lp(14) })
     }
-    body.addView(userCard)
-
-    val tgActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-    tgActions.addView(chip(if (user.isEmpty()) "Указать Telegram" else "Изменить ник", true) { editUsername(body, sid) })
-    tgActions.addView(chip("Открыть @pharmaishop_bot", false) { openUrl("$BOT_URL?start=app") })
-    body.addView(HorizontalScrollView(this).apply {
-        isHorizontalScrollBarEnabled = false
-        layoutParams = lp(16)
-        addView(tgActions)
-    })
 
     // статистика
     val paid = orders.filter { val k = statusKind(effStatus(it)); k == 1 || k == 2 }
     val spent = paid.sumOf { it.optString("total").toDoubleOrNull() ?: 0.0 }
     val stars = paid.filter { it.optString("product") != "premium" }.sumOf { it.optInt("quantity") }
-    val t1 = statTile(orders.size.toString(), "Заказов")
-    val t2 = statTile(hiddenMoney(String.format(Locale.US, "%.2f ₽", spent)), "Оплачено")
-    val t3 = statTile(if (hiddenData()) "•••" else stars.toString(), "Звёзд куплено")
+    val t1 = statCard("🧾", orders.size.toString(), "Заказов", BLUE)
+    val t2 = statCard("💳", hiddenMoney(String.format(Locale.US, "%.0f ₽", spent)), "Оплачено", GREEN)
+    val t3 = statCard("⭐", if (hiddenData()) "•••" else starsLabel(stars), "Звёзд куплено", AMBER)
     t1.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(5) }
     t2.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(5); rightMargin = dp(5) }
     t3.layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(5) }
-    val stats = LinearLayout(this).apply {
+    body.addView(LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
-        layoutParams = lp(18)
+        layoutParams = lp(16)
         addView(t1)
         addView(t2)
         addView(t3)
+    })
+
+    // достижения открываются сами; при скрытых данных не показываем, чтобы не выдавать покупки
+    if (!hiddenData()) {
+        body.addView(profileTitle("Достижения"))
+        body.addView(achievementsRow(orders, stars))
     }
-    body.addView(stats)
+
+    body.addView(linkTile("🤖", "Бот @pharmaishop_bot", "Заказы и подарки в Telegram") { openUrl("$BOT_URL?start=app") })
 
     // заголовок списка
     val listTitle = txt("Мои заказы", 18f, TEXT, true).apply {
@@ -184,10 +164,21 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
     if (orders.isEmpty()) {
         body.addView(tv("Пока нет заказов. Здесь появятся заказы, оформленные в этом приложении.", 14f, MUTE))
     } else {
-        for (o in orders) body.addView(orderCard(o, body, sid))
+        // фильтр списка: все / в работе / завершённые
+        body.addView(segmented(listOf("Все", "В работе", "Завершённые"), profileFilter) { i ->
+            profileFilter = i
+            renderProfile(body, sid)
+        })
+        val shown = when (profileFilter) {
+            1 -> orders.filter { statusKind(effStatus(it)) in 0..1 }
+            2 -> orders.filter { statusKind(effStatus(it)) in 2..3 }
+            else -> orders
+        }
+        if (shown.isEmpty()) body.addView(tv("В этой категории пока ничего нет.", 14f, MUTE))
+        for (o in shown) body.addView(orderCard(o, body, sid))
     }
 
-    body.addView(tv("История хранится только на этом устройстве: заказы с сайта и из бота здесь не видны.", 12f, MUTE))
+    body.addView(tv("История хранится на этом устройстве: заказы с сайта и из бота здесь не видны.", 12f, MUTE))
     if (orders.isNotEmpty()) {
         body.addView(btn("Очистить историю") {
             confirmSheet(
@@ -203,12 +194,20 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
     if (animate) riseIn(body)
 }
 
-internal fun MainActivity.editUsername(body: LinearLayout, sid: Int) {
-    inputSheet("Ваш Telegram", "Ник без @", Store.lastUser, "Сохранить", android.text.InputType.TYPE_CLASS_TEXT) { t ->
-        Store.lastUser = t.trim().removePrefix("@")
-        if (sid == screenId) renderProfile(body, sid)
-        true
+/** Выбор фото из галереи для аватарки. Фото обрезается до квадрата и остаётся только на устройстве. */
+internal fun MainActivity.pickAvatar(body: LinearLayout, sid: Int) {
+    onImagePicked = { uri ->
+        toast("Загружаем фото…")
+        io.execute {
+            val ok = Avatar.save(this, uri)
+            if (ok) Diag.feature("avatar")
+            ui {
+                if (!ok) toast("Не удалось загрузить фото")
+                else if (sid == screenId) renderProfile(body, sid)
+            }
+        }
     }
+    try { imagePicker.launch("image/*") } catch (e: Exception) { toast("Не удалось открыть галерею") }
 }
 
 /** Показывает всё, что сайт вернул по заказу (для диагностики статуса). */

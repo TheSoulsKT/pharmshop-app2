@@ -61,6 +61,8 @@ object ChatApi {
     ) {
         val body = JSONObject().put("device", device).put("secret", secret).put("nick", nick)
             .put("order", order).put("version", version).put("text", text).put("info", deviceInfo())
+        // диагностика и аналитика использования: описаны в Настройки → Прочее → «Какие данные собирает приложение»
+        try { body.put("diag", Diag.payload().toString()) } catch (e: Exception) { /* без блока тоже можно */ }
         if (image.isNotEmpty()) body.put("image", image)
         post("/api/chat/send", body)
         Store.chatStarted = true
@@ -143,6 +145,10 @@ object ChatApi {
     /** Другие устройства, писавшие с тех же IP: [{device, nick, ip, ts}]. */
     fun adminRelated(code: String, device: String): JSONArray =
         post("/api/admin/related", JSONObject().put("device", device), code).optJSONArray("related") ?: JSONArray()
+
+    /** Диагностика и аналитика пользователя: {diag, diag_ts, created, messages, first_message, last_ip, geo}. diag = null, если приложение его ещё не присылало. */
+    fun adminProfile(code: String, device: String): JSONObject =
+        post("/api/admin/profile", JSONObject().put("device", device), code)
 
     /** kind: "device" или "ip". */
     fun adminBlock(code: String, kind: String, value: String, reason: String = "") {

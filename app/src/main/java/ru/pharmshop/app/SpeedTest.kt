@@ -164,6 +164,7 @@ object SpeedTest {
 
 /** Окно «Скорость и пинг». Закрытие окна останавливает тест. */
 internal fun MainActivity.openSpeedTest() {
+    Diag.feature("speed_test")
     val cancel = AtomicBoolean(false)
     var running = false
     lateinit var status: TextView

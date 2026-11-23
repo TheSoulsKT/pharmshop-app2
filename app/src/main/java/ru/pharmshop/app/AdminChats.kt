@@ -274,6 +274,27 @@ internal fun MainActivity.showAdminChat(t: JSONObject) {
         })
     }
 
+    // данные о пользователе: диагностика и аналитика, которые приложение присылает вместе с обращением
+    var profile: JSONObject? = null
+    val deviceLine = tv("", 12f, MUTE).apply { visibility = View.GONE }
+    root.addView(deviceLine)
+    io.execute {
+        try {
+            val p = ChatApi.adminProfile(Store.adminToken, device)
+            ui {
+                if (sid != screenId) return@ui
+                profile = p
+                val d = p.optJSONObject("diag")
+                if (d != null) {
+                    deviceLine.text = "📱 ${d.optString("phone")} · Android ${d.optString("android")} · ${d.optString("app")}"
+                    deviceLine.visibility = View.VISIBLE
+                }
+            }
+        } catch (e: Exception) {
+            // не критично: чат работает и без этого блока
+        }
+    }
+
     // статус чата и блокировка
     var curStatus = t.optString("status").ifEmpty { "new" }
     var blockedDevice = t.optBoolean("blocked_device")
@@ -297,6 +318,7 @@ internal fun MainActivity.showAdminChat(t: JSONObject) {
                 }
             })
         }
+        tools.addView(chip("📊 Данные", false) { showUserData(profile, title) })
         tools.addView(chipTint(if (blockedDevice) "Разблокировать устройство" else "⛔ Устройство", RED) {
             toggleBlock("device", device, blockedDevice) { blockedDevice = it; renderTools() }
         })
@@ -343,4 +365,43 @@ internal fun MainActivity.showAdminChat(t: JSONObject) {
         showMeta = true,
         readTs = { ChatApi.lastReadTs }
     ))
+}
+
+/** Шторка «Данные пользователя»: диагностика и аналитика из приложения + то, что видит сервер. */
+internal fun MainActivity.showUserData(p: JSONObject?, title: String) {
+    sheet("Данные: $title", scroll = true) { box, close ->
+        if (p == null) {
+            box.addView(txt("Данные ещё загружаются или недоступны. Попробуйте через секунду.", 14f, MUTE).apply { layoutParams = lp(14) })
+        } else {
+            val fmt = SimpleDateFormat("d MMM yyyy, HH:mm", Locale.getDefault())
+            val d = p.optJSONObject("diag")
+            if (d == null) {
+                box.addView(txt(
+                    "Приложение пользователя ещё не присылало диагностику. Блок приходит вместе с новым сообщением в поддержку (нужна версия 1.0.6 и новее).",
+                    14f, MUTE
+                ).apply { layoutParams = lp(12) })
+            } else {
+                val got = p.optLong("diag_ts")
+                box.addView(txt("Получено: ${if (got > 0) fmt.format(java.util.Date(got)) else "—"}", 12f, MUTE).apply { layoutParams = lp(8) })
+                box.addView(txt(Diag.render(d), 13f, TEXT).apply {
+                    setTextIsSelectable(true)
+                    background = shape(CARD, 12, LINE)
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    layoutParams = lp(12)
+                })
+            }
+            // то, что видит сервер сам
+            val ip = p.optString("last_ip")
+            val geo = p.optString("geo")
+            val first = p.optLong("first_message")
+            val server = buildString {
+                append("Сообщений от пользователя: ${p.optInt("messages")}\n")
+                if (first > 0) append("Первое обращение: ${fmt.format(java.util.Date(first))}\n")
+                if (ip.isNotEmpty()) append("IP: $ip${if (geo.isNotEmpty()) " ($geo)" else ""}")
+            }.trimEnd()
+            box.addView(txt("С сервера", 12f, TEXT, true).apply { layoutParams = lp(4) })
+            box.addView(txt(server, 13f, MUTE).apply { setTextIsSelectable(true); layoutParams = lp(14) })
+        }
+        box.addView(btnGrid(listOf(gbtn("Закрыть", true) { close() }), 0))
+    }
 }
