@@ -37,7 +37,7 @@ internal fun MainActivity.showChatPrivacy() {
 }
 
 /** Цвет ника в ленте: у одного человека всегда один и тот же. */
-private fun MainActivity.nickColor(nick: String): Int {
+internal fun MainActivity.nickColor(nick: String): Int {
     val palette = listOf(BLUE, GREEN, AMBER, PINK, VIOLET_L, CYAN, ORANGE)
     return palette[(nick.hashCode() and 0x7fffffff) % palette.size]
 }
@@ -119,7 +119,6 @@ private fun MainActivity.registerView(body: LinearLayout) {
             }
         }
     })
-    inner.addView(txt("🔒 $CHAT_PRIVACY_TEXT", 12f, MUTE))
     body.addView(ScrollView(this).apply {
         isVerticalScrollBarEnabled = false
         addView(inner)
@@ -158,18 +157,27 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
     var dmStatus: TextView? = null
     var lastChats: JSONObject? = null
     val timeFmt = SimpleDateFormat("d MMM, HH:mm", Locale.getDefault())
-    val openDm: (Long, String) -> Unit = { uid, nick -> showDm(uid, nick) }
+    val openDm: (Long, String, Long) -> Unit = { uid, nick, av -> showDm(uid, nick, av) }
 
-    // шапка: свой ник и его смена
-    val who = txt("", 13f, MUTE).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) }
-    fun renderWho() { who.text = "Ваш ник: $myNick" + if (myBadge) "  ✓" else "" }
+    // шапка: своя аватарка (та же, что в профиле), ник и его смена
+    syncMyAvatar()
+    val whoNick = txt("", 15f, TEXT, true)
+    fun renderWho() { whoNick.text = myNick + if (myBadge) "  ✓" else "" }
     renderWho()
     body.addView(LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        layoutParams = lp(8)
-        addView(who)
-        addView(chip("Сменить ник", false) { changeNickSheet(myNick) { myNick = it; renderWho() } }.apply {
+        background = shape(CARD, 18, LINE)
+        setPadding(dp(10), dp(8), dp(10), dp(8))
+        layoutParams = lp(10)
+        addView(chatAvatar(myUid, myNick, 0, 38).apply { (layoutParams as LinearLayout.LayoutParams).rightMargin = dp(10) })
+        addView(LinearLayout(this@communityMain).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            addView(whoNick)
+            addView(txt("Ваш ник в чате", 11f, MUTE))
+        })
+        addView(chip("Сменить", false) { changeNickSheet(myNick) { myNick = it; renderWho() } }.apply {
             (layoutParams as LinearLayout.LayoutParams).rightMargin = 0
         })
     })
@@ -192,7 +200,7 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
         fetch = { after, rev -> ChatApi.roomMessages(after, rev) },
         send = { t -> ChatApi.roomSend(t) },
         alive = alive,
-        onName = { m -> if (m.optLong("uid") != myUid) openDm(m.optLong("uid"), m.optString("nick")) },
+        onName = { m -> if (m.optLong("uid") != myUid) openDm(m.optLong("uid"), m.optString("nick"), m.optLong("av")) },
         onLong = { m -> roomActions(m, myUid, myBadge, openDm) },
         onData = { r ->
             r.optJSONObject("me")?.let {
@@ -208,11 +216,6 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
-        pane.addView(txt("🔒 Правила приватности", 12f, BLUE).apply {
-            layoutParams = lp(8)
-            isClickable = true
-            setOnClickListener { showChatPrivacy() }
-        })
         pane.addView(LinearLayout(this).apply {
             layoutParams = lp(10)
             addView(chip("✉ Написать по нику", false) {
@@ -226,7 +229,7 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
                         io.execute {
                             try {
                                 val r = ChatApi.dmFind(v)
-                                ui { openDm(r.optLong("uid"), r.optString("nick")) }
+                                ui { openDm(r.optLong("uid"), r.optString("nick"), r.optLong("av")) }
                             } catch (e: Exception) {
                                 ui { toast(errText(e)) }
                             }
@@ -253,14 +256,23 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
                 val c = arr.getJSONObject(i)
                 val un = c.optInt("unread")
                 val card = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
                     background = ripple(CARD, 18, if (un > 0) BLUE else LINE)
-                    setPadding(dp(16), dp(12), dp(16), dp(12))
+                    setPadding(dp(12), dp(10), dp(14), dp(10))
                     layoutParams = lp(10)
                     isClickable = true
-                    setOnClickListener { openDm(c.optLong("uid"), c.optString("nick")) }
+                    setOnClickListener { openDm(c.optLong("uid"), c.optString("nick"), c.optLong("av")) }
                     pressable(this)
                 }
+                val col = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                card.addView(chatAvatar(c.optLong("uid"), c.optString("nick"), c.optLong("av"), 42).apply {
+                    (layoutParams as LinearLayout.LayoutParams).rightMargin = dp(12)
+                })
+                card.addView(col)
                 val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
                 top.addView(nameRow(c.optString("nick"), c.optInt("badge") == 1, 16f).apply {
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -271,13 +283,13 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
                         setPadding(dp(8), dp(2), dp(8), dp(2))
                     })
                 }
-                card.addView(top)
+                col.addView(top)
                 val mine = c.optLong("sender") == myUid
-                card.addView(txt((if (mine) "Вы: " else "") + c.optString("text"), 14f, MUTE).apply {
+                col.addView(txt((if (mine) "Вы: " else "") + c.optString("text"), 14f, MUTE).apply {
                     maxLines = 2
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 })
-                card.addView(txt(timeFmt.format(java.util.Date(c.optLong("ts"))), 11f, MUTE))
+                col.addView(txt(timeFmt.format(java.util.Date(c.optLong("ts"))), 11f, MUTE))
                 list.addView(card)
             }
         }
@@ -325,7 +337,7 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
 }
 
 /** Меню по долгому нажатию на сообщение в общем чате. */
-private fun MainActivity.roomActions(m: JSONObject, myUid: Long, myBadge: Boolean, openDm: (Long, String) -> Unit) {
+private fun MainActivity.roomActions(m: JSONObject, myUid: Long, myBadge: Boolean, openDm: (Long, String, Long) -> Unit) {
     val uid = m.optLong("uid")
     val nick = m.optString("nick")
     val own = uid == myUid
@@ -335,7 +347,7 @@ private fun MainActivity.roomActions(m: JSONObject, myUid: Long, myBadge: Boolea
             try { call(); ui { toast(done) } } catch (e: Exception) { ui { toast(errText(e)) } }
         }
     }
-    if (!own) items.add("✉ Написать в личку" to { openDm(uid, nick) })
+    if (!own) items.add("✉ Написать в личку" to { openDm(uid, nick, m.optLong("av")) })
     if (own || myBadge) items.add("🗑 Удалить сообщение" to { run("Сообщение удалено") { ChatApi.roomDelete(m.optLong("id")) } })
     if (myBadge && !own && m.optInt("badge") != 1) {
         items.add("🔇 Заглушить на час" to { run("$nick заглушён на час") { ChatApi.roomMute(uid, 60) } })
@@ -349,17 +361,31 @@ private fun MainActivity.roomActions(m: JSONObject, myUid: Long, myBadge: Boolea
 
 // ---------- личная переписка ----------
 
-internal fun MainActivity.showDm(peer: Long, nick: String) {
+internal fun MainActivity.showDm(peer: Long, nick: String, av: Long = 0L) {
     onHome = false
     val root = chatScreen(5)
     val sid = screenId
     CommunityState.tab = 1
     backAction = { showCommunity() }
-    backRow(root, nick) { showCommunity() }
-    root.addView(txt("🔒 Правила приватности", 12f, BLUE).apply {
-        layoutParams = lp(8)
-        isClickable = true
-        setOnClickListener { showChatPrivacy() }
+    // шапка: назад, аватарка собеседника и его ник
+    root.addView(LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        layoutParams = lp(12)
+        addView(LinearLayout(this@showDm).apply {
+            gravity = Gravity.CENTER
+            background = ripple(CARD, 20, LINE)
+            isClickable = true
+            setOnClickListener { showCommunity() }
+            pressable(this)
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { rightMargin = dp(12) }
+            addView(IconView(this@showDm, Ic.BACK, TEXT).apply { layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)) })
+        })
+        addView(chatAvatar(peer, nick, av, 38).apply { (layoutParams as LinearLayout.LayoutParams).rightMargin = dp(10) })
+        addView(txt(nick, 20f, TEXT, true).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        })
     })
     root.addView(msgPane(
         sid, CommunityState.myUid, "Переписки пока нет. Напишите первым.", showNames = false, receipts = true,
@@ -411,46 +437,49 @@ internal fun MainActivity.msgPane(
 
     fun updateMarks() {
         for ((id, v, base) in marks) {
-            val read = peerRead >= id
-            v.text = base + if (read) "  ✓✓ Прочитано" else "  ✓ Доставлено"
-            v.setTextColor(if (read) BLUE else MUTE)
+            paintReceipt(v, base, peerRead >= id)
         }
     }
+
+    var lastUid = -1L       // автор предыдущего сообщения: подряд идущие сообщения одного человека склеиваются в серию
+    var lastDay = ""
 
     fun add(m: JSONObject) {
         val id = m.optLong("id")
         if (id <= lastId) return
         lastId = id
         if (emptyHint.parent != null) list.removeView(emptyHint)
-        val own = m.optLong("uid") == myUid
-        val wrap = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = if (own) Gravity.END else Gravity.START
-            layoutParams = lp(8)
-        }
-        if (showNames && (!own || namesOnOwn)) {
-            wrap.addView(nameRow(m.optString("nick"), m.optInt("badge") == 1).apply {
+        val ts = m.optLong("ts")
+        val dk = dayKey(ts)
+        if (dk != lastDay) { list.addView(dateChip(ts)); lastDay = dk; lastUid = -1L }
+        val uid = m.optLong("uid")
+        val own = uid == myUid
+        val cont = uid == lastUid
+        lastUid = uid
+        val nick = m.optString("nick")
+        val head = if (showNames && (!own || namesOnOwn) && !cont) {
+            nameRow(nick, m.optInt("badge") == 1).apply {
+                (this as View).setPadding(0, 0, 0, dp(1))
                 if (onName != null && !own) {
                     isClickable = true
                     setOnClickListener { onName(m) }
                 }
-            })
+            }
+        } else null
+        val avatarOn = showNames && !own
+        val avatar: View? = when {
+            !avatarOn -> null
+            cont -> View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(30), dp(30)) }
+            else -> chatAvatar(uid, nick, m.optLong("av"), 30)
         }
-        wrap.addView(TextView(this).apply {
-            text = m.optString("text")
-            textSize = 15f * Theme.textScale
-            setTextColor(if (own) Color.BLACK else TEXT)
-            background = shape(if (own) BLUE else CARD, 16, if (own) BLUE else LINE)
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            maxWidth = (resources.displayMetrics.widthPixels * 0.78f).toInt()
-            if (onLong != null) setOnLongClickListener { onLong(m); true }
-        })
-        val timeStr = timeFmt.format(java.util.Date(m.optLong("ts")))
-        val timeView = txt(timeStr, 10f, MUTE)
-        wrap.addView(timeView)
-        if (receipts && own) marks.add(Triple(id, timeView, timeStr))
-        if (onLong != null) wrap.setOnLongClickListener { onLong(m); true }
-        list.addView(wrap)
+        val timeStr = clockFmt.format(java.util.Date(ts))
+        val (bubble, timeView) = messageBubble(m.optString("text"), own, timeStr, head, bubbleMax(avatarOn))
+        if (onLong != null) bubble.setOnLongClickListener { onLong(m); true }
+        if (receipts && own) {
+            marks.add(Triple(id, timeView, timeStr))
+            paintReceipt(timeView, timeStr, peerRead >= id)
+        }
+        list.addView(messageRow(own, avatar, bubble, if (cont) 2 else 8))
     }
 
     fun fetchOnce() {
@@ -466,6 +495,8 @@ internal fun MainActivity.msgPane(
                         list.removeAllViews()
                         list.addView(emptyHint)
                         lastId = 0
+                        lastUid = -1L
+                        lastDay = ""
                         marks.clear()
                     }
                     rev = r.optLong("rev", rev)
@@ -494,14 +525,7 @@ internal fun MainActivity.msgPane(
     pane.addView(scroll)
     pane.addView(status)
     if (send != null) {
-        val field = input(
-            "Сообщение",
-            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-        ).apply {
-            maxLines = 4
-            filters = arrayOf(InputFilter.LengthFilter(1000))
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(8) }
-        }
+        val field = chatField()
         fun sendNow() {
             val text = field.text.toString().trim()
             if (text.isEmpty()) return
@@ -520,14 +544,7 @@ internal fun MainActivity.msgPane(
                 }
             }
         }
-        pane.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.BOTTOM
-            addView(field)
-            addView(chip("Отправить", true) { sendNow() }.apply {
-                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(50))
-            })
-        })
+        pane.addView(composerRow(null, field, sendButton { sendNow() }))
     }
     loop()
     return pane

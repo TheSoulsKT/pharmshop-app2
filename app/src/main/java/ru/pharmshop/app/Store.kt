@@ -81,7 +81,7 @@ object Store {
         get() = sp.getInt("fx_density", 1)
         set(v) { sp.edit().putInt("fx_density", v).apply() }
 
-    /** Какая вкладка открывается при запуске: 0 — ТГ, 4 — VPN, 2 — Профиль, 1 — Поддержка. */
+    /** Какая вкладка открывается при запуске: 0 — ТГ, 4 — VPN, 5 — Чат, 2 — Профиль (1 — старое значение «Чат», теперь тоже общий чат). */
     var startTab: Int
         get() = sp.getInt("start_tab", 0)
         set(v) { sp.edit().putInt("start_tab", v).apply() }
@@ -215,6 +215,24 @@ object Store {
         set(v) { sp.edit().putInt("support_solved", v).apply() }
 
     fun noteSupportSolved(n: Int) { if (n > supportSolved) supportSolved = n }
+
+    // ----- чат -----
+    /** Ник в чате (кэш: его показывает профиль). Пусто — ник ещё не выбран. */
+    var chatNick: String
+        get() = sp.getString("chat_nick", "") ?: ""
+        set(v) { sp.edit().putString("chat_nick", v).apply() }
+
+    /** Сколько сообщений написано в чате (число приходит с сервера и только растёт): для достижений «за общение». */
+    var chatMsgs: Int
+        get() = sp.getInt("chat_msgs", 0)
+        set(v) { sp.edit().putInt("chat_msgs", v).apply() }
+
+    fun noteChatMsgs(n: Int) { if (n > chatMsgs) chatMsgs = n }
+
+    /** Какая версия аватарки (см. Avatar.stamp) уже загружена на сервер для чата. */
+    var avatarSynced: String
+        get() = sp.getString("avatar_synced", "") ?: ""
+        set(v) { sp.edit().putString("avatar_synced", v).apply() }
 
     // ----- защита входа -----
     /** 0 — выключена, 1 — PIN, 2 — отпечаток (PIN остаётся запасным входом). */

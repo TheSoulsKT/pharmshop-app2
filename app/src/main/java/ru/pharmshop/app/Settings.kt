@@ -23,7 +23,7 @@ internal fun MainActivity.showSettings() {
     onHome = false
     val col = screen(3)
     val sid = screenId
-    titleRow(col, "Настройки")
+    titleRow(col, "Настройки", 3)
     val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     col.addView(body)
     renderSettings(body, sid)
@@ -291,8 +291,10 @@ private fun MainActivity.interfaceBlock(body: LinearLayout, again: () -> Unit) {
         again()
     })
     c.addView(caption("Какая вкладка открывается при запуске"))
-    val tabs = listOf(0, 4, 2, 1)
-    c.addView(segmented(listOf("ТГ", "VPN", "Профиль", "Чат"), tabs.indexOf(Store.startTab).coerceAtLeast(0)) { i ->
+    val tabs = listOf(0, 4, 5, 2)
+    // раньше «Чат» здесь означал поддержку (1): теперь это общий чат
+    val cur = if (Store.startTab == 1) 5 else Store.startTab
+    c.addView(segmented(listOf("ТГ", "VPN", "Чат", "Профиль"), tabs.indexOf(cur).coerceAtLeast(0)) { i ->
         Store.startTab = tabs[i]
         again()
     })
@@ -775,12 +777,13 @@ private fun MainActivity.showDataInfo() {
             "ник в Telegram и номер последнего заказа, если они указаны",
             "заказы из приложения (получатель, количество, сумма, статус): отправляются, чтобы поддержка видела их в админ-панели",
             "токен push-уведомлений устройства, если они включены",
-            "ник и сообщения общего и личных чатов: личные чаты остаются в приложении, администрация может получить к ним доступ"
+            "ник и сообщения общего и личных чатов: личные чаты остаются в приложении, администрация может получить к ним доступ",
+            "аватарка профиля (уменьшенная копия 128×128), но только если вы выбрали ник в чате: её видят участники чата"
         ))
         dataGroup(box, "🚫", "Не собираем", RED, listOf(
             "PIN и пароли, ссылку подписки VPN, данные банковских карт",
             "контакты, геолокацию, список установленных приложений, рекламный идентификатор",
-            "фото из галереи: аватарка остаётся только на телефоне"
+            "другие фото из галереи и оригинал аватарки: на сервер уходит только маленькая копия для чата"
         ))
 
         box.addView(btnGrid(listOf(

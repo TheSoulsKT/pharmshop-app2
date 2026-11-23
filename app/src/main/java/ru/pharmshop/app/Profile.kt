@@ -67,14 +67,29 @@ internal fun MainActivity.showProfile() {
     onHome = false
     val col = screen(2)
     val sid = screenId
-    titleRow(col, "Профиль")
+    titleRow(col, "Профиль", 2)
     val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     col.addView(body)
     appFooter(col)
     renderProfile(body, sid, true)
+    syncChatInfo(body, sid)
     refreshOrders(body, sid, false)
     startAutoRefresh(body, sid)
     setPullRefresh { if (sid == screenId) refreshOrders(body, sid, true) }   // потянуть экран вниз — обновить статусы
+}
+
+/**
+ * Подтягивает данные чата для профиля: ник, число сообщений (для достижения) и, если аватарка изменилась, загружает её на сервер.
+ * Если ник в чате не выбран, сервер отвечает registered = false и ничего не меняется.
+ */
+internal fun MainActivity.syncChatInfo(body: LinearLayout, sid: Int) {
+    syncMyAvatar()
+    io.execute {
+        val before = Store.chatNick + "|" + Store.chatMsgs
+        try { ChatApi.chatMe() } catch (e: Exception) { return@execute }
+        ui { syncMyAvatar() }   // ник мог стать известен только сейчас (выбран до этого обновления)
+        if (before != Store.chatNick + "|" + Store.chatMsgs) ui { if (sid == screenId) renderProfile(body, sid) }
+    }
 }
 
 /** Пока открыт профиль и есть незавершённые заказы — обновляем статусы каждые 5 секунд. */
@@ -198,7 +213,7 @@ internal fun MainActivity.pickAvatar(body: LinearLayout, sid: Int) {
         toast("Загружаем фото…")
         io.execute {
             val ok = Avatar.save(this, uri)
-            if (ok) Diag.feature("avatar")
+            if (ok) { Diag.feature("avatar"); syncMyAvatar() }
             ui {
                 if (!ok) toast("Не удалось загрузить фото")
                 else if (sid == screenId) renderProfile(body, sid)

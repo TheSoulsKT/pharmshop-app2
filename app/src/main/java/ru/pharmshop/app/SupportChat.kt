@@ -141,18 +141,11 @@ internal fun MainActivity.chatPane(
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
     }
     val status = txt("", 12f, MUTE).apply { layoutParams = lp(4) }
-    val field = input(
-        "Сообщение",
-        InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-    ).apply {
-        maxLines = 4
-        filters = arrayOf(InputFilter.LengthFilter(1000))
-        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(8) }
-    }
+    val field = chatField()
 
     var lastId = 0L
     var pendingImage = ""   // прикреплённое фото (base64), уходит со следующим сообщением
-    val timeFmt = SimpleDateFormat("d MMM, HH:mm", Locale.getDefault())
+    var lastDay = ""
 
     // строка «Фото прикреплено» с кнопкой убрать
     val attachInfo = LinearLayout(this).apply {
@@ -167,9 +160,7 @@ internal fun MainActivity.chatPane(
     fun updateReceipts() {
         val rt = readTs()
         for ((ts, v, base) in receipts) {
-            val read = rt >= ts
-            v.text = base + if (read) "  ✓✓ Прочитано" else "  ✓ Доставлено"
-            v.setTextColor(if (read) BLUE else MUTE)
+            paintReceipt(v, base, rt >= ts)
         }
     }
 
@@ -178,25 +169,28 @@ internal fun MainActivity.chatPane(
         if (id <= lastId) return
         lastId = id
         if (emptyHint.parent != null) list.removeView(emptyHint)
+        val msgTs = m.optLong("ts")
+        val dk = dayKey(msgTs)
+        if (dk != lastDay) { list.addView(dateChip(msgTs)); lastDay = dk }
         val own = m.optString("from") == mine
-        val wrap = LinearLayout(this).apply {
+        val body = m.optString("text")
+        val timeStr = clockFmt.format(java.util.Date(msgTs))
+        val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = if (own) Gravity.END else Gravity.START
-            layoutParams = lp(8)
         }
-        val body = m.optString("text")
+        // ответы поддержки подписаны, чтобы было ясно, кто пишет (на стороне клиента)
+        val head = if (mine == "user" && !own) txt("Поддержка", 11f, GREEN, true).apply { setPadding(0, 0, 0, dp(1)) } else null
+        val timeView: TextView
         if (body.isNotEmpty()) {
-            wrap.addView(TextView(this).apply {
-                text = body
-                textSize = 15f * Theme.textScale
-                setTextColor(if (own) Color.BLACK else TEXT)
-                background = shape(if (own) BLUE else CARD, 16, if (own) BLUE else LINE)
-                setPadding(dp(12), dp(8), dp(12), dp(8))
-                maxWidth = (resources.displayMetrics.widthPixels * 0.78f).toInt()
-            })
+            val (bubble, tv) = messageBubble(body, own, timeStr, head, bubbleMax(false))
+            col.addView(bubble)
+            timeView = tv
+        } else {
+            timeView = txt(timeStr, 10f, MUTE)
         }
         if (m.optInt("has_image") == 1) {
-            val size = (resources.displayMetrics.widthPixels * 0.6f).toInt()
+            val size = (resources.displayMetrics.widthPixels * 0.5f).toInt()
             val iv = ImageView(this).apply {
                 scaleType = ImageView.ScaleType.CENTER_CROP
                 background = shape(CARD, 16, LINE)
@@ -205,7 +199,7 @@ internal fun MainActivity.chatPane(
             }
             var full: Bitmap? = null
             iv.setOnClickListener { full?.let { showFullImage(it) } }
-            wrap.addView(iv)
+            col.addView(iv)
             io.execute {
                 try {
                     val bytes = android.util.Base64.decode(fetchImage(id), android.util.Base64.DEFAULT)
@@ -216,11 +210,15 @@ internal fun MainActivity.chatPane(
                 }
             }
         }
-        val msgTs = m.optLong("ts")
-        val timeStr = timeFmt.format(java.util.Date(msgTs))
-        val timeView = txt(timeStr, 10f, MUTE)
-        wrap.addView(timeView)
-        if (own) receipts.add(Triple(msgTs, timeView, timeStr))
+        if (body.isEmpty()) {
+            timeView.layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = dp(2) }
+            col.addView(timeView)
+        }
+        if (own) {
+            receipts.add(Triple(msgTs, timeView, timeStr))
+            if (body.isNotEmpty()) paintReceipt(timeView, timeStr, readTs() >= msgTs)
+        }
         // для администратора: откуда пришло сообщение
         if (showMeta && m.optString("from") == "user") {
             val ip = m.optString("ip")
@@ -232,10 +230,10 @@ internal fun MainActivity.chatPane(
                     if (geo.isNotEmpty()) append(" • ").append(geo)
                     if (dev.isNotEmpty()) append("\n").append(dev)
                 }
-                wrap.addView(txt(line, 10f, MUTE).apply { setTextIsSelectable(true) })
+                col.addView(txt(line, 10f, MUTE).apply { setTextIsSelectable(true) })
             }
         }
-        list.addView(wrap)
+        list.addView(messageRow(own, null, col, 8))
     }
 
     fun fetchOnce() {
@@ -298,39 +296,20 @@ internal fun MainActivity.chatPane(
         }
     }
 
-    val attachBtn = TextView(this).apply {
-        text = "📎"
-        textSize = 20f
-        gravity = Gravity.CENTER
-        contentDescription = "Прикрепить фото"
-        background = ripple(CARD, 12, LINE)
-        isClickable = true
-        setOnClickListener {
-            onImagePicked = { uri ->
-                toast("Обрабатываем фото…")
-                io.execute {
-                    val b64 = prepareImage(uri)
-                    ui {
-                        if (sid != screenId) return@ui
-                        if (b64 == null) toast("Не удалось подготовить фото") else setAttachment(b64)
-                    }
+    val attachBtn = attachButton {
+        onImagePicked = { uri ->
+            toast("Обрабатываем фото…")
+            io.execute {
+                val b64 = prepareImage(uri)
+                ui {
+                    if (sid != screenId) return@ui
+                    if (b64 == null) toast("Не удалось подготовить фото") else setAttachment(b64)
                 }
             }
-            try { imagePicker.launch("image/*") } catch (e: Exception) { toast("Не удалось открыть галерею") }
         }
-        pressable(this)
-        layoutParams = LinearLayout.LayoutParams(dp(50), dp(50)).apply { rightMargin = dp(8) }
+        try { imagePicker.launch("image/*") } catch (e: Exception) { toast("Не удалось открыть галерею") }
     }
-    val sendBtn = chip("Отправить", true) { sendNow() }.apply {
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(50))
-    }
-    val composer = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.BOTTOM
-        addView(attachBtn)
-        addView(field)
-        addView(sendBtn)
-    }
+    val composer = composerRow(attachBtn, field, sendButton { sendNow() })
     pane.addView(scroll)
     pane.addView(status)
     pane.addView(attachInfo)
@@ -367,12 +346,18 @@ internal fun MainActivity.faqView(): ScrollView {
     }
 }
 
-/** Единственная точка связи с поддержкой: вкладка «Поддержка» в нижней панели. */
+/** Откуда открыли поддержку: 2 — профиль, 3 — настройки (туда же ведёт «назад»). */
+internal var supportFrom = 2
+
+/** Единственная точка связи с поддержкой: кнопка в правом верхнем углу профиля и настроек. */
 internal fun MainActivity.showSupport() {
     onHome = false
     val root = chatScreen(1)
     val sid = screenId
-    titleRow(root, "Поддержка")
+    // поддержку открывают из профиля или настроек: «назад» возвращает туда же
+    val back: () -> Unit = { navBack = true; if (supportFrom == 3) showSettings() else showProfile() }
+    backAction = back
+    backRow(root, "Поддержка", back)
     val nick = Store.lastUser
     val order = Store.orders().firstOrNull()?.optString("order_number").orEmpty()
     val chat = chatPane(

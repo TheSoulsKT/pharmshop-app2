@@ -306,14 +306,13 @@ internal fun MainActivity.openTab(tab: Int) {
     }
 }
 
-/** Порядок вкладок слева направо (номера вкладок остаются прежними, VPN — пятая по номеру, вторая по месту). */
-private val TAB_ORDER = listOf(0, 4, 1, 5, 2, 3)
+/** Порядок вкладок слева направо. Поддержка (1) в панели не показывается: её открывают кнопкой в профиле и настройках. */
+private val TAB_ORDER = listOf(0, 4, 5, 2, 3)
 
 internal fun MainActivity.bottomNav(active: Int): LinearLayout {
     val items = listOf(
         Triple(Ic.BAG, "ТГ", 0),
         Triple(Ic.KEY, "VPN", 4),
-        Triple(Ic.CHAT, "Поддержка", 1),
         Triple(Ic.GROUP, "Чат", 5),
         Triple(Ic.USER, "Профиль", 2),
         Triple(Ic.GEAR, "Настройки", 3)
@@ -375,9 +374,37 @@ internal fun MainActivity.withNav(content: View, tab: Int): View {
     return wrap
 }
 
-/** Заголовок экрана-вкладки (без стрелки «назад»: переходы — через нижнюю панель). */
-internal fun MainActivity.titleRow(col: LinearLayout, title: String) {
-    col.addView(txt(title, 24f, TEXT, true).apply { layoutParams = lp(16) })
+/**
+ * Заголовок экрана-вкладки (без стрелки «назад»: переходы — через нижнюю панель).
+ * supportFrom != 0 — справа вверху кнопка «Поддержка» (профиль = 2, настройки = 3).
+ */
+internal fun MainActivity.titleRow(col: LinearLayout, title: String, supportFrom: Int = 0) {
+    if (supportFrom == 0) {
+        col.addView(txt(title, 24f, TEXT, true).apply { layoutParams = lp(16) })
+        return
+    }
+    col.addView(LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        layoutParams = lp(16)
+        addView(txt(title, 24f, TEXT, true).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        addView(LinearLayout(this@titleRow).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = ripple(CARD, 20, LINE)
+            setPadding(dp(12), dp(8), dp(14), dp(8))
+            contentDescription = "Поддержка"
+            isClickable = true
+            setOnClickListener { ru.pharmshop.app.supportFrom = supportFrom; showSupport() }
+            pressable(this)
+            addView(IconView(this@titleRow, Ic.CHAT, BLUE).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(20), dp(20)).apply { rightMargin = dp(6) }
+            })
+            addView(txt("Поддержка", 13f, TEXT, true))
+        })
+    })
 }
 
 /**

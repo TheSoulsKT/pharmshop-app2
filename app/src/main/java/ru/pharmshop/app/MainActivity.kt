@@ -213,7 +213,7 @@ open class MainActivity : AppCompatActivity() {
         val vpnOk = tab == 4 && sec("vpn", "VPN", "", true, "").enabled
         when {
             tab == 4 && vpnOk -> showVpn()
-            tab == 1 -> showSupport()
+            tab == 1 || tab == 5 -> showCommunity()
             tab == 2 -> showProfile()
             else -> showHome()
         }

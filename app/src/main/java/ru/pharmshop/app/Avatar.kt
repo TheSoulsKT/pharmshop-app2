@@ -82,6 +82,20 @@ object Avatar {
         }
     }
 
+    /** Метка текущей аватарки (меняется при каждом новом фото): по ней понятно, загружена ли она уже на сервер чата. */
+    fun stamp(): String = file()?.takeIf { it.exists() }?.lastModified()?.toString() ?: ""
+
+    /** Уменьшенная копия 128×128 (JPEG, base64) для чата. Пустая строка — аватарки нет. Не вызывать из главного потока. */
+    fun thumbBase64(): String {
+        val b = bitmap() ?: return ""
+        return try {
+            val t = Bitmap.createScaledBitmap(b, 128, 128, true)
+            val o = java.io.ByteArrayOutputStream()
+            t.compress(Bitmap.CompressFormat.JPEG, 80, o)
+            android.util.Base64.encodeToString(o.toByteArray(), android.util.Base64.NO_WRAP)
+        } catch (e: Exception) { "" }
+    }
+
     /** Удаляет аватарку. */
     fun remove() {
         cache = null

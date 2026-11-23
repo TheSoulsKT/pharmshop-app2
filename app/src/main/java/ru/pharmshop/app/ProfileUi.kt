@@ -250,6 +250,23 @@ internal fun MainActivity.profileHero(body: LinearLayout, sid: Int, user: String
         }
     })
 
+    // ник в чате: тот же человек, что и в общем чате (нажатие открывает чат, если ника ещё нет — выбор ника)
+    val chatNick = Store.chatNick
+    card.addView(txt(
+        if (chatNick.isNotEmpty()) "💬 Ник в чате: " + (if (hiddenData()) "••••••" else chatNick) else "💬 Выбрать ник в чате",
+        13f, if (chatNick.isNotEmpty()) TEXT else BLUE, chatNick.isEmpty()
+    ).apply {
+        gravity = Gravity.CENTER
+        background = ripple(mix(BLUE, 0.10f), 12)
+        setPadding(dp(12), dp(5), dp(12), dp(5))
+        isClickable = true
+        setOnClickListener { showCommunity() }
+        pressable(this)
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(8)
+        }
+    })
+
     // описание: текст или приглашение его добавить
     val hasBio = Store.bio.isNotEmpty()
     card.addView(txt(
@@ -334,6 +351,14 @@ internal fun MainActivity.badgeList(orders: List<org.json.JSONObject>, stars: In
         list += BadgeInfo(emoji, title,
             "Задайте вопрос в поддержке: когда его решат, значок откроется · сейчас $solved из $need",
             solved >= need, "help")
+    }
+
+    // общение в чате (число сообщений приходит с сервера)
+    val chatMsgs = Store.chatMsgs
+    for ((emoji, title, need) in listOf(Triple("🗨", "Первое слово", 1), Triple("🎙", "Общительный", 25), Triple("🔥", "Душа чата", 100))) {
+        list += BadgeInfo(emoji, title,
+            "Пишите в общем чате и личных сообщениях: вкладка «Чат» · сейчас $chatMsgs из $need",
+            chatMsgs >= need, "chat")
     }
     return list
 }
@@ -488,7 +513,7 @@ internal fun MainActivity.photoSheet(body: LinearLayout, sid: Int, user: String)
                 addView(avatarView(104, user, 40f))
             })
         })
-        box.addView(txt("Фото обрезается по центру до квадрата и остаётся только на этом телефоне: никуда не отправляется.", 13f, MUTE).apply {
+        box.addView(txt("Фото обрезается по центру до квадрата. Оригинал остаётся на телефоне; если вы выбрали ник в чате, маленькая копия будет видна в чате как ваша аватарка.", 13f, MUTE).apply {
             layoutParams = lp(14)
         })
         val btns = ArrayList<TextView>()
@@ -496,6 +521,7 @@ internal fun MainActivity.photoSheet(body: LinearLayout, sid: Int, user: String)
         if (Avatar.has()) btns.add(gbtn("Убрать фото", false) {
             close()
             Avatar.remove()
+            syncMyAvatar()
             if (sid == screenId) renderProfile(body, sid)
         })
         box.addView(btnGrid(btns, 0))

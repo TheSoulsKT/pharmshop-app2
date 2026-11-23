@@ -186,15 +186,27 @@ object ChatApi {
     private fun dev() = JSONObject().put("device", Store.deviceId).put("secret", Store.deviceSecret)
 
     /** {registered, uid, nick, badge, muted_until, nick_change_at}. registered = false — ник ещё не выбран. */
-    fun chatMe(): JSONObject = post("/api/chat/me", dev())
+    fun chatMe(): JSONObject = post("/api/chat/me", dev()).also {
+        if (it.optBoolean("registered")) { Store.chatNick = it.optString("nick"); noteMsgs(it) }
+    }
 
     /** Занять ник или сменить свой. Сервер отвечает ошибкой, если ник занят, зарезервирован или не подходит. */
-    fun chatRegister(nick: String): JSONObject = post("/api/chat/register", dev().put("nick", nick))
+    fun chatRegister(nick: String): JSONObject =
+        post("/api/chat/register", dev().put("nick", nick)).also { Store.chatNick = it.optString("nick", nick) }
 
     /** {messages, rev, reset, me}. rev — ревизия ленты: если сервер вернул другую, ленту нужно перечитать (reset = true). */
     fun roomMessages(after: Long, rev: Long): JSONObject = post("/api/room/messages", dev().put("after", after).put("rev", rev))
 
-    fun roomSend(text: String) { post("/api/room/send", dev().put("text", text)) }
+    fun roomSend(text: String) { noteMsgs(post("/api/room/send", dev().put("text", text))) }
+
+    /** Сервер присылает, сколько всего сообщений написано в чате: запоминаем для достижения. */
+    private fun noteMsgs(r: JSONObject) { if (r.has("msgs")) Store.noteChatMsgs(r.optInt("msgs")) }
+
+    /** Загрузить на сервер аватарку профиля (пустая строка — убрать): чтобы её видели в чате. Возвращает версию. */
+    fun avatarSet(image: String): Long = post("/api/chat/avatar_set", dev().put("image", image)).optLong("av")
+
+    /** Аватарка другого пользователя: {av, image}. */
+    fun avatarGet(uid: Long): JSONObject = post("/api/chat/avatar_get", dev().put("uid", uid))
 
     fun roomDelete(id: Long) { post("/api/room/delete", dev().put("id", id)) }
 
@@ -210,7 +222,7 @@ object ChatApi {
     /** {messages, peer: {uid, nick, badge}, peer_read}. Открытие переписки помечает сообщения собеседника прочитанными. */
     fun dmMessages(peer: Long, after: Long): JSONObject = post("/api/dm/messages", dev().put("with", peer).put("after", after))
 
-    fun dmSend(peer: Long, text: String) { post("/api/dm/send", dev().put("to", peer).put("text", text)) }
+    fun dmSend(peer: Long, text: String) { noteMsgs(post("/api/dm/send", dev().put("to", peer).put("text", text))) }
 
     // ----- администратор: пользователи, галочки, личные чаты -----
     /** {users: [{id, nick, badge, muted_until, created, last_seen, last_ip, room_msgs, dm_msgs, blocked_device}], more, total, badges}. */
