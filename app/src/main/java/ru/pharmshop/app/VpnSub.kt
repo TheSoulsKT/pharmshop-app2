@@ -278,6 +278,72 @@ object VpnSub {
 
     // ---------- итоговый конфиг ----------
 
+    /** Локальные сети идут напрямую. Списком адресов, а не «geoip:private»: для того нужен файл geoip.dat, которого в приложении нет. */
+    private val PRIVATE = listOf(
+        "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10",
+        "fc00::/7", "fe80::/10", "::1/128"
+    )
+
+    private fun isGeo(v: String) = v.startsWith("geoip:") || v.startsWith("geosite:") || v.startsWith("ext:")
+
+    /** Убирает из списка записи, требующие geoip.dat / geosite.dat; «geoip:private» заменяет на PRIVATE. */
+    private fun stripList(arr: JSONArray): JSONArray {
+        val out = JSONArray()
+        for (i in 0 until arr.length()) {
+            val v = arr.optString(i)
+            when {
+                v == "geoip:private" -> PRIVATE.forEach { out.put(it) }
+                isGeo(v) -> { }
+                else -> out.put(v)
+            }
+        }
+        return out
+    }
+
+    /**
+     * Без geoip.dat / geosite.dat ядро не принимает правила с «geoip:…» и «geosite:…» и не запускается вовсе.
+     * Поэтому из присланного подпиской конфига такие условия убираем (правило без условий выбрасываем).
+     * Цена: пропадают разделения вроде «российские сайты напрямую» — они вернутся, если положить .dat-файлы в filesDir.
+     */
+    private fun stripGeo(cfg: JSONObject) {
+        val rules = cfg.optJSONObject("routing")?.optJSONArray("rules")
+        if (rules != null) {
+            val keep = JSONArray()
+            for (i in 0 until rules.length()) {
+                val r = rules.optJSONObject(i) ?: continue
+                var hasCondition = false
+                for (k in listOf("ip", "source", "domain")) {
+                    val a = r.optJSONArray(k) ?: continue
+                    val clean = stripList(a)
+                    if (clean.length() == 0) r.remove(k) else { r.put(k, clean); hasCondition = true }
+                }
+                for (k in listOf("port", "sourcePort", "network", "user", "inboundTag", "protocol", "attrs", "process")) {
+                    if (r.has(k)) hasCondition = true
+                }
+                if (hasCondition) keep.put(r)
+            }
+            cfg.optJSONObject("routing")!!.put("rules", keep)
+        }
+        val servers = cfg.optJSONObject("dns")?.optJSONArray("servers")
+        if (servers != null) {
+            val keep = JSONArray()
+            for (i in 0 until servers.length()) {
+                val sv = servers.opt(i)
+                if (sv !is JSONObject) { keep.put(sv); continue }
+                var drop = false
+                for (k in listOf("domains", "expectIPs", "expectedIPs", "unexpectedIPs")) {
+                    val a = sv.optJSONArray(k) ?: continue
+                    val clean = stripList(a)
+                    if (clean.length() == 0 && a.length() > 0) drop = true   // сервер был только для geosite-доменов
+                    else sv.put(k, clean)
+                }
+                if (!drop) keep.put(sv)
+            }
+            if (keep.length() == 0) keep.put("1.1.1.1").put("8.8.8.8")
+            cfg.getJSONObject("dns").put("servers", keep)
+        }
+    }
+
     /** Конфиг Xray для выбранного сервера. Вход — TUN: файловый дескриптор интерфейса отдаёт VpnService. */
     fun buildConfig(s: VpnServer): String {
         val cfg: JSONObject
@@ -291,9 +357,10 @@ object VpnSub {
                 .put(JSONObject().put("tag", "direct").put("protocol", "freedom"))
                 .put(JSONObject().put("tag", "block").put("protocol", "blackhole")))
             cfg.put("routing", JSONObject().put("domainStrategy", "AsIs").put("rules", JSONArray().put(
-                JSONObject().put("type", "field").put("ip", JSONArray().put("geoip:private")).put("outboundTag", "direct")
+                JSONObject().put("type", "field").put("ip", JSONArray(PRIVATE)).put("outboundTag", "direct")
             )))
         }
+        stripGeo(cfg)
         cfg.put("log", JSONObject().put("loglevel", "warning"))
         if (!cfg.has("dns")) cfg.put("dns", JSONObject().put("servers", JSONArray().put("1.1.1.1").put("8.8.8.8")))
         cfg.put("inbounds", JSONArray().put(JSONObject()
