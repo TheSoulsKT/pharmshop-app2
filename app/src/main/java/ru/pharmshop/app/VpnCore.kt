@@ -18,6 +18,12 @@ internal object VpnCore {
     private var ctl: Any? = null
     private var inited = false
 
+    /** Ключ XUDP: ядро требует ровно 32 байта в base64 (URL-вариант, без «=»). Берём SHA-256 от постоянного id устройства. */
+    private fun xudpKey(): String {
+        val h = java.security.MessageDigest.getInstance("SHA-256").digest(Store.vpnHwid.toByteArray(Charsets.UTF_8))
+        return android.util.Base64.encodeToString(h, android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or android.util.Base64.NO_WRAP)
+    }
+
     /** Есть ли ядро в сборке. */
     fun available(): Boolean = try { Class.forName(LIB); true } catch (e: Throwable) { false }
 
@@ -30,7 +36,7 @@ internal object VpnCore {
             }
             if (!inited) {
                 lib.getMethod("initCoreEnv", String::class.java, String::class.java)
-                    .invoke(null, ctx.filesDir.absolutePath, Store.vpnHwid)
+                    .invoke(null, ctx.filesDir.absolutePath, xudpKey())
                 inited = true
             }
             stop()
