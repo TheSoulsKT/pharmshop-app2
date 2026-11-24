@@ -26,6 +26,15 @@ private const val V_WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 /** Номер проверки платежа: новая проверка гасит старую, чтобы не крутились две сразу. */
 private var vpnPollGen = 0
 
+/** Тарифы и способы оплаты, загруженные недавно (чтобы не ждать их при каждом открытии вкладки). owner — чей это вход. */
+private class VpnCatalog(val owner: Int, val at: Long, val plans: JSONArray, val prov: JSONObject)
+private const val VPN_CATALOG_TTL = 3 * 60_000L
+@Volatile private var vpnCatalog: VpnCatalog? = null
+
+/** Результат фонового запроса; настоящую ошибку (например, AuthException) отдаём как есть, а не в обёртке ExecutionException. */
+private fun <T> java.util.concurrent.Future<T>.result(): T =
+    try { get() } catch (e: java.util.concurrent.ExecutionException) { throw e.cause ?: e }
+
 // ---------- подписи ----------
 
 /** Копейки → «118 ₽» (с округлением вверх, как на сайте). */
@@ -83,10 +92,17 @@ internal fun MainActivity.showVpn() {
     setPullRefresh { if (sid == screenId && !busy) showVpn() }   // потянуть экран вниз — загрузить заново
     io.execute {
         try {
+            // Раньше три запроса шли друг за другом (каждый ждёт предыдущий), теперь — одновременно.
+            // Тарифы и способы оплаты почти не меняются, поэтому их ещё и держим в памяти несколько минут.
+            val owner = Store.vpnRefresh.hashCode()
+            val hit = vpnCatalog?.takeIf { it.owner == owner && System.currentTimeMillis() - it.at < VPN_CATALOG_TTL }
+            val fPlans = if (hit == null) net.submit(java.util.concurrent.Callable { VpnApi.plans() }) else null
+            val fProv = if (hit == null) net.submit(java.util.concurrent.Callable { VpnApi.providers() }) else null
             val subs = VpnApi.subscriptions()
             VpnWatch.store(applicationContext, subs)   // краткие данные для виджета и уведомлений
-            val plans = VpnApi.plans()
-            val prov = VpnApi.providers()
+            val plans = hit?.plans ?: fPlans!!.result()
+            val prov = hit?.prov ?: fProv!!.result()
+            if (hit == null) vpnCatalog = VpnCatalog(owner, System.currentTimeMillis(), plans, prov)
             ui { if (sid == screenId) { status.visibility = View.GONE; buildVpnForm(col, sid, subs, plans, prov) } }
         } catch (e: VpnApi.AuthException) {
             ui { if (sid == screenId) showVpn() }   // сессия кончилась — откроется экран входа
@@ -181,7 +197,7 @@ private fun vpnPlanLabel(p: JSONObject): String {
     return "${vpnPlanName(p.optString("name"))} · ${vpnDevices(p.optInt("devices"))} — ${vpnRub(p.optLong("total_price_display"))}$tag"
 }
 
-/** Шапка раздела по состоянию подписок: защита включена / заморожена / нет подписки. */
+/** Шапка раздела по состоянию подписок: защита включена / заморожена / нет подписки (в центре кот). */
 private fun MainActivity.vpnStateHero(best: JSONObject?, frozen: JSONObject?): LinearLayout = when {
     best != null -> vpnHero(
         0, "Защита включена", vpnPlanName(best.optString("plan_name").ifEmpty { "Подписка" }),
@@ -198,7 +214,7 @@ private fun MainActivity.vpnStateHero(best: JSONObject?, frozen: JSONObject?): L
 private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArray, plans: JSONArray, prov: JSONObject) {
     val firstNew = col.childCount
 
-    // шапка со щитом: состояние подписки одним взглядом
+    // шапка с котом: состояние подписки одним взглядом
     var bestSub: JSONObject? = null
     var frozenSub: JSONObject? = null
     for (i in 0 until subs.length()) {
@@ -286,7 +302,7 @@ private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArr
     lateinit var renderTab: () -> Unit
 
     // переключатель вкладок со скользящей капсулой
-    val seg = vpnSegment(listOf("Моя подписка", "Купить"), listOf(VIc.SHIELD, VIc.BAG), tab) { i ->
+    val seg = vpnSegment(listOf("Моя подписка", "Купить"), listOf(VIc.PAW, VIc.BAG), tab) { i ->
         if (tab != i) { tab = i; vpnTab = i; renderTab(); riseIn(content) }
     }
     col.addView(seg.root)

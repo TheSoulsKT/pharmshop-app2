@@ -380,9 +380,19 @@ object Store {
 
     // ----- VPN (личный кабинет pvpn.vitrinka.net) -----
     /** Долгоживущий ключ входа в кабинет VPN (cookie client_refresh). Хранится зашифрованным. */
+    // Расшифровка через Android Keystore небольшая, но не бесплатная (на части телефонов — десятки миллисекунд), а ключ
+    // спрашивают на главном потоке при каждом открытии вкладки VPN. Поэтому расшифрованное значение держим в памяти процесса.
+    @Volatile private var vpnRefreshMem = ""
     var vpnRefresh: String
-        get() = sp.getString("vpn_refresh", "")?.takeIf { it.isNotEmpty() }?.let { unseal(it) } ?: ""
+        get() {
+            val m = vpnRefreshMem
+            if (m.isNotEmpty()) return m
+            val v = sp.getString("vpn_refresh", "")?.takeIf { it.isNotEmpty() }?.let { unseal(it) } ?: ""
+            if (v.isNotEmpty()) vpnRefreshMem = v   // пустой результат не запоминаем: вдруг это разовый сбой хранилища ключей
+            return v
+        }
         set(v) {
+            vpnRefreshMem = v
             sp.edit().putString("vpn_refresh", if (v.isEmpty()) "" else try { seal(v) } catch (e: Exception) { "" }).apply()
         }
 

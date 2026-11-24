@@ -93,7 +93,9 @@ internal fun MainActivity.pressable(v: View) {
 internal fun MainActivity.riseIn(col: LinearLayout, from: Int = 0) {
     if (!Store.uiAnim) return
     var n = 0
-    for (i in from until col.childCount) {
+    // анимируем только то, что помещается на первый экран; остальное (внизу длинных экранов) не трогаем —
+    // раньше невидимые элементы десятками стартовали разом и давали рывок при открытии экрана
+    for (i in from until minOf(col.childCount, from + 10)) {
         val v = col.getChildAt(i)
         v.alpha = 0f
         v.translationY = dp(14).toFloat()
@@ -401,12 +403,24 @@ internal fun MainActivity.withNav(content: View, tab: Int): View {
     wrap.addView(content)
     val bar = bottomNav(tab)
     wrap.addView(bar)
-    wrap.viewTreeObserver.addOnGlobalLayoutListener {
+    // Слушатель вешаем на окно только пока экран на нём и снимаем при уходе. Раньше он оставался в окне навсегда
+    // и держал в памяти каждый старый экран: чем дольше пользуешься приложением, тем больше мусора и тормозов.
+    val onLayout = android.view.ViewTreeObserver.OnGlobalLayoutListener {
         val ime = androidx.core.view.ViewCompat.getRootWindowInsets(wrap)
             ?.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime()) ?: false
         val want = if (ime) View.GONE else View.VISIBLE
         if (bar.visibility != want) bar.visibility = want
     }
+    wrap.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+        private var vto: android.view.ViewTreeObserver? = null
+        override fun onViewAttachedToWindow(v: View) {
+            vto = v.viewTreeObserver.also { it.addOnGlobalLayoutListener(onLayout) }
+        }
+        override fun onViewDetachedFromWindow(v: View) {
+            vto?.takeIf { it.isAlive }?.removeOnGlobalLayoutListener(onLayout)
+            vto = null
+        }
+    })
     return wrap
 }
 

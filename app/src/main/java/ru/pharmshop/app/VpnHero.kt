@@ -1,5 +1,9 @@
 package ru.pharmshop.app
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ObjectAnimator
+import android.animation.PropertyValuesHolder
 import android.animation.ValueAnimator
 import android.content.Context
 import android.content.res.ColorStateList
@@ -8,7 +12,11 @@ import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
-import android.graphics.RadialGradient
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Matrix
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffColorFilter
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
@@ -19,10 +27,12 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
 import android.view.animation.OvershootInterpolator
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.Space
 import android.widget.TextView
@@ -32,21 +42,14 @@ import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
 
-// Оформление раздела «VPN»: щит с расходящимися кольцами, кольцо дней, шкала трафика, плитки действий.
-// Всё рисуется на Canvas, без картинок и внешних библиотек. Логика экрана — в BuyVpn.kt.
+// Оформление раздела «VPN»: кот-аватарка с расходящимися кольцами, кольцо дней, шкала трафика, плитки действий.
+// Иконки и шкалы рисуются на Canvas; кот — те же векторные рисунки, что и у значков приложения. Логика экрана — в BuyVpn.kt.
 
 // ---------- иконки ----------
 
 internal enum class VIc {
-    SHIELD, SHIELD_OFF, CHECK, SNOW, SUN, RENEW, USERS, CHART, PHONE, LINK,
+    PAW, CHECK, SNOW, SUN, RENEW, USERS, CHART, PHONE, LINK,
     WALLET, BAG, LOGOUT, COPY, BOLT, SPEED, CLOCK, STAR
-}
-
-private val SHIELD_P = Path().apply {
-    moveTo(12f, 3f); lineTo(19.5f, 6f); lineTo(19.5f, 11.5f)
-    cubicTo(19.5f, 16.1f, 16.3f, 19.7f, 12f, 21f)
-    cubicTo(7.7f, 19.7f, 4.5f, 16.1f, 4.5f, 11.5f)
-    lineTo(4.5f, 6f); close()
 }
 
 private val BOLT_P = Path().apply {
@@ -57,13 +60,10 @@ private val BOLT_P = Path().apply {
 /** Рисует иконку в сетке 24×24 (холст уже промасштабирован, кисть — линейная). */
 internal fun drawVIc(c: Canvas, k: VIc, p: Paint) {
     when (k) {
-        VIc.SHIELD -> {
-            c.drawPath(SHIELD_P, p)
-            c.drawLine(8.8f, 12f, 11f, 14.2f, p); c.drawLine(11f, 14.2f, 15.2f, 9.8f, p)
-        }
-        VIc.SHIELD_OFF -> {
-            c.drawPath(SHIELD_P, p)
-            c.drawLine(9f, 9f, 15f, 15f, p); c.drawLine(15f, 9f, 9f, 15f, p)
+        VIc.PAW -> {   // кошачья лапка: подушечка и четыре пальца
+            c.drawOval(RectF(7f, 12.2f, 17f, 20.6f), p)
+            c.drawCircle(4.9f, 10.4f, 2f, p); c.drawCircle(9.1f, 6.1f, 2.1f, p)
+            c.drawCircle(14.9f, 6.1f, 2.1f, p); c.drawCircle(19.1f, 10.4f, 2f, p)
         }
         VIc.CHECK -> {
             c.drawLine(5f, 12.5f, 9.5f, 17f, p); c.drawLine(9.5f, 17f, 19f, 7.5f, p)
@@ -181,99 +181,190 @@ internal class VpnIconView(ctx: Context, private val kind: VIc, tint: Int) : Vie
     }
 }
 
-// ---------- щит ----------
+// ---------- кот ----------
 
 /**
- * Щит в центре карточки: «парит», вокруг расходятся кольца, по орбите бежит огонёк.
- * live = false (нет подписки) — щит серый и неподвижный. Цикл 12 с: кольца 3 с, парение 4 с, орбита 12 с.
+ * Кот в круглой «аватарке» — тот же, что выбран значком приложения (Настройки → Оформление → Иконка).
+ * state: 0 — защита включена (кот бодрствует, мягко «парит», вокруг расходятся кольца, на аватарке галочка);
+ *        1 — подписка заморожена (кот в инее, на аватарке снежинка);
+ *        2 — подписки нет (кот серый и спит: «z Z Z»).
+ * Двигаются только свойства View (смещение, масштаб, прозрачность): их считает RenderThread, без перерисовки
+ * onDraw на каждом кадре. Анимации идут, только пока экран виден. Нажатие на кота — упругий отскок.
  */
-internal class ShieldHeroView(
-    ctx: Context, private val sc: Int, private val icon: VIc,
-    private val live: Boolean, private val animOn: Boolean
-) : View(ctx) {
+internal class CatHeroView(
+    ctx: Context, accent: Int, private val state: Int, private val animOn: Boolean,
+    badgeBg: Int, catRes: Int, cutout: Int
+) : FrameLayout(ctx) {
     private val d = resources.displayMetrics.density
-    private val ringP = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2f * d; color = sc }
-    private val orbitP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = 1.2f * d
-        color = ColorUtils.setAlphaComponent(sc, 80)
-        pathEffect = android.graphics.DashPathEffect(floatArrayOf(3f * d, 6f * d), 0f)
-    }
-    private val dotP = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = sc }
-    private val glowP = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val coreP = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val icP = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        color = Color.WHITE
-        strokeCap = Paint.Cap.ROUND
-        strokeJoin = Paint.Join.ROUND
-        strokeWidth = 1.9f
-    }
-    private val coreR = 30f * d
-    private var t = 0f
-    private var anim: ValueAnimator? = null
+    private val anims = ArrayList<ObjectAnimator>()
 
-    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
-        val cx = w / 2f
-        val cy = h / 2f
-        glowP.shader = RadialGradient(
-            cx, cy, coreR * 2.1f,
-            ColorUtils.setAlphaComponent(sc, if (live) 95 else 28), Color.TRANSPARENT, Shader.TileMode.CLAMP
-        )
-        coreP.shader = LinearGradient(
-            cx - coreR, cy - coreR, cx + coreR, cy + coreR,
-            sc, ColorUtils.blendARGB(sc, Color.BLACK, 0.45f), Shader.TileMode.CLAMP
-        )
+    private fun px(v: Float) = (v * d).toInt()
+
+    /** Бесконечная анимация; при остановке (экран ушёл из виду) вид возвращается в исходное положение. */
+    private fun loop(a: ObjectAnimator, resetAlpha: View? = null): ObjectAnimator {
+        a.repeatCount = ValueAnimator.INFINITE
+        if (resetAlpha != null) a.addListener(object : AnimatorListenerAdapter() {
+            override fun onAnimationCancel(an: Animator) { resetAlpha.alpha = 0f }
+        })
+        anims.add(a)
+        return a
+    }
+
+    init {
+        clipChildren = false
+        clipToPadding = false
+        val live = state != 2
+
+        // мягкое свечение за аватаркой
+        addView(View(ctx).apply {
+            background = GradientDrawable().apply {
+                setShape(GradientDrawable.OVAL)
+                setGradientType(GradientDrawable.RADIAL_GRADIENT)
+                setGradientRadius(76f * d)
+                setColors(intArrayOf(ColorUtils.setAlphaComponent(accent, if (live) 90 else 28), ColorUtils.setAlphaComponent(accent, 0)))
+            }
+        }, FrameLayout.LayoutParams(px(152f), px(152f), Gravity.CENTER))
+
+        // кольца: у включённой защиты расходятся, у замороженной одно неподвижное
+        val rings = when (state) { 0 -> 3; 1 -> 1; else -> 0 }
+        for (i in 0 until rings) {
+            val ring = View(ctx).apply {
+                background = GradientDrawable().apply {
+                    setShape(GradientDrawable.OVAL)
+                    setColor(Color.TRANSPARENT)
+                    setStroke(px(2f), accent)
+                }
+            }
+            addView(ring, FrameLayout.LayoutParams(px(92f), px(92f), Gravity.CENTER))
+            if (state == 0 && animOn) {
+                ring.alpha = 0f
+                loop(ObjectAnimator.ofPropertyValuesHolder(
+                    ring,
+                    PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.7f),
+                    PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.7f),
+                    PropertyValuesHolder.ofFloat(View.ALPHA, 0.5f, 0f)
+                ).apply {
+                    duration = 3000L
+                    startDelay = i * 1000L
+                    interpolator = DecelerateInterpolator(1.1f)
+                }, ring)
+            } else {
+                ring.scaleX = 1.2f + 0.25f * i
+                ring.scaleY = ring.scaleX
+                ring.alpha = 0.34f - 0.1f * i
+            }
+        }
+
+        // кот в круглой рамке цвета своего значка
+        val catBox = FrameLayout(ctx).apply { clipChildren = false; clipToPadding = false }
+        val badge = FrameLayout(ctx).apply {
+            clipChildren = false
+            background = GradientDrawable().apply {
+                setShape(GradientDrawable.OVAL)
+                setColor(badgeBg)
+                setStroke(px(if (live) 3f else 2f), if (live) accent else ColorUtils.setAlphaComponent(accent, 90))
+            }
+        }
+        val cat = ImageView(ctx).apply {
+            setImageResource(catRes)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            when (state) {
+                1 -> setColorFilter(PorterDuffColorFilter(ColorUtils.setAlphaComponent(accent, 80), PorterDuff.Mode.SRC_ATOP))
+                2 -> { setColorFilter(ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0.1f) })); imageAlpha = 190 }
+                else -> {}
+            }
+        }
+        badge.addView(cat, FrameLayout.LayoutParams(px(112f), px(112f), Gravity.CENTER))
+        catBox.addView(badge, FrameLayout.LayoutParams(px(88f), px(88f), Gravity.CENTER))
+
+        // значок состояния в углу аватарки
+        if (state != 2) {
+            val st = FrameLayout(ctx).apply {
+                background = GradientDrawable().apply { setShape(GradientDrawable.OVAL); setColor(accent); setStroke(px(3f), cutout) }
+                translationX = px(31f).toFloat()
+                translationY = px(31f).toFloat()
+            }
+            st.addView(
+                VpnIconView(ctx, if (state == 0) VIc.CHECK else VIc.SNOW, Color.WHITE),
+                FrameLayout.LayoutParams(px(18f), px(18f), Gravity.CENTER)
+            )
+            catBox.addView(st, FrameLayout.LayoutParams(px(30f), px(30f), Gravity.CENTER))
+        }
+        addView(catBox, FrameLayout.LayoutParams(px(88f), px(88f), Gravity.CENTER))
+
+        // спящий кот: «z Z Z» поднимаются и растворяются; кот дышит
+        if (state == 2) {
+            val zs = listOf("z" to 13f, "Z" to 16f, "Z" to 20f)
+            for ((k, z) in zs.withIndex()) {
+                val baseY = px(-26f - k * 13f).toFloat()
+                val tv = TextView(ctx).apply {
+                    text = z.first
+                    textSize = z.second
+                    setTextColor(accent)
+                    setTypeface(typeface, Typeface.BOLD)
+                    translationX = px(40f + k * 11f).toFloat()
+                    translationY = baseY
+                    alpha = if (animOn) 0f else 0.75f
+                }
+                addView(tv, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+                if (animOn) loop(ObjectAnimator.ofPropertyValuesHolder(
+                    tv,
+                    PropertyValuesHolder.ofFloat(View.TRANSLATION_Y, baseY, baseY - px(10f)),
+                    PropertyValuesHolder.ofFloat(View.ALPHA, 0f, 0.85f, 0f)
+                ).apply {
+                    duration = 2400L
+                    startDelay = k * 600L
+                    interpolator = LinearInterpolator()
+                }, tv)
+            }
+            if (animOn) loop(ObjectAnimator.ofPropertyValuesHolder(
+                cat,
+                PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, 1.035f),
+                PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.035f)
+            ).apply {
+                duration = 2600L
+                repeatMode = ValueAnimator.REVERSE
+                interpolator = AccelerateDecelerateInterpolator()
+            })
+        }
+        // бодрый кот слегка парит
+        if (state == 0 && animOn) loop(ObjectAnimator.ofFloat(catBox, View.TRANSLATION_Y, 0f, -4f * d).apply {
+            duration = 2000L
+            repeatMode = ValueAnimator.REVERSE
+            interpolator = AccelerateDecelerateInterpolator()
+        })
+
+        // нажатие — упругий отскок
+        catBox.isClickable = true
+        catBox.setOnClickListener { v ->
+            if (Store.haptics) v.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+            v.animate().cancel()
+            v.animate().scaleX(1.12f).scaleY(1.12f).setDuration(120L).withEndAction {
+                v.animate().scaleX(1f).scaleY(1f).setDuration(280L).setInterpolator(OvershootInterpolator(3f)).start()
+            }.start()
+        }
+    }
+
+    private fun sync() {
+        val run = animOn && isAttachedToWindow && windowVisibility == View.VISIBLE
+        for (a in anims) {
+            if (run) { if (!a.isStarted) a.start() } else if (a.isStarted) a.cancel()
+        }
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        if (live && animOn && anim == null) {
-            anim = ValueAnimator.ofFloat(0f, 1f).apply {
-                duration = 12000L
-                repeatCount = ValueAnimator.INFINITE
-                interpolator = LinearInterpolator()
-                addUpdateListener { t = it.animatedValue as Float; invalidate() }
-                start()
-            }
-        }
+        sync()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        sync()
     }
 
     override fun onDetachedFromWindow() {
-        anim?.cancel()
-        anim = null
+        for (a in anims) a.cancel()
         super.onDetachedFromWindow()
-    }
-
-    override fun onDraw(c: Canvas) {
-        val cx = width / 2f
-        val cy = height / 2f
-        val bob = if (live) (sin(t * 3f * 2f * PI) * 4f * d).toFloat() else 0f
-        if (live) {
-            for (i in 0 until 3) {
-                val ph = (t * 4f + i / 3f) % 1f
-                ringP.alpha = ((1f - ph) * 0.55f * 255f).toInt()
-                c.drawCircle(cx, cy, coreR * (1.05f + 0.95f * ph), ringP)
-            }
-            val orbitR = coreR * 1.75f
-            c.save()
-            c.rotate(t * 360f, cx, cy)
-            c.drawCircle(cx, cy, orbitR, orbitP)
-            dotP.alpha = 255
-            c.drawCircle(cx + orbitR, cy, 4f * d, dotP)
-            dotP.alpha = 120
-            c.drawCircle(cx - orbitR, cy, 2.5f * d, dotP)
-            c.restore()
-        }
-        c.save()
-        c.translate(0f, bob)
-        c.drawCircle(cx, cy, coreR * 2.1f, glowP)
-        c.drawCircle(cx, cy, coreR, coreP)
-        val s = 30f * d
-        c.translate(cx - s / 2f, cy - s / 2f)
-        c.scale(s / 24f, s / 24f)
-        drawVIc(c, icon, icP)
-        c.restore()
     }
 }
 
@@ -371,26 +462,62 @@ internal class GradBarView(
 
 // ---------- кнопка с «бликом» ----------
 
+/**
+ * Кнопка с бегущим бликом. Цикл 3,8 с: блик бежит первые 55%, остальное — пауза. В паузе кнопка не перерисовывается
+ * (раньше перерисовка шла все 100% времени). Шейдер и контур создаются один раз, а не на каждом кадре.
+ */
 internal class ShineLayout(ctx: Context, private val radiusPx: Float, private val animOn: Boolean) : LinearLayout(ctx) {
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val clip = Path()
     private val rect = RectF()
+    private val m = Matrix()
+    private var shader: LinearGradient? = null
+    private var shaderW = 0f
     private var t = 0f
+    private var shining = false
     private var anim: ValueAnimator? = null
 
     init { setWillNotDraw(false) }
 
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        if (animOn && anim == null) {
+    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+        super.onSizeChanged(w, h, ow, oh)
+        clip.reset()
+        rect.set(0f, 0f, w.toFloat(), h.toFloat())
+        clip.addRoundRect(rect, radiusPx, radiusPx, Path.Direction.CW)
+    }
+
+    private fun sync() {
+        val run = animOn && isAttachedToWindow && windowVisibility == View.VISIBLE
+        if (run && anim == null) {
             anim = ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = 3800L
                 repeatCount = ValueAnimator.INFINITE
                 interpolator = LinearInterpolator()
-                addUpdateListener { t = it.animatedValue as Float; invalidate() }
+                addUpdateListener {
+                    t = it.animatedValue as Float
+                    val on = t <= 0.55f
+                    if (on || shining) invalidate()   // один лишний кадр после блика — стереть его
+                    shining = on
+                }
                 start()
             }
+        } else if (!run && anim != null) {
+            anim?.cancel()
+            anim = null
+            t = 1f          // пауза цикла: блика на кнопке нет
+            shining = false
+            invalidate()
         }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        sync()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        sync()
     }
 
     override fun onDetachedFromWindow() {
@@ -406,14 +533,13 @@ internal class ShineLayout(ctx: Context, private val radiusPx: Float, private va
         if (k > 1f) return
         val bw = width * 0.34f
         val x = -bw + (width + bw * 2f) * k
-        clip.reset()
-        rect.set(0f, 0f, width.toFloat(), height.toFloat())
-        clip.addRoundRect(rect, radiusPx, radiusPx, Path.Direction.CW)
+        val sh = shader.takeIf { shaderW == bw } ?: LinearGradient(
+            0f, 0f, bw, 0f, intArrayOf(0x00FFFFFF, 0x66FFFFFF, 0x00FFFFFF), floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP
+        ).also { shader = it; shaderW = bw; p.shader = it }
+        m.setTranslate(x, 0f)
+        sh.setLocalMatrix(m)
         canvas.save()
         canvas.clipPath(clip)
-        p.shader = LinearGradient(
-            x, 0f, x + bw, 0f, intArrayOf(0x00FFFFFF, 0x66FFFFFF, 0x00FFFFFF), floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP
-        )
         canvas.drawRect(x, 0f, x + bw, height.toFloat(), p)
         canvas.restore()
     }
@@ -426,7 +552,7 @@ private const val H_WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 private fun violetMix(base: Int) = ColorUtils.blendARGB(base, 0xFF8B7CFF.toInt(), 0.4f)
 
-/** Карточка-шапка раздела. state: 0 — защита включена, 1 — заморожена, 2 — нет подписки. */
+/** Карточка-шапка раздела. state: 0 — защита включена, 1 — заморожена, 2 — нет подписки. В центре — кот-аватарка. */
 internal fun MainActivity.vpnHero(state: Int, title: String, sub: String, stats: List<Pair<String, String>>): LinearLayout {
     val sc = when (state) { 0 -> GREEN; 1 -> CYAN; else -> MUTE }
     val bg: Drawable = if (state == 2) shape(CARD, 26, LINE) else GradientDrawable(
@@ -435,15 +561,25 @@ internal fun MainActivity.vpnHero(state: Int, title: String, sub: String, stats:
         cornerRadius = corner(26)
         setStroke(dp(1), ColorUtils.blendARGB(LINE, sc, 0.4f))
     }
-    val icon = when (state) { 0 -> VIc.SHIELD; 1 -> VIc.SNOW; else -> VIc.SHIELD_OFF }
+    // кот — тот, что выбран значком приложения: аватарка цвета значка, внутри его рисунок
+    val entry = AppIcon.all[AppIcon.current(this).coerceIn(0, AppIcon.all.size - 1)]
+    val base = getColor(entry.bgColor)
+    val badgeBg = when (state) {
+        0 -> base
+        1 -> ColorUtils.blendARGB(base, CYAN, 0.45f)
+        else -> ColorUtils.blendARGB(base, MUTE, 0.75f)
+    }
+    val cutout = if (state == 2) CARD else mix(sc, 0.11f)   // цвет карточки под значком состояния
+    val anim = Store.uiAnim && FxView.allowed(this)
     return LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER_HORIZONTAL
         background = bg
         setPadding(dp(16), dp(12), dp(16), dp(16))
         layoutParams = lp(14)
-        addView(ShieldHeroView(this@vpnHero, sc, icon, state != 2, Store.uiAnim).apply {
-            layoutParams = LinearLayout.LayoutParams(H_MATCH, dp(136))
+        addView(CatHeroView(this@vpnHero, sc, state, anim, badgeBg, entry.fg, cutout).apply {
+            layoutParams = LinearLayout.LayoutParams(H_MATCH, dp(148))
+            contentDescription = title
         })
         addView(txt(title, 20f, TEXT, true).apply { gravity = Gravity.CENTER })
         addView(txt(sub, 13f, MUTE).apply {
