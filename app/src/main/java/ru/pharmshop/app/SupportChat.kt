@@ -356,7 +356,7 @@ internal fun MainActivity.showSupport() {
     val root = chatScreen(1)
     val sid = screenId
     // поддержку открывают из профиля или настроек: «назад» возвращает туда же
-    val back: () -> Unit = { navBack = true; if (supportFrom == 3) showSettings() else showProfile() }
+    val back: () -> Unit = { navBack = true; when (supportFrom) { 3 -> showSettings(); 5 -> showCommunity(); else -> showProfile() } }
     backAction = back
     backRow(root, "Поддержка", back)
     val nick = Store.lastUser

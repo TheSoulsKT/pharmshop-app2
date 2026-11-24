@@ -61,6 +61,7 @@ internal fun MainActivity.threadStatusColor(s: String) = when (s) { "work" -> AM
 internal fun MainActivity.adminToolsRow(): HorizontalScrollView {
     val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
     row.addView(chip("📢 Объявление", false) { showAdminAnnouncement() })
+    row.addView(chip("🛠 Тех. работы чата", false) { showAdminChatMaint() })
     row.addView(chip("🧩 Разделы", false) { showAdminSections() })
     row.addView(chip("⬆ Обновление", false) { showAdminForceUpdate() })
     row.addView(chip("🧾 Заказы", false) { showAdminOrders() })

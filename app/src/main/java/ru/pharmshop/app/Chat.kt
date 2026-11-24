@@ -8,6 +8,10 @@ import java.net.URL
 /** Неверный код администратора. */
 class ChatAuthException(msg: String) : Exception(msg)
 
+/** Чат на технических работах (включает администратор): сервер отвечает 503 и присылает причину. */
+class ChatMaintException(val reason: String) :
+    Exception(if (reason.isEmpty()) "Чат на технических работах" else "Чат на технических работах: " + reason)
+
 /** Слишком частые сообщения в общий чат: сервер сказал, через сколько миллисекунд можно писать снова. */
 class ChatCooldownException(msg: String, val retryMs: Long) : Exception(msg)
 
@@ -49,6 +53,7 @@ object ChatApi {
             if (code == 429 && json.has("retry_ms")) {
                 throw ChatCooldownException(json.optString("error", "Слишком часто"), json.optLong("retry_ms"))
             }
+            if (code == 503 && json.optBoolean("maintenance")) throw ChatMaintException(json.optString("reason"))
             if (code !in 200..299) {
                 AppLog.e("chat", "$path → HTTP $code: ${json.optString("error").take(120)}")
                 throw Exception(json.optString("error", "Ошибка $code"))

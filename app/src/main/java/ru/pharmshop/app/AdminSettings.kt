@@ -1,7 +1,9 @@
 package ru.pharmshop.app
 
 import android.text.InputFilter
+import android.graphics.Color
 import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
@@ -284,3 +286,92 @@ internal fun MainActivity.showAdminBlocks() {
     reload = { load() }
     load()
 }
+
+
+/** Админка → «🛠 Тех. работы чата»: закрывает общий чат и личные сообщения красивым окном с причиной. Работает сразу, без обновления приложения. */
+internal fun MainActivity.showAdminChatMaint() {
+    adminSettingsScreen("Тех. работы чата") { col, s ->
+        val cur = s.optJSONObject("chat_maint") ?: JSONObject()
+        var on = cur.optBoolean("on")
+        col.addView(tv(
+            "Общий чат и личные сообщения закроются у всех и покажут окно с причиной. " +
+                "Поддержка, заказы и VPN работают как обычно. Включается и выключается сразу, без выпуска новой версии. " +
+                "Когда работы закончатся, у пользователей чат откроется сам в течение 15 секунд.", 13f, MUTE
+        ))
+        val state = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = lp(12) }
+        col.addView(state)
+        val reason = input(
+            "Причина для пользователей (до 300 символов, необязательно)",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        ).apply {
+            setText(cur.optString("reason"))
+            minLines = 2
+            filters = arrayOf(InputFilter.LengthFilter(300))
+        }
+        col.addView(reason)
+        val quick = listOf("Обновляем чат", "Чиним ошибки", "Плановые работы, скоро вернёмся")
+        col.addView(android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            layoutParams = lp(12)
+            addView(LinearLayout(this@showAdminChatMaint).apply {
+                orientation = LinearLayout.HORIZONTAL
+                for (q in quick) addView(chip(q, false) { reason.setText(q); reason.setSelection(q.length) })
+            })
+        })
+        col.addView(tv("Так это увидят пользователи:", 12f, MUTE))
+        val preview = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(preview)
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(actions)
+
+        fun renderPreview() {
+            preview.removeAllViews()
+            preview.addView(maintCard(reason.text.toString().trim()))
+        }
+        fun save(newOn: Boolean, render: () -> Unit) {
+            val r = reason.text.toString().trim()
+            adminSave(JSONObject().put("chat_maint", JSONObject().put("on", newOn).put("reason", r))) { saved ->
+                on = saved.optJSONObject("chat_maint")?.optBoolean("on") ?: newOn
+                toast(if (on) "Чат закрыт на технические работы" else "Чат снова открыт")
+                render()
+            }
+        }
+        fun render() {
+            state.removeAllViews()
+            actions.removeAllViews()
+            val c = if (on) AMBER else GREEN
+            state.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = shape(mix(c, 0.14f), 18, edge(c))
+                setPadding(dp(16), dp(14), dp(16), dp(14))
+                addView(txt(if (on) "🛠" else "✅", 22f).apply { layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(12) } })
+                addView(LinearLayout(this@showAdminChatMaint).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(txt(if (on) "Чат на технических работах" else "Чат работает", 16f, TEXT, true))
+                    addView(txt(if (on) "Пользователи видят окно с причиной" else "Всё открыто для пользователей", 12f, MUTE))
+                })
+            })
+            if (!on) {
+                actions.addView(gradBtn("🛠  Включить техработы", MAINT_A, MAINT_B, MAINT_ON) {
+                    confirmSheet(
+                        "Закрыть чат на техработы?",
+                        "Общий чат и личные сообщения станут недоступны всем, пока вы не выключите техработы. Поддержка и заказы не затронуты.",
+                        "Закрыть чат"
+                    ) { save(true) { render() } }
+                })
+            } else {
+                actions.addView(gradBtn("✅  Открыть чат (выключить техработы)", GREEN, GREEN, Color.BLACK) { save(false) { render() } })
+                actions.addView(btn("Обновить причину") { save(true) { render() } })
+            }
+        }
+        reason.addTextChangedListener(object : android.text.TextWatcher {
+            override fun afterTextChanged(s: android.text.Editable?) { renderPreview() }
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
+            override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
+        })
+        renderPreview()
+        render()
+    }
+}
+

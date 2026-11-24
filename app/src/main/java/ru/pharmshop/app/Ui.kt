@@ -155,7 +155,43 @@ internal fun MainActivity.dotState(dot: View, selected: Boolean) {
 // ---------- helpers ----------
 internal fun MainActivity.ui(r: () -> Unit) { main.post { r() } }
 internal fun MainActivity.dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-internal fun MainActivity.toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
+private var toastView: View? = null
+
+/** Уведомление-«таблетка» в цветах выбранной темы (вместо серого системного Toast). */
+internal fun MainActivity.toast(t: String) {
+    main.post {
+        try {
+            val host = findViewById<ViewGroup>(android.R.id.content)
+            toastView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+            val pill = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = shape(CARD, 18, edge(BLUE))
+                elevation = dp(8).toFloat()
+                setPadding(dp(14), dp(12), dp(18), dp(12))
+                addView(View(this@toast).apply {
+                    background = shape(BLUE, 30)
+                    layoutParams = LinearLayout.LayoutParams(dp(8), dp(8)).apply { rightMargin = dp(10) }
+                })
+                addView(txt(t, 14f, TEXT).apply { maxLines = 5 })
+            }
+            host.addView(pill, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            ).apply { bottomMargin = dp(96); leftMargin = dp(24); rightMargin = dp(24) })
+            toastView = pill
+            pill.alpha = 0f
+            pill.translationY = dp(16).toFloat()
+            pill.animate().alpha(1f).translationY(0f).setDuration(220).setInterpolator(DecelerateInterpolator(2f)).start()
+            main.postDelayed({
+                pill.animate().alpha(0f).translationY(dp(10).toFloat()).setDuration(220)
+                    .withEndAction { (pill.parent as? ViewGroup)?.removeView(pill) }.start()
+            }, if (t.length > 60) 3600L else 2300L)
+        } catch (e: Exception) {
+            Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
+        }
+    }
+}
 
 /** Радиус угла с учётом настройки «Скругление карточек». Большие радиусы (круглые кнопки) не меняем. */
 internal fun MainActivity.corner(radius: Int): Float =

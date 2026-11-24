@@ -97,7 +97,14 @@ internal fun MainActivity.crownIcon(size: Float): View {
         layoutParams = LinearLayout.LayoutParams(px, px).apply { leftMargin = dp(4) }
         contentDescription = "Зелёная корона: собраны все достижения"
         isClickable = true
-        setOnClickListener { toast("Зелёная корона: у этого человека собраны все достижения") }
+        setOnClickListener {
+            infoSheet(
+                "👑 Зелёная корона",
+                "Эту корону получают те, кто собрал все достижения PharmShop: покупки, VPN, защиту входа, оформление профиля, " +
+                    "помощь приложению и общение в чате. Значит, перед вами настоящий ветеран.\n\n" +
+                    "Хотите такую же? Загляните в Профиль → Достижения: там видно, чего не хватает."
+            )
+        }
     }
 }
 
@@ -127,15 +134,29 @@ internal fun MainActivity.showCommunity() {
     io.execute {
         try {
             val me = ChatApi.chatMe()
+            // тех. работы: показываем красивое окно вместо чата
+            val maint = try { Remote.refresh(); Remote.chatMaint() } catch (e: Exception) { null }
             ui {
                 if (sid != screenId) return@ui
                 body.removeAllViews()
+                if (maint != null) {
+                    maintenanceView(body, maint.optString("reason"))
+                    watchChatMaint(sid)
+                    return@ui
+                }
                 if (me.optBoolean("registered")) {
                     syncCrown(me.optInt("crown") == 1)
                     communityMain(body, sid, me)
                 } else {
                     registerView(body)
                 }
+            }
+        } catch (e: ChatMaintException) {
+            ui {
+                if (sid != screenId) return@ui
+                body.removeAllViews()
+                maintenanceView(body, e.reason)
+                watchChatMaint(sid)
             }
         } catch (e: Exception) {
             ui {
@@ -441,6 +462,9 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
                     renderTabs()
                     renderChats?.invoke(r)
                 }
+            } catch (e: ChatMaintException) {
+                ui { if (sid == screenId) showCommunity() }   // чат закрыли на техработы, пока он был открыт
+                return@execute
             } catch (e: Exception) {
                 ui { if (sid == screenId) dmStatus?.text = errText(e) }
             }
@@ -796,6 +820,8 @@ internal fun MainActivity.msgPane(
             } catch (e: ChatAuthException) {
                 Store.adminToken = ""
                 ui { if (sid == screenId) showAdminLogin() }
+            } catch (e: ChatMaintException) {
+                ui { if (sid == screenId && alive()) showCommunity() }
             } catch (e: Exception) {
                 ui { if (sid == screenId && alive()) status.text = errText(e) }
             }

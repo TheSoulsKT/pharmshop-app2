@@ -23,6 +23,12 @@ object Remote {
         return if (a.optBoolean("active") && a.optString("text").isNotEmpty()) a else null
     }
 
+    /** Технические работы чата: объект {on, reason} или null, если чат работает. */
+    fun chatMaint(): JSONObject? {
+        val m = cached().optJSONObject("chat_maint") ?: return null
+        return if (m.optBoolean("on")) m else null
+    }
+
     /** Настройки раздела: enabled, title, sub, url, message (любое поле может отсутствовать). */
     fun section(key: String): JSONObject? = cached().optJSONObject("sections")?.optJSONObject(key)
 

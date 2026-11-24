@@ -305,7 +305,11 @@ internal fun MainActivity.statCard(emoji: String, value: String, label: String, 
     }
 
 /** Одно достижение. [group] — «лесенка» значков одного вида (звёзды, отчёты…): на обложке плавает только высший из полученных. */
-internal class BadgeInfo(val emoji: String, val title: String, val hint: String, val got: Boolean, val group: String)
+/** [cur] из [need] — прогресс для достижений со счётчиком (cur = -1 — счётчика нет). */
+internal class BadgeInfo(
+    val emoji: String, val title: String, val hint: String, val got: Boolean, val group: String,
+    val cur: Int = -1, val need: Int = 0
+)
 
 private fun fmtNum(n: Int): String = n.toString().reversed().chunked(3).joinToString(" ").reversed()
 
@@ -327,10 +331,10 @@ internal fun MainActivity.badgeList(orders: List<org.json.JSONObject>, stars: In
 
     // покупки
     list += BadgeInfo("🛒", "Первый заказ", "Оформите любой заказ", orders.isNotEmpty(), "order")
-    list += BadgeInfo("🧾", "5 заказов", "Оплатите 5 заказов · сейчас $paidCount", paidCount >= 5, "order")
-    list += BadgeInfo("📦", "15 заказов", "Оплатите 15 заказов · сейчас $paidCount", paidCount >= 15, "order")
+    list += BadgeInfo("🧾", "5 заказов", "Оплатите 5 заказов · сейчас $paidCount", paidCount >= 5, "order", paidCount, 5)
+    list += BadgeInfo("📦", "15 заказов", "Оплатите 15 заказов · сейчас $paidCount", paidCount >= 15, "order", paidCount, 15)
     for ((emoji, need) in listOf("⭐" to 500, "🌟" to 1000, "💫" to 2500, "✨" to 5000, "🏆" to 10000)) {
-        list += BadgeInfo(emoji, "${fmtNum(need)} звёзд", "Купите звёзд на ${fmtNum(need)} и больше · сейчас ${fmtNum(stars)}", stars >= need, "stars")
+        list += BadgeInfo(emoji, "${fmtNum(need)} звёзд", "Купите звёзд на ${fmtNum(need)} и больше · сейчас ${fmtNum(stars)}", stars >= need, "stars", stars, need)
     }
     list += BadgeInfo("👑", "Premium", "Оплатите подписку Premium", premiumBought, "premium")
 
@@ -345,12 +349,12 @@ internal fun MainActivity.badgeList(orders: List<org.json.JSONObject>, stars: In
     for ((emoji, title, need) in listOf(Triple("🐞", "Охотник за багами", 1), Triple("🔧", "Тестировщик", 3), Triple("🏅", "Золотой тестер", 10))) {
         list += BadgeInfo(emoji, title,
             "Отправьте отчёт о реальной ошибке: Настройки → Прочее → «Сообщить об ошибке». Засчитывается не чаще раза в сутки · сейчас $reports из $need",
-            reports >= need, "bugs")
+            reports >= need, "bugs", reports, need)
     }
     for ((emoji, title, need) in listOf(Triple("💬", "Решённый вопрос", 1), Triple("🙌", "Друг проекта", 3), Triple("💎", "Опора проекта", 5))) {
         list += BadgeInfo(emoji, title,
             "Задайте вопрос в поддержке: когда его решат, значок откроется · сейчас $solved из $need",
-            solved >= need, "help")
+            solved >= need, "help", solved, need)
     }
 
     // общение в чате (число сообщений приходит с сервера)
@@ -358,7 +362,7 @@ internal fun MainActivity.badgeList(orders: List<org.json.JSONObject>, stars: In
     for ((emoji, title, need) in listOf(Triple("🗨", "Первое слово", 1), Triple("🎙", "Общительный", 25), Triple("🔥", "Душа чата", 100))) {
         list += BadgeInfo(emoji, title,
             "Пишите в общем чате и личных сообщениях: вкладка «Чат» · сейчас $chatMsgs из $need",
-            chatMsgs >= need, "chat")
+            chatMsgs >= need, "chat", chatMsgs, need)
     }
     return list
 }
@@ -378,7 +382,8 @@ internal fun MainActivity.achievementsTitle(orders: List<org.json.JSONObject>, s
 
 /** Достижения: полученные первыми. Нажатие подсказывает, как получить остальные. */
 internal fun MainActivity.achievementsRow(orders: List<org.json.JSONObject>, stars: Int): View {
-    val list = badgeList(orders, stars).sortedByDescending { it.got }
+    val all = badgeList(orders, stars)
+    val list = all.sortedByDescending { it.got }
     val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
     for (b in list) {
         val col = if (b.got) GREEN else MUTE
@@ -389,7 +394,7 @@ internal fun MainActivity.achievementsRow(orders: List<org.json.JSONObject>, sta
             setPadding(dp(8), dp(12), dp(8), dp(10))
             alpha = if (b.got) 1f else 0.55f
             isClickable = true
-            setOnClickListener { toast(if (b.got) "${b.title}: получено" else "${b.title}: ${b.hint}") }
+            setOnClickListener { showBadgeSheet(b, all) }
             pressable(this)
             layoutParams = LinearLayout.LayoutParams(dp(92), ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(8) }
             addView(txt(b.emoji, 24f).apply { gravity = Gravity.CENTER; layoutParams = lp(4) })
@@ -619,3 +624,173 @@ internal fun MainActivity.profileTitle(t: String, right: String = ""): LinearLay
     }
 
 internal fun starsLabel(n: Int): String = String.format(Locale.US, "%,d", n).replace(',', ' ')
+
+
+// ---------- подробное окно достижения ----------
+
+/** Что значит значок, как его получить и зачем он нужен: по «лесенкам» значков одного вида. */
+private class BadgeStory(val story: String, val steps: List<String>, val perk: String)
+
+private fun badgeStory(b: BadgeInfo): BadgeStory = when (b.group) {
+    "order" -> BadgeStory(
+        "Покупки в PharmShop: от первого заказа до постоянного клиента. Значки идут лесенкой, на обложке профиля показывается высший из полученных.",
+        listOf("Выберите звёзды или Premium на главном экране", "Оформите заказ и оплатите его", "Для «5 заказов» и «15 заказов» считаются только оплаченные и выполненные заказы"),
+        "Заказы считаются на этом телефоне: удалите историю заказов, и счётчик станет меньше."
+    )
+    "stars" -> BadgeStory(
+        "Звёзды Telegram, купленные через приложение. Считается сумма звёзд во всех оплаченных заказах, Premium в счёт не идёт. Лесенка: 500, 1 000, 2 500, 5 000 и 10 000.",
+        listOf("Купите звёзды на главном экране", "Оплатите заказ: звёзды из оплаченных заказов складываются", "Когда сумма дойдёт до нужной отметки, значок откроется сам"),
+        "Достаточно нескольких заказов: звёзды из разных покупок суммируются."
+    )
+    "premium" -> BadgeStory(
+        "Знак тех, кто пользуется Telegram Premium по подписке, купленной через приложение.",
+        listOf("Откройте «Premium» на главном экране", "Выберите срок и оплатите подписку"),
+        "Значок откроется, когда заказ на Premium будет оплачен."
+    )
+    "vpn" -> BadgeStory(
+        "Вы подключили личный кабинет VPN: подписки, устройства и оплата теперь под рукой.",
+        listOf("Откройте раздел VPN", "Войдите в личный кабинет или зарегистрируйтесь"),
+        "Значок остаётся, пока вы вошли в аккаунт VPN."
+    )
+    "lock" -> BadgeStory(
+        "Приложение под защитой: заказы и профиль не откроет никто посторонний.",
+        listOf("Откройте Настройки → Безопасность", "Включите вход по PIN-коду или отпечатку пальца"),
+        "Если выключить защиту, значок снова закроется."
+    )
+    "photo" -> BadgeStory(
+        "У вас есть своё лицо в чате: фото профиля видят другие участники.",
+        listOf("Откройте Профиль", "Нажмите на аватарку и выберите фото"),
+        "Фото можно сменить или убрать в любой момент."
+    )
+    "style" -> BadgeStory(
+        "Приложение оформлено под вас: цвета, обложка или тема не такие, как у всех.",
+        listOf("Откройте Настройки → Оформление", "Смените тему, акцентный цвет или обложку профиля"),
+        "Любого одного изменения достаточно: значок откроется сразу."
+    )
+    "bio" -> BadgeStory(
+        "Пара слов о себе делает профиль живым: их видят в вашем профиле.",
+        listOf("Откройте Профиль", "Нажмите на строку «О себе» и напишите пару слов"),
+        "Текст можно поменять когда угодно."
+    )
+    "bugs" -> BadgeStory(
+        "Награда тем, кто помогает сделать приложение лучше: вы находите настоящие ошибки и сообщаете о них. Лесенка: 1, 3 и 10 отчётов.",
+        listOf("Откройте Настройки → Прочее → «Сообщить об ошибке»", "Опишите, что пошло не так", "Отчёт засчитывается не чаще одного раза в сутки"),
+        "Засчитываются только отчёты о реальных ошибках, а не пустые или шуточные."
+    )
+    "help" -> BadgeStory(
+        "Награда за вопросы, которые удалось решить вместе со службой поддержки. Лесенка: 1, 3 и 5 решённых обращений.",
+        listOf("Откройте «Поддержка» и опишите вопрос", "Дождитесь ответа: когда обращение отметят решённым, значок обновится"),
+        "Оценка помощи в поддержке по желанию: нам важно ваше мнение."
+    )
+    "chat" -> BadgeStory(
+        "Награда за живое общение. Считаются ваши сообщения в общем чате и в личных. Лесенка: 1, 25 и 100 сообщений.",
+        listOf("Откройте вкладку «Чат» и выберите ник", "Пишите в общий чат и в личные сообщения", "Число берётся с сервера и только растёт"),
+        "Спам не поощряется: за нарушения доступ к чату могут закрыть."
+    )
+    else -> BadgeStory(b.hint, listOf(b.hint), "")
+}
+
+/** Красивое окно достижения: что это, как получить, прогресс, лесенка значков и путь к зелёной короне. */
+internal fun MainActivity.showBadgeSheet(b: BadgeInfo, all: List<BadgeInfo>) {
+    val tone = if (b.got) GREEN else BLUE
+    val story = badgeStory(b)
+    val ladder = all.filter { it.group == b.group }
+    val idx = ladder.indexOfFirst { it.title == b.title }
+    val collected = all.count { it.got }
+    sheet("Достижение", scroll = true) { box, close ->
+        // шапка: большой значок, название и статус
+        box.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = shape(mix(tone, 0.12f), 22, edge(tone))
+            setPadding(dp(16), dp(20), dp(16), dp(18))
+            layoutParams = lp(12)
+            addView(txt(b.emoji, 40f).apply {
+                gravity = Gravity.CENTER
+                background = shape(mix(tone, 0.22f), 42, tone)
+                alpha = if (b.got) 1f else 0.8f
+                layoutParams = LinearLayout.LayoutParams(dp(84), dp(84)).apply { bottomMargin = dp(12) }
+            })
+            addView(txt(b.title, 20f, TEXT, true).apply { gravity = Gravity.CENTER; layoutParams = lp(8) })
+            addView(txt(if (b.got) "✓ Получено" else "🔒 Пока закрыто", 13f, tone, true).apply {
+                gravity = Gravity.CENTER
+                background = shape(CARD, 12, tone)
+                setPadding(dp(14), dp(6), dp(14), dp(6))
+            })
+        })
+        // что это
+        box.addView(txt(story.story, 14f, TEXT).apply { layoutParams = lp(12) })
+
+        // прогресс
+        if (b.need > 0 && b.cur >= 0) {
+            val pct = (minOf(b.cur, b.need) * 100 / b.need)
+            box.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = shape(CARD, 18, LINE)
+                setPadding(dp(16), dp(14), dp(16), dp(14))
+                layoutParams = lp(12)
+                addView(txt("Прогресс: " + minOf(b.cur, b.need) + " из " + b.need, 14f, TEXT, true).apply { layoutParams = lp(8) })
+                addView(LinearLayout(this@showBadgeSheet).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    background = shape(LINE, 4)
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(8))
+                    addView(android.view.View(this@showBadgeSheet).apply {
+                        background = shape(tone, 4)
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, pct.toFloat())
+                    })
+                    addView(android.view.View(this@showBadgeSheet).apply {
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, (100 - pct).toFloat())
+                    })
+                })
+            })
+        }
+
+        // как получить
+        box.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = shape(CARD, 18, LINE)
+            setPadding(dp(16), dp(14), dp(16), dp(10))
+            layoutParams = lp(12)
+            addView(txt(if (b.got) "Как это открывается" else "Как получить", 14f, TEXT, true).apply { layoutParams = lp(8) })
+            story.steps.forEachIndexed { i, step ->
+                addView(txt((i + 1).toString() + ".  " + step, 13f, MUTE).apply { layoutParams = lp(6) })
+            }
+            if (!b.got && b.hint.isNotEmpty()) addView(txt("➜ " + b.hint, 13f, tone, true).apply { layoutParams = lp(4) })
+        })
+
+        // лесенка значков одного вида
+        if (ladder.size > 1) {
+            box.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = shape(CARD, 18, LINE)
+                setPadding(dp(16), dp(14), dp(16), dp(14))
+                layoutParams = lp(12)
+                addView(txt("Ступень " + (idx + 1) + " из " + ladder.size, 14f, TEXT, true).apply { layoutParams = lp(10) })
+                addView(LinearLayout(this@showBadgeSheet).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    ladder.forEach { l ->
+                        addView(txt(l.emoji, if (l.title == b.title) 26f else 20f).apply {
+                            alpha = if (l.got) 1f else 0.35f
+                            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                            gravity = Gravity.CENTER
+                        })
+                    }
+                })
+                val next = ladder.firstOrNull { !it.got }
+                if (next != null) addView(txt("Следующая ступень: " + next.title, 12f, MUTE).apply {
+                    layoutParams = lp(0).apply { topMargin = dp(10) }
+                })
+                else addView(txt("Вся лесенка пройдена 🎉", 12f, GREEN).apply { layoutParams = lp(0).apply { topMargin = dp(10) } })
+            })
+        }
+
+        // награда и путь к короне
+        if (story.perk.isNotEmpty()) box.addView(txt("💡 " + story.perk, 12f, MUTE).apply { layoutParams = lp(10) })
+        box.addView(txt(
+            "👑 Соберите все достижения (" + collected + " из " + all.size + "): в чате рядом с ником появится зелёная корона.",
+            12f, MUTE
+        ).apply { layoutParams = lp(14) })
+        box.addView(btnGrid(listOf(gbtn("Понятно", true) { close() }), 0))
+    }
+}
