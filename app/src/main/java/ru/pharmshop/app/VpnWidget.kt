@@ -134,7 +134,7 @@ class VpnWidget : AppWidgetProvider() {
                 if (s.optBoolean("active") && !s.optBoolean("lifetime") && (best == null || s.optInt("days") < best.optInt("days"))) best = s
             }
             val s = best ?: subs.optJSONObject(0) ?: return rv
-            val plan = s.optString("plan").ifEmpty { "Подписка" }.let { it.take(1).uppercase() + it.drop(1) }
+            val plan = vpnPlanName(s.optString("plan").ifEmpty { "Подписка" })
             val end = s.optString("end").take(10).split("-").let { if (it.size == 3) "${it[2]}.${it[1]}.${it[0]}" else "" }
             rv.setTextViewText(R.id.w_title, "VPN · $plan")
             when {

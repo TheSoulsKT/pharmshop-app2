@@ -61,7 +61,12 @@ private fun vpnDate(s: String): String {
 }
 
 /** Название тарифа для экрана: с большой буквы, как на сайте. */
-private fun vpnPlanName(name: String): String = name.take(1).uppercase() + name.drop(1)
+/** Название тарифа для показа: тарифы приходят с VPN-сервера, поэтому переименование делаем здесь. */
+internal fun vpnPlanName(name: String): String {
+    val n = name.trim()
+    if (n.contains("пиздат", ignoreCase = true)) return "Лучший"
+    return n.take(1).uppercase() + n.drop(1)
+}
 
 private fun vpnProviderName(id: String): String = when (id) {
     "platega" -> "СБП"

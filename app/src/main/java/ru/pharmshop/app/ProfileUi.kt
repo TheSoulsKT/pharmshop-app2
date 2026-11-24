@@ -364,6 +364,10 @@ internal fun MainActivity.badgeList(orders: List<org.json.JSONObject>, stars: In
             "Пишите в общем чате и личных сообщениях: вкладка «Чат» · сейчас $chatMsgs из $need",
             chatMsgs >= need, "chat", chatMsgs, need)
     }
+    // админ выдал все достижения: каждое считается полученным, счётчики дотянуты до нужного
+    if (Store.allBadgesGranted) {
+        return list.map { BadgeInfo(it.emoji, it.title, it.hint, true, it.group, if (it.need > 0) it.need else it.cur, it.need) }
+    }
     return list
 }
 

@@ -229,6 +229,11 @@ object Store {
 
     fun noteChatMsgs(n: Int) { if (n > chatMsgs) chatMsgs = n }
 
+    /** Администратор выдал все достижения: в профиле они все открыты (флаг приходит с сервера). */
+    var allBadgesGranted: Boolean
+        get() = sp.getBoolean("all_badges_granted", false)
+        set(v) { sp.edit().putBoolean("all_badges_granted", v).apply() }
+
     /** Какая версия аватарки (см. Avatar.stamp) уже загружена на сервер для чата. */
     var avatarSynced: String
         get() = sp.getString("avatar_synced", "") ?: ""

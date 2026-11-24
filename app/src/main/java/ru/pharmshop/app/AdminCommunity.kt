@@ -80,10 +80,11 @@ internal fun MainActivity.showAdminUsers() {
         val uid = u.optLong("id")
         val nick = u.optString("nick")
         val badge = u.optInt("badge") == 1
+        val allBadges = u.optInt("all_badges") == 1
         val muted = u.optLong("muted_until")
 
         val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        top.addView(nameRow(nick, badge, 16f).apply {
+        top.addView(nameRow(nick, badge, 16f, allBadges || u.optInt("crown") == 1).apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
         if (badge) top.addView(txt("модератор", 11f, BLUE, true).apply {
@@ -91,6 +92,7 @@ internal fun MainActivity.showAdminUsers() {
             setPadding(dp(8), dp(2), dp(8), dp(2))
         })
         card.addView(top)
+        if (allBadges) card.addView(txt("🏆 Все ачивки выданы администратором", 11f, GREEN))
         val seen = u.optLong("last_seen")
         card.addView(txt(
             "С ${dateFmt.format(java.util.Date(u.optLong("created")))}  •  был ${if (seen > 0) timeFmt.format(java.util.Date(seen)) else "—"}",
@@ -113,6 +115,19 @@ internal fun MainActivity.showAdminUsers() {
                         u.put("badge", if (badge) 0 else 1)
                         fill(card, u)
                         toast(if (badge) "Галочка снята" else "Галочка выдана")
+                    }
+                } catch (e: Exception) { adminFail(e, sid) }
+            }
+        })
+        tools.addView(chipTint(if (allBadges) "🏆 Забрать ачивки" else "🏆 Выдать все ачивки", GREEN) {
+            io.execute {
+                try {
+                    ChatApi.adminUserAllBadges(Store.adminToken, uid, !allBadges)
+                    ui {
+                        u.put("all_badges", if (allBadges) 0 else 1)
+                        u.put("crown", if (allBadges) 0 else 1)
+                        fill(card, u)
+                        toast(if (allBadges) "Выданные ачивки забраны" else "Все ачивки выданы")
                     }
                 } catch (e: Exception) { adminFail(e, sid) }
             }

@@ -213,7 +213,10 @@ object ChatApi {
 
     /** {registered, uid, nick, badge, muted_until, nick_change_at}. registered = false — ник ещё не выбран. */
     fun chatMe(): JSONObject = post("/api/chat/me", dev()).also {
-        if (it.optBoolean("registered")) { Store.chatNick = it.optString("nick"); noteMsgs(it) }
+        if (it.optBoolean("registered")) {
+            Store.chatNick = it.optString("nick"); noteMsgs(it)
+            Store.allBadgesGranted = it.optInt("all_badges") == 1
+        }
     }
 
     /**
@@ -232,7 +235,11 @@ object ChatApi {
     fun crownSet(all: Boolean) { post("/api/chat/crown", dev().put("crown", all)) }
 
     /** {messages, rev, reset, me}. rev — ревизия ленты: если сервер вернул другую, ленту нужно перечитать (reset = true). */
-    fun roomMessages(after: Long, rev: Long): JSONObject = post("/api/room/messages", dev().put("after", after).put("rev", rev))
+    fun roomMessages(after: Long, rev: Long, rx: Long = -1L): JSONObject {
+        val body = dev().put("after", after).put("rev", rev)
+        if (rx >= 0) body.put("rx", rx)   // версия реакций: если не изменилась, сервер их не присылает
+        return post("/api/room/messages", body)
+    }
 
     /** replyTo — номер сообщения, на которое отвечаем (0 — обычное сообщение). */
     fun roomSend(text: String, replyTo: Long = 0L) {
@@ -276,6 +283,11 @@ object ChatApi {
 
     fun adminUserBadge(token: String, uid: Long, badge: Boolean) {
         post("/api/admin/user_badge", JSONObject().put("uid", uid).put("badge", badge), token)
+    }
+
+    /** Выдать пользователю все достижения (all = true) или забрать выданные. */
+    fun adminUserAllBadges(token: String, uid: Long, all: Boolean) {
+        post("/api/admin/user_all_badges", JSONObject().put("uid", uid).put("all", all), token)
     }
 
     /** minutes: 0 — снять, -1 — навсегда. */

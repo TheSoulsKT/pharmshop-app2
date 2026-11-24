@@ -90,7 +90,7 @@ object VpnWatch {
             if (s.optBoolean("is_lifetime") || s.optBoolean("is_frozen")) continue
             val id = VpnApi.subId(s).ifEmpty { "sub$i" }
             val end = s.optString("end_date")
-            val plan = s.optString("plan_name").ifEmpty { "Подписка" }.let { it.take(1).uppercase() + it.drop(1) }
+            val plan = vpnPlanName(s.optString("plan_name").ifEmpty { "Подписка" })
             val endMs = parseIso(end)
 
             if (Store.vpnNotifyExpiry) {
