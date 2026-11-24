@@ -68,7 +68,6 @@ internal fun MainActivity.adminToolsRow(): HorizontalScrollView {
     row.addView(chip("💬 Личные чаты", false) { showAdminDmThreads() })
     row.addView(chip("🌐 Общий чат", false) { showAdminRoom() })
     row.addView(chip("⭐ Оценки", false) { showAdminRatings() })
-    row.addView(chip("🛠 Тех. работы чата", false) { showAdminChatMaint() })
     row.addView(chip("⛔ Блокировки", false) { showAdminBlocks() })
     return HorizontalScrollView(this).apply {
         isHorizontalScrollBarEnabled = false
@@ -211,8 +210,10 @@ internal fun MainActivity.showAdminThreads() {
         }
     }
 
-    fun load() {
-        if (sid != screenId) return
+    // Обновление списка: раз в 15–20 с (было 8), не в фоне — свёрнутое приложение запросов не шлёт, при возврате один сразу.
+    // Админ один, но окно может висеть часами: частый опрос тут давал тысячи запросов.
+    var lastSnap = ""
+    val poller = Poller(this, sid, ADMIN_LIST_POLL) { finish ->
         val my = ++gen
         val st = fStatus
         val un = fUnread
@@ -220,17 +221,27 @@ internal fun MainActivity.showAdminThreads() {
         io.execute {
             try {
                 val r = ChatApi.adminThreads(Store.adminToken, st, un, q)
-                ui { if (sid == screenId && my == gen) render(r) }
+                ui {
+                    if (sid != screenId) { finish(false); return@ui }
+                    var changed = false
+                    if (my == gen) {
+                        val snap = r.toString()
+                        changed = snap != lastSnap
+                        lastSnap = snap
+                        render(r)
+                    }
+                    finish(changed)
+                }
             } catch (e: ChatAuthException) {
                 Store.adminToken = ""
-                ui { if (sid == screenId) showAdminLogin() }
-                return@execute
+                ui { if (sid == screenId) showAdminLogin(); finish(false) }
             } catch (e: Exception) {
-                ui { if (sid == screenId && my == gen) status.text = errText(e) }
+                ui { if (sid == screenId && my == gen) status.text = errText(e); finish(false) }
             }
-            main.postDelayed({ if (my == gen) load() }, 8000L)
         }
     }
+    // фильтр или поиск изменились: устаревший ответ отбрасываем, новый запрос сразу
+    fun load() { gen++; poller.wake() }
     reload = { load() }
 
     // поиск: ждём 0,4 с после последней буквы
@@ -244,7 +255,7 @@ internal fun MainActivity.showAdminThreads() {
         override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
     })
     renderFilters()
-    load()
+    poller.start()
 }
 
 /** Блокировка или разблокировка устройства/IP. done получает новое состояние. */

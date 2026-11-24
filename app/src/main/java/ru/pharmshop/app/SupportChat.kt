@@ -16,7 +16,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
-import androidx.lifecycle.Lifecycle
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -237,29 +236,27 @@ internal fun MainActivity.chatPane(
         list.addView(messageRow(own, null, col, 8))
     }
 
-    fun fetchOnce() {
+    // Опрос: 4 → 8 → 15 → 30 с, пока ответов нет; новое сообщение, прочтение или смена статуса возвращают к 4 с.
+    // Свёрнутое приложение не опрашивает (о новых ответах сообщит push); при возврате — один запрос сразу.
+    val poller = Poller(this, sid, CHAT_POLL) { finish ->
         io.execute {
             try {
+                val readBefore = readTs()
+                val statusBefore = ChatApi.lastStatus
                 val arr = fetch(lastId)
                 ui {
-                    if (sid == screenId) {
-                        val before = lastId
-                        for (i in 0 until arr.length()) add(arr.getJSONObject(i))
-                        updateReceipts()
-                        status.text = ""
-                        if (lastId != before) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
-                    }
+                    if (sid != screenId) { finish(false); return@ui }
+                    val before = lastId
+                    for (i in 0 until arr.length()) add(arr.getJSONObject(i))
+                    updateReceipts()
+                    status.text = ""
+                    if (lastId != before) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+                    finish(lastId != before || readTs() != readBefore || ChatApi.lastStatus != statusBefore)
                 }
             } catch (e: Exception) {
-                ui { if (sid == screenId) status.text = errText(e) }
+                ui { if (sid == screenId) status.text = errText(e); finish(false) }
             }
         }
-    }
-
-    fun loop() {
-        if (sid != screenId) return
-        if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) fetchOnce()
-        main.postDelayed({ loop() }, 4000L)
     }
 
     fun setAttachment(b64: String) {
@@ -284,7 +281,7 @@ internal fun MainActivity.chatPane(
         io.execute {
             try {
                 send(text, image)
-                ui { fetchOnce() }
+                ui { poller.wake() }   // человек написал: опрос снова раз в 4 с, свежий запрос сразу
             } catch (e: Exception) {
                 ui {
                     if (sid == screenId) {
@@ -315,7 +312,7 @@ internal fun MainActivity.chatPane(
     pane.addView(status)
     pane.addView(attachInfo)
     pane.addView(composer)
-    loop()
+    poller.start()
     return pane
 }
 

@@ -226,8 +226,12 @@ object ChatApi {
     /** Сообщить серверу, собраны ли все достижения (зелёная корона рядом с ником в чате). */
     fun crownSet(all: Boolean) { post("/api/chat/crown", dev().put("crown", all)) }
 
-    /** {messages, rev, reset, me}. rev — ревизия ленты: если сервер вернул другую, ленту нужно перечитать (reset = true). */
-    fun roomMessages(after: Long, rev: Long): JSONObject = post("/api/room/messages", dev().put("after", after).put("rev", rev))
+    /**
+     * {messages, rev, rx, reset, me, reactions?}. rev — ревизия ленты: если сервер вернул другую, ленту нужно перечитать (reset = true).
+     * rx — версия реакций: сервер присылает reactions, только когда она у клиента устарела.
+     */
+    fun roomMessages(after: Long, rev: Long, rx: Long): JSONObject =
+        post("/api/room/messages", dev().put("after", after).put("rev", rev).put("rx", rx))
 
     /** replyTo — номер сообщения, на которое отвечаем (0 — обычное сообщение). */
     fun roomSend(text: String, replyTo: Long = 0L) {
@@ -236,7 +240,7 @@ object ChatApi {
         noteMsgs(post("/api/room/send", body))
     }
 
-    /** Реакция на сообщение (та же реакция второй раз снимает её). Ответ: {reactions: [{m, e, n, me}]}. */
+    /** Реакция на сообщение (та же реакция второй раз снимает её). Ответ: {rx, reactions: [{m, e, n, me}]}. */
     fun roomReact(id: Long, emoji: String): JSONObject = post("/api/room/react", dev().put("id", id).put("emoji", emoji))
 
     /** Сервер присылает, сколько всего сообщений написано в чате: запоминаем для достижения. */
@@ -256,8 +260,14 @@ object ChatApi {
     /** Найти пользователя по нику: {uid, nick, badge}. */
     fun dmFind(nick: String): JSONObject = post("/api/dm/find", dev().put("nick", nick))
 
-    /** {chats: [{uid, nick, badge, text, ts, sender, unread}], unread}. */
+    /** {chats: [{uid, nick, badge, text, ts, sender, unread}], unread, mid}. Полный список: только когда открыта вкладка «Личные». */
     fun dmList(): JSONObject = post("/api/dm/list", dev())
+
+    /**
+     * Только число непрочитанных личных: {unread, mid} или {same: true, mid}, если с прошлого ответа (mid) в личных ничего не писали.
+     * Для вкладки «Общий чат»: раз в 45 с вместо опроса всего списка.
+     */
+    fun dmUnread(mid: Long): JSONObject = post("/api/dm/unread", dev().put("mid", mid))
 
     /** {messages, peer: {uid, nick, badge}, peer_read}. Открытие переписки помечает сообщения собеседника прочитанными. */
     fun dmMessages(peer: Long, after: Long): JSONObject = post("/api/dm/messages", dev().put("with", peer).put("after", after))
@@ -283,8 +293,8 @@ object ChatApi {
         post("/api/admin/user_reset", JSONObject().put("uid", uid), token)
     }
 
-    fun adminRoomMessages(token: String, after: Long, rev: Long): JSONObject =
-        post("/api/admin/room_messages", JSONObject().put("after", after).put("rev", rev), token)
+    fun adminRoomMessages(token: String, after: Long, rev: Long, rx: Long): JSONObject =
+        post("/api/admin/room_messages", JSONObject().put("after", after).put("rev", rev).put("rx", rx), token)
 
     fun adminRoomDelete(token: String, id: Long) {
         post("/api/admin/room_delete", JSONObject().put("id", id), token)

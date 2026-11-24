@@ -93,17 +93,16 @@ internal fun MainActivity.syncChatInfo(body: LinearLayout, sid: Int) {
     }
 }
 
-/** Пока открыт профиль и есть незавершённые заказы — обновляем статусы каждые 5 секунд. */
+/**
+ * Пока открыт профиль и есть незавершённые заказы — обновляем статусы раз в 10 с (15 с, если ничего не менялось).
+ * Все заказы завершены — запросов нет вовсе. Свёрнутое приложение не опрашивает; при возврате — один запрос сразу.
+ */
 internal fun MainActivity.startAutoRefresh(body: LinearLayout, sid: Int) {
-    val r = object : Runnable {
-        override fun run() {
-            if (sid != screenId) return
-            val active = Store.orders().any { statusKind(effStatus(it)) !in listOf(2, 3) }
-            if (active) refreshOrders(body, sid, false)
-            main.postDelayed(this, 5000L)
-        }
-    }
-    main.postDelayed(r, 5000L)
+    Poller(this, sid, ORDERS_POLL) { finish ->
+        val active = Store.orders().any { statusKind(effStatus(it)) !in listOf(2, 3) }
+        if (!active) finish(false)
+        else refreshOrders(body, sid, false) { changed -> finish(changed) }
+    }.start(immediate = false)   // первое обновление при открытии профиля уже сделано выше
 }
 
 internal fun MainActivity.statTile(value: String, label: String): LinearLayout {
@@ -327,9 +326,10 @@ internal fun MainActivity.ordersSnapshot(): String =
     Store.orders().joinToString("|") { it.optString("id") + ":" + effStatus(it) }
 
 /** Подтягивает свежие статусы заказов с сервера. force — обновить и завершённые. */
-internal fun MainActivity.refreshOrders(body: LinearLayout, sid: Int, force: Boolean) {
+internal fun MainActivity.refreshOrders(body: LinearLayout, sid: Int, force: Boolean, done: ((Boolean) -> Unit)? = null) {
     if (refreshing) {
         if (force) toast("Уже обновляем…")
+        done?.invoke(false)
         return
     }
     val targets = Store.orders()
@@ -341,6 +341,7 @@ internal fun MainActivity.refreshOrders(body: LinearLayout, sid: Int, force: Boo
         .take(10)
     if (targets.isEmpty()) {
         if (force) toast("Нет заказов для обновления")
+        done?.invoke(false)
         return
     }
     refreshing = true
@@ -364,6 +365,7 @@ internal fun MainActivity.refreshOrders(body: LinearLayout, sid: Int, force: Boo
                 if (changed || force) renderProfile(body, sid)
                 if (force) toast(if (ok > 0) "Статусы обновлены" else "Не удалось обновить")
             }
+            done?.invoke(changed)
         }
     }
 }
