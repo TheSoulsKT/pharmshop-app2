@@ -63,6 +63,8 @@ android {
         abortOnError false
     }
     buildFeatures { buildConfig true }
+    // нативные библиотеки ядра Xray кладутся в APK как есть (так их ставит и v2rayNG)
+    packaging { jniLibs { useLegacyPackaging = true } }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17

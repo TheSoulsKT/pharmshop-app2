@@ -36,6 +36,18 @@ jobs:
           echo "KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
           echo "KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
           echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+      # Ядро Xray (VPN внутри приложения). Версия закреплена: новая версия может поменять API и сломать VpnCore.kt.
+      # Если положите libv2ray.aar в app/libs сами, этот шаг его не трогает.
+      - name: Download Xray core
+        env:
+          XRAY_LIB_TAG: v26.8.20
+        run: |
+          mkdir -p app/libs
+          if [ ! -f app/libs/libv2ray.aar ]; then
+            curl -fL --retry 3 -o app/libs/libv2ray.aar \
+              "https://github.com/2dust/AndroidLibXrayLite/releases/download/${XRAY_LIB_TAG}/libv2ray.aar"
+          fi
+          ls -l app/libs/libv2ray.aar
       - run: gradle assembleRelease --no-daemon --stacktrace
         env:
           SUPPORT_BOT_TOKEN: ${{ secrets.SUPPORT_BOT_TOKEN }}
