@@ -9,6 +9,7 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.lifecycle.Lifecycle
 import com.hcaptcha.sdk.HCaptcha
 import com.hcaptcha.sdk.HCaptchaConfig
 import com.hcaptcha.sdk.HCaptchaException
@@ -308,7 +309,7 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
     // ----- общий чат -----
     fun roomPane(alive: () -> Boolean): LinearLayout = msgPane(
         sid, myUid, "Здесь пока тихо. Напишите первым!", showNames = true,
-        fetch = { after, rev, rx -> ChatApi.roomMessages(after, rev, rx) },
+        fetch = { after, rev -> ChatApi.roomMessages(after, rev) },
         send = { t -> ChatApi.roomSend(t) },
         alive = alive,
         onName = { m -> if (m.optLong("uid") != myUid) openDm(m.optLong("uid"), m.optString("nick"), m.optLong("av")) },
@@ -427,71 +428,30 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
         }
     }
 
-    // Личные опрашиваются только по необходимости:
-    //  - вкладка «Личные» открыта: весь список, 6 → 12 → 25 с (пока ничего не меняется);
-    //  - открыт общий чат: только число непрочитанных, раз в 45 с (и вообще без запроса, если в личных ничего не писали).
-    // Свёрнутое приложение не опрашивает; при возврате — один запрос сразу.
-    var lastMid = 0L
-    var chatsPoller: Poller? = null
-
-    fun listPoller() = Poller(this, sid, DM_LIST_POLL) { finish ->
+    // непрочитанные личные: обновляются раз в несколько секунд, пока открыта вкладка
+    fun pollChats() {
+        if (sid != screenId) return
         io.execute {
             try {
                 val r = ChatApi.dmList()
                 ui {
-                    if (sid != screenId) { finish(false); return@ui }
-                    val changed = r.toString() != lastChats?.toString()
+                    if (sid != screenId) return@ui
                     lastChats = r
-                    lastMid = r.optLong("mid", lastMid)
                     unread = r.optInt("unread")
                     renderTabs()
                     renderChats?.invoke(r)
-                    finish(changed)
                 }
             } catch (e: Exception) {
-                ui { if (sid == screenId) dmStatus?.text = errText(e); finish(false) }
+                ui { if (sid == screenId) dmStatus?.text = errText(e) }
             }
+            main.postDelayed({ pollChats() }, 6000L)
         }
-    }
-
-    fun unreadPoller() = Poller(this, sid, DM_UNREAD_POLL) { finish ->
-        io.execute {
-            try {
-                val r = ChatApi.dmUnread(lastMid)
-                ui {
-                    if (sid != screenId) { finish(false); return@ui }
-                    var changed = false
-                    if (!r.optBoolean("same")) {
-                        val n = r.optInt("unread")
-                        changed = n != unread
-                        unread = n
-                        lastMid = r.optLong("mid", lastMid)
-                        renderTabs()
-                    }
-                    finish(changed)
-                }
-            } catch (e: Exception) {
-                ui { finish(false) }   // счётчик не критичен: молча повторим позже
-            }
-        }
-    }
-
-    fun startChatsPoll() {
-        chatsPoller?.stop()
-        chatsPoller = (if (CommunityState.tab == 1) listPoller() else unreadPoller()).start()
-    }
-
-    // выбор вкладки теперь ещё и переключает вид опроса
-    val baseSelect = selectTab
-    selectTab = { i ->
-        baseSelect(i)
-        startChatsPoll()
     }
 
     body.addView(tabs)
     body.addView(content)
-    baseSelect(CommunityState.tab)
-    startChatsPoll()
+    selectTab(CommunityState.tab)
+    pollChats()
 }
 
 /** Меню по долгому нажатию на сообщение в общем чате: реакции, ответ и действия с сообщением. */
@@ -619,7 +579,7 @@ internal fun MainActivity.showDm(peer: Long, nick: String, av: Long = 0L) {
     })
     root.addView(msgPane(
         sid, CommunityState.myUid, "Переписки пока нет. Напишите первым.", showNames = false, receipts = true,
-        fetch = { after, _, _ -> ChatApi.dmMessages(peer, after) },
+        fetch = { after, _ -> ChatApi.dmMessages(peer, after) },
         send = { t -> ChatApi.dmSend(peer, t) }
     ))
 }
@@ -628,13 +588,12 @@ internal fun MainActivity.showDm(peer: Long, nick: String, av: Long = 0L) {
 
 /**
  * Лента + поле ввода для общего чата, личных переписок и админского просмотра.
- * fetch(after, rev, rx) возвращает {messages: [{id, uid, nick, badge, text, ts}], reset?, rev?, rx?, reactions?, peer_read?};
- * опрос адаптивный (4 → 8 → 15 → 30 с, пока тихо) и не работает, когда приложение свёрнуто — см. Poller;
+ * fetch(after, rev) возвращает {messages: [{id, uid, nick, badge, text, ts}], reset?, rev?, peer_read?};
  * send == null — режим просмотра (поля ввода нет). Свои сообщения (uid == myUid) выводятся справа.
  */
 internal fun MainActivity.msgPane(
     sid: Int, myUid: Long, hint: String, showNames: Boolean,
-    fetch: (Long, Long, Long) -> JSONObject,
+    fetch: (Long, Long) -> JSONObject,
     send: ((String) -> Unit)?,
     receipts: Boolean = false,
     namesOnOwn: Boolean = false,
@@ -668,7 +627,6 @@ internal fun MainActivity.msgPane(
 
     var lastId = 0L
     var rev = -1L           // ревизия ленты (общий чат): при удалении сообщений сервер меняет её, и лента перечитывается
-    var rx = -1L            // версия реакций: сервер присылает реакции, только когда она сменилась
     var peerRead = 0L       // до какого сообщения собеседник прочитал переписку
     val marks = ArrayList<Triple<Long, TextView, String>>()
 
@@ -725,12 +683,7 @@ internal fun MainActivity.msgPane(
         if (call != null) io.execute {
             try {
                 val r = call(id, emoji)
-                ui {
-                    if (sid == screenId) {
-                        renderReactions(r.optJSONArray("reactions"))
-                        rx = r.optLong("rx", rx)   // эти реакции уже свежие: следующий опрос их повторно не просит
-                    }
-                }
+                ui { if (sid == screenId) renderReactions(r.optJSONArray("reactions")) }
             } catch (e: Exception) {
                 ui { toast(errText(e)) }
             }
@@ -813,14 +766,12 @@ internal fun MainActivity.msgPane(
         list.addView(row)
     }
 
-    // Опрос: 4 → 8 → 15 → 30 с, пока ничего не приходит; новое сообщение, реакция или своя отправка возвращают к 4 с.
-    // Пока приложение свёрнуто, запросов нет; при возврате — один сразу.
-    val poller = Poller(this, sid, CHAT_POLL, alive) { finish ->
+    fun fetchOnce() {
         io.execute {
             try {
-                val r = fetch(lastId, rev, rx)
+                val r = fetch(lastId, rev)
                 ui {
-                    if (sid != screenId || !alive()) { finish(false); return@ui }
+                    if (sid != screenId || !alive()) return@ui
                     onData(r)
                     val reset = r.optBoolean("reset")
                     val before = lastId
@@ -834,27 +785,27 @@ internal fun MainActivity.msgPane(
                         rows.clear(); reactHost.clear(); reactData.clear()
                     }
                     rev = r.optLong("rev", rev)
-                    val newRx = r.optLong("rx", rx)
-                    val rxChanged = newRx != rx
-                    rx = newRx
-                    val newPeerRead = r.optLong("peer_read", peerRead)
-                    val peerChanged = newPeerRead != peerRead
-                    peerRead = newPeerRead
+                    peerRead = r.optLong("peer_read", peerRead)
                     val arr = r.optJSONArray("messages") ?: JSONArray()
                     for (i in 0 until arr.length()) add(arr.getJSONObject(i))
-                    renderReactions(r.optJSONArray("reactions"))   // сервер присылает их, только когда версия сменилась
+                    renderReactions(r.optJSONArray("reactions"))
                     updateMarks()
                     status.text = ""
                     if (lastId != before) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
-                    finish(lastId != before || reset || rxChanged || peerChanged)
                 }
             } catch (e: ChatAuthException) {
                 Store.adminToken = ""
-                ui { if (sid == screenId) showAdminLogin(); finish(false) }
+                ui { if (sid == screenId) showAdminLogin() }
             } catch (e: Exception) {
-                ui { if (sid == screenId && alive()) status.text = errText(e); finish(false) }
+                ui { if (sid == screenId && alive()) status.text = errText(e) }
             }
         }
+    }
+
+    fun loop() {
+        if (sid != screenId || !alive()) return
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) fetchOnce()
+        main.postDelayed({ loop() }, 4000L)
     }
 
     pane.addView(scroll)
@@ -921,7 +872,7 @@ internal fun MainActivity.msgPane(
             io.execute {
                 try {
                     if (replyId > 0 && sendReply != null) sendReply(text, replyId) else send(text)
-                    ui { poller.wake() }   // человек написал: опрос снова раз в 4 с, свежий запрос сразу
+                    ui { fetchOnce() }
                 } catch (e: Exception) {
                     ui {
                         if (e is ChatCooldownException) setNextAt(System.currentTimeMillis() + e.retryMs)
@@ -942,6 +893,6 @@ internal fun MainActivity.msgPane(
         pane.addView(composerRow(null, field, btn))
         tickCooldown()   // вернулись на вкладку посреди паузы — отсчёт продолжается
     }
-    poller.start()
+    loop()
     return pane
 }

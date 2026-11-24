@@ -279,7 +279,7 @@ internal fun MainActivity.showAdminDm(a: Long, b: Long, nickA: String, nickB: St
     root.addView(tv("$nickA  ⇄  $nickB", 13f, MUTE))
     root.addView(msgPane(
         sid, a, "Сообщений нет.", showNames = true, namesOnOwn = true,
-        fetch = { after, _, _ -> ChatApi.adminDmMessages(Store.adminToken, a, b, after) },
+        fetch = { after, _ -> ChatApi.adminDmMessages(Store.adminToken, a, b, after) },
         send = null
     ))
 }
@@ -295,7 +295,7 @@ internal fun MainActivity.showAdminRoom() {
     root.addView(tv("Чтобы удалить сообщение, нажмите на него и удерживайте.", 12f, MUTE))
     root.addView(msgPane(
         sid, 0L, "Сообщений нет.", showNames = true,
-        fetch = { after, rev, rx -> ChatApi.adminRoomMessages(Store.adminToken, after, rev, rx) },
+        fetch = { after, rev -> ChatApi.adminRoomMessages(Store.adminToken, after, rev) },
         send = null,
         onLong = { m, _ ->
             confirmSheet("Удалить сообщение?", "${m.optString("nick")}: ${m.optString("text").take(120)}", "Удалить", danger = true) {
