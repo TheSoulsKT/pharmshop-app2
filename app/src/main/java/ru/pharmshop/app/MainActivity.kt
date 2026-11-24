@@ -60,6 +60,11 @@ open class MainActivity : AppCompatActivity() {
     internal var navBack = false        // возврат назад: экран выезжает слева
     internal var firstScreen = true     // первый экран после запуска — только плавное появление
     internal val notifPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    internal var vpnPermOk: (() -> Unit)? = null    // что сделать, когда пользователь разрешил VPN в системном окне
+    internal val vpnPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        if (r.resultCode == RESULT_OK) vpnPermOk?.invoke() else toast("Разрешение на VPN не выдано")
+        vpnPermOk = null
+    }
     internal var onImagePicked: ((Uri) -> Unit)? = null
     internal val imagePicker = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) onImagePicked?.invoke(uri)

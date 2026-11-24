@@ -27,6 +27,8 @@ android {
         // Репозиторий для проверки обновлений («владелец/имя»); GitHub подставляет его сам при сборке.
         buildConfigField 'String', 'GITHUB_REPO', "\"${isTest ? '' : (System.getenv('GITHUB_REPOSITORY') ?: '')}\""
         manifestPlaceholders = [appLabel: isTest ? 'PharmShop Test' : 'PharmShop']
+        // ядро Xray собрано под эти архитектуры; без фильтра APK раздувается x86-версиями
+        ndk { abiFilters 'arm64-v8a', 'armeabi-v7a' }
         if (isTest) {
             applicationIdSuffix '.test'
             versionNameSuffix '-test'
@@ -74,4 +76,5 @@ dependencies {
     implementation 'androidx.biometric:biometric:1.1.0'   // вход по отпечатку
     implementation 'com.google.firebase:firebase-messaging:24.1.0'   // мгновенные push (FCM), если есть google-services.json
     implementation 'com.github.hCaptcha.hcaptcha-android-sdk:sdk:5.0.0'
+    implementation fileTree(dir: 'libs', include: ['*.aar'])   // libv2ray.aar — ядро Xray (см. VpnCore.kt)
 }

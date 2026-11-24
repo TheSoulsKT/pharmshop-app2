@@ -3,3 +3,4 @@
 *.jar binary
 *.keystore binary
 *.jks binary
+*.aar binary

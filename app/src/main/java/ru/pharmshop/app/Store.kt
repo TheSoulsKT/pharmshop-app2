@@ -396,6 +396,32 @@ object Store {
             sp.edit().putString("vpn_refresh", if (v.isEmpty()) "" else try { seal(v) } catch (e: Exception) { "" }).apply()
         }
 
+    // ----- встроенный VPN-клиент (PharmVpnService) -----
+    /** Ссылка подписки, по которой сервис качает серверы. Это личный ключ, поэтому хранится зашифрованной. */
+    var vpnSubUrl: String
+        get() = sp.getString("vpn_sub_url", "")?.takeIf { it.isNotEmpty() }?.let { unseal(it) } ?: ""
+        set(v) { sp.edit().putString("vpn_sub_url", if (v.isEmpty()) "" else try { seal(v) } catch (e: Exception) { "" }).apply() }
+
+    /** Последний скачанный ответ подписки: чтобы подключаться без сети до панели. Тоже зашифрован. */
+    var vpnSubRaw: String
+        get() = sp.getString("vpn_sub_raw", "")?.takeIf { it.isNotEmpty() }?.let { unseal(it) } ?: ""
+        set(v) { sp.edit().putString("vpn_sub_raw", if (v.isEmpty()) "" else try { seal(v) } catch (e: Exception) { "" }).apply() }
+
+    /** Выбранный сервер (название); пусто — первый в списке. */
+    var vpnServer: String
+        get() = sp.getString("vpn_server", "") ?: ""
+        set(v) { sp.edit().putString("vpn_server", v).apply() }
+
+    /** Постоянный идентификатор устройства для панели (по нему считается лимит устройств). */
+    val vpnHwid: String
+        get() {
+            val cur = sp.getString("vpn_hwid", "") ?: ""
+            if (cur.isNotEmpty()) return cur
+            val v = java.util.UUID.randomUUID().toString()
+            sp.edit().putString("vpn_hwid", v).apply()
+            return v
+        }
+
     /** Платёж VPN, который ждёт оплаты (id): после возврата в приложение проверяем его статус. */
     var vpnPay: String
         get() = sp.getString("vpn_pay", "") ?: ""

@@ -624,7 +624,7 @@ private fun MainActivity.vpnSubCard(s: JSONObject, methods: List<Pair<String, St
         if (masked) card.addView(txt("Нажмите на ссылку, чтобы показать или скрыть", 11f, MUTE).apply {
             layoutParams = lp(10).apply { topMargin = -dp(4) }
         })
-        card.addView(vpnPrimary("Подключить", VIc.BOLT) { openInVpnClient(url) })
+        card.addView(vpnConnectBlock(url, live) { openInVpnClient(url) })
     }
 
     // плитки действий
