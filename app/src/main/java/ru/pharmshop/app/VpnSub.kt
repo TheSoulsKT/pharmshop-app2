@@ -5,6 +5,9 @@ import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.net.URL
 import java.net.URLDecoder
 
@@ -52,18 +55,91 @@ object VpnSub {
         }
     }
 
+    /** Список серверов в памяти: чтобы окно выбора сервера и подключение не ждали сеть при каждом нажатии. */
+    private class Mem(val url: String, val at: Long, val list: List<VpnServer>)
+    @Volatile private var mem: Mem? = null
+    private const val MEM_TTL = 5 * 60_000L
+
+    /** Забывает список (при выходе из аккаунта). */
+    fun clearMem() { mem = null }
+
     /** Свежий список серверов; без сети — последний сохранённый. */
     fun load(url: String): List<VpnServer> {
         try {
             val raw = download(url)
             val list = parse(raw)
             Store.vpnSubRaw = raw
+            mem = Mem(url, System.currentTimeMillis(), list)
             return list
         } catch (e: java.io.IOException) {
             val cached = Store.vpnSubRaw
             if (cached.isNotEmpty()) return parse(cached)
             throw e
         }
+    }
+
+    /** Как load, но если список скачан меньше 5 минут назад — отдаёт его сразу, без запроса к панели. */
+    fun loadFast(url: String): List<VpnServer> {
+        val m = mem
+        if (m != null && m.url == url && System.currentTimeMillis() - m.at < MEM_TTL) return m.list
+        return load(url)
+    }
+
+    /** Любой уже известный список без сети (из памяти или с прошлого запуска) либо null. Годится, чтобы сразу показать экран. */
+    fun cachedAny(url: String): List<VpnServer>? {
+        mem?.takeIf { it.url == url }?.let { return it.list }
+        val raw = Store.vpnSubRaw
+        if (raw.isEmpty()) return null
+        return try { parse(raw).also { mem = Mem(url, 0L, it) } } catch (e: Exception) { null }   // at = 0: считается устаревшим
+    }
+
+    /** Список из памяти без обращения к сети и к хранилищу. */
+    fun peek(url: String): List<VpnServer>? = mem?.takeIf { it.url == url }?.list
+
+    /** Адрес и порт, куда подключается сервер (для замера пинга). null — не удалось определить. */
+    fun endpoint(s: VpnServer): Pair<String, Int>? {
+        try {
+            val obs: JSONArray = when {
+                s.outbound != null -> JSONArray().put(s.outbound)
+                s.full != null -> s.full.optJSONArray("outbounds") ?: return null
+                else -> return null
+            }
+            for (i in 0 until obs.length()) {
+                val o = obs.optJSONObject(i) ?: continue
+                if (o.optString("protocol") in listOf("freedom", "blackhole", "dns", "loopback")) continue
+                val st = o.optJSONObject("settings") ?: continue
+                val e = st.optJSONArray("vnext")?.optJSONObject(0) ?: st.optJSONArray("servers")?.optJSONObject(0) ?: st
+                val host = e.optString("address")
+                val port = e.optInt("port", 0)
+                if (host.isNotEmpty() && port > 0) return host to port
+            }
+        } catch (e: Exception) {
+            // нестандартный конфиг — пинга не будет, подключению это не мешает
+        }
+        return null
+    }
+
+    /**
+     * Пинг до сервера в миллисекундах: время TCP-соединения, лучший из трёх замеров. -1 — сервер не ответил.
+     * Приложение вынесено из туннеля, поэтому замер честный и при включённом VPN. Вызывать не в потоке интерфейса.
+     */
+    fun ping(s: VpnServer): Int {
+        val ep = endpoint(s) ?: return -1
+        val addr = try { InetAddress.getByName(ep.first) } catch (e: Exception) { return -1 }
+        var best = Long.MAX_VALUE
+        for (n in 0 until 3) {
+            val sock = Socket()
+            try {
+                val t0 = System.nanoTime()
+                sock.connect(InetSocketAddress(addr, ep.second), 2000)
+                best = minOf(best, (System.nanoTime() - t0) / 1_000_000)
+            } catch (e: Exception) {
+                if (best == Long.MAX_VALUE) break   // первый замер не прошёл — сервер молчит, не ждём ещё 4 секунды
+            } finally {
+                try { sock.close() } catch (e: Exception) { }
+            }
+        }
+        return if (best == Long.MAX_VALUE) -1 else best.toInt()
     }
 
     fun pick(list: List<VpnServer>): VpnServer =

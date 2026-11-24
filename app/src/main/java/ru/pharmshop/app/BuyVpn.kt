@@ -197,18 +197,75 @@ private fun vpnPlanLabel(p: JSONObject): String {
     return "${vpnPlanName(p.optString("name"))} · ${vpnDevices(p.optInt("devices"))} — ${vpnRub(p.optLong("total_price_display"))}$tag"
 }
 
-/** Шапка раздела по состоянию подписок: защита включена / заморожена / нет подписки (в центре кот). */
-private fun MainActivity.vpnStateHero(best: JSONObject?, frozen: JSONObject?): LinearLayout = when {
-    best != null -> vpnHero(
-        0, "Защита включена", vpnPlanName(best.optString("plan_name").ifEmpty { "Подписка" }),
-        listOf(
-            "Осталось" to vpnDays(best.optInt("days_left")),
-            "Действует до" to vpnDate(best.optString("end_date")),
-            "Устройства" to best.optInt("devices").toString()
-        )
+/**
+ * Шапка раздела с котом. Нет подписки / заморожена — статичная карточка. Подписка активна — кот следит за встроенным VPN:
+ * выключен (дремлет) → подключается (ёрзает) → включён (бодрый, расходятся кольца); при ошибке мотает головой.
+ * Подписка на VpnState живёт, пока шапка на экране; смена состояния сопровождается плавной подменой карточки.
+ */
+private fun MainActivity.vpnStateHero(best: JSONObject?, frozen: JSONObject?): View {
+    if (best == null) {
+        return if (frozen != null) vpnHero(1, "Подписка заморожена", "Разморозьте её, чтобы снова пользоваться VPN", emptyList())
+        else vpnHero(2, "Нет активной подписки", "Выберите тариф — ключ появится здесь сразу после оплаты", emptyList())
+    }
+    val plan = vpnPlanName(best.optString("plan_name").ifEmpty { "Подписка" })
+    val stats = listOf(
+        "Осталось" to vpnDays(best.optInt("days_left")),
+        "Действует до" to vpnDate(best.optString("end_date")),
+        "Устройства" to best.optInt("devices").toString()
     )
-    frozen != null -> vpnHero(1, "Подписка заморожена", "Разморозьте её, чтобы снова пользоваться VPN", emptyList())
-    else -> vpnHero(2, "Нет активной подписки", "Выберите тариф — ключ появится здесь сразу после оплаты", emptyList())
+
+    fun build(s: VpnState.S, msg: String, react: Int): LinearLayout = when (s) {
+        VpnState.S.ON -> vpnHero(0, "Защита включена", if (msg.isNotEmpty()) "$plan · $msg" else plan, stats, 0, react, 0)
+        VpnState.S.CONNECTING -> vpnHero(0, "Подключаемся…", "Кот просыпается, секунду", stats, 4, react, 0)
+        VpnState.S.ERROR -> vpnHero(0, "Не удалось подключиться", msg.ifEmpty { "Попробуйте ещё раз" }.take(90), stats, 3, react, 0)
+        VpnState.S.OFF -> vpnHero(0, "VPN выключен", "Нажмите «Подключить» — и кот проснётся", stats, 3, react, 0)
+    }
+
+    val holder = FrameLayout(this).apply { layoutParams = lp(14) }
+    var last = VpnState.state
+    var lastMsg = VpnState.message
+    var shown: View? = null
+
+    fun show(s: VpnState.S, msg: String, react: Int, fade: Boolean) {
+        val hero = build(s, msg, react).apply {
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        val old = shown
+        shown = hero
+        holder.addView(hero)
+        if (old != null) {
+            if (fade && Store.uiAnim) {
+                hero.alpha = 0f
+                hero.animate().alpha(1f).setDuration(260L).start()
+                old.animate().alpha(0f).setDuration(260L).withEndAction { holder.removeView(old) }.start()
+            } else {
+                holder.removeView(old)
+            }
+        }
+    }
+    show(last, lastMsg, 0, false)
+
+    val onVpn: (VpnState.S, String) -> Unit = { s, msg ->
+        if (s != last || (s == VpnState.S.ON && msg != lastMsg)) {
+            val react = if (s == last) 0 else when (s) {
+                VpnState.S.ON -> 1          // проснулся
+                VpnState.S.CONNECTING -> 4  // начал просыпаться
+                VpnState.S.ERROR -> 3       // мотает головой
+                VpnState.S.OFF -> 2         // уснул
+            }
+            last = s
+            lastMsg = msg
+            show(s, msg, react, true)
+        }
+    }
+    holder.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+        override fun onViewAttachedToWindow(v: View) {
+            VpnState.listen(onVpn)
+            onVpn(VpnState.state, VpnState.message)   // пока экран был скрыт, состояние могло смениться
+        }
+        override fun onViewDetachedFromWindow(v: View) { VpnState.unlisten(onVpn) }
+    })
+    return holder
 }
 
 private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArray, plans: JSONArray, prov: JSONObject) {

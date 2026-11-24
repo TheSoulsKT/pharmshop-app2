@@ -28,6 +28,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.BounceInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
 import android.view.animation.OvershootInterpolator
@@ -185,18 +186,23 @@ internal class VpnIconView(ctx: Context, private val kind: VIc, tint: Int) : Vie
 
 /**
  * Кот в круглой «аватарке» — тот же, что выбран значком приложения (Настройки → Оформление → Иконка).
- * state: 0 — защита включена (кот бодрствует, мягко «парит», вокруг расходятся кольца, на аватарке галочка);
+ * state: 0 — VPN включён (кот бодрствует, мягко «парит», вокруг расходятся кольца, на аватарке галочка);
  *        1 — подписка заморожена (кот в инее, на аватарке снежинка);
- *        2 — подписки нет (кот серый и спит: «z Z Z»).
+ *        2 — подписки нет (кот серый и спит: «z Z Z»);
+ *        3 — подписка есть, но VPN выключен (кот дремлет, на аватарке молния: «нажми и я проснусь»);
+ *        4 — VPN подключается (кот проснулся и ёрзает, кольца бегут быстрее).
+ * react: разовая реакция на смену состояния: 1 — проснулся (отскок, всплеск кольца, лёгкая вибрация),
+ *        2 — уснул (мягко «приседает»), 3 — ошибка (мотает головой), 4 — начал просыпаться (небольшой отскок). 0 — без реакции.
  * Двигаются только свойства View (смещение, масштаб, прозрачность): их считает RenderThread, без перерисовки
  * onDraw на каждом кадре. Анимации идут, только пока экран виден. Нажатие на кота — упругий отскок.
  */
 internal class CatHeroView(
     ctx: Context, accent: Int, private val state: Int, private val animOn: Boolean,
-    badgeBg: Int, catRes: Int, cutout: Int
+    badgeBg: Int, catRes: Int, cutout: Int, private val react: Int = 0
 ) : FrameLayout(ctx) {
     private val d = resources.displayMetrics.density
     private val anims = ArrayList<ObjectAnimator>()
+    private val oneShots = ArrayList<() -> Unit>()   // разовые анимации-реакции: запускаются, когда вид уже на экране
 
     private fun px(v: Float) = (v * d).toInt()
 
@@ -213,20 +219,21 @@ internal class CatHeroView(
     init {
         clipChildren = false
         clipToPadding = false
-        val live = state != 2
+        val live = state == 0 || state == 1 || state == 4
 
         // мягкое свечение за аватаркой
-        addView(View(ctx).apply {
+        val glow = View(ctx).apply {
             background = GradientDrawable().apply {
                 setShape(GradientDrawable.OVAL)
                 setGradientType(GradientDrawable.RADIAL_GRADIENT)
                 setGradientRadius(76f * d)
                 setColors(intArrayOf(ColorUtils.setAlphaComponent(accent, if (live) 90 else 28), ColorUtils.setAlphaComponent(accent, 0)))
             }
-        }, FrameLayout.LayoutParams(px(152f), px(152f), Gravity.CENTER))
+        }
+        addView(glow, FrameLayout.LayoutParams(px(152f), px(152f), Gravity.CENTER))
 
         // кольца: у включённой защиты расходятся, у замороженной одно неподвижное
-        val rings = when (state) { 0 -> 3; 1 -> 1; else -> 0 }
+        val rings = when (state) { 0, 4 -> 3; 1 -> 1; else -> 0 }
         for (i in 0 until rings) {
             val ring = View(ctx).apply {
                 background = GradientDrawable().apply {
@@ -236,7 +243,8 @@ internal class CatHeroView(
                 }
             }
             addView(ring, FrameLayout.LayoutParams(px(92f), px(92f), Gravity.CENTER))
-            if (state == 0 && animOn) {
+            if ((state == 0 || state == 4) && animOn) {
+                val fast = state == 4   // при подключении кольца бегут быстрее
                 ring.alpha = 0f
                 loop(ObjectAnimator.ofPropertyValuesHolder(
                     ring,
@@ -244,8 +252,8 @@ internal class CatHeroView(
                     PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, 1.7f),
                     PropertyValuesHolder.ofFloat(View.ALPHA, 0.5f, 0f)
                 ).apply {
-                    duration = 3000L
-                    startDelay = i * 1000L
+                    duration = if (fast) 1500L else 3000L
+                    startDelay = i * (if (fast) 500L else 1000L)
                     interpolator = DecelerateInterpolator(1.1f)
                 }, ring)
             } else {
@@ -254,6 +262,17 @@ internal class CatHeroView(
                 ring.alpha = 0.34f - 0.1f * i
             }
         }
+
+        // одна большая волна при включении
+        val burst: View? = if (react == 1 && animOn) View(ctx).apply {
+            alpha = 0f
+            background = GradientDrawable().apply {
+                setShape(GradientDrawable.OVAL)
+                setColor(Color.TRANSPARENT)
+                setStroke(px(3f), accent)
+            }
+        } else null
+        if (burst != null) addView(burst, FrameLayout.LayoutParams(px(92f), px(92f), Gravity.CENTER))
 
         // кот в круглой рамке цвета своего значка
         val catBox = FrameLayout(ctx).apply { clipChildren = false; clipToPadding = false }
@@ -271,13 +290,14 @@ internal class CatHeroView(
             when (state) {
                 1 -> setColorFilter(PorterDuffColorFilter(ColorUtils.setAlphaComponent(accent, 80), PorterDuff.Mode.SRC_ATOP))
                 2 -> { setColorFilter(ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0.1f) })); imageAlpha = 190 }
+                3 -> { setColorFilter(ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0.3f) })); imageAlpha = 215 }
                 else -> {}
             }
         }
         badge.addView(cat, FrameLayout.LayoutParams(px(112f), px(112f), Gravity.CENTER))
         catBox.addView(badge, FrameLayout.LayoutParams(px(88f), px(88f), Gravity.CENTER))
 
-        // значок состояния в углу аватарки
+        // значок состояния в углу аватарки (у «нет подписки» его нет)
         if (state != 2) {
             val st = FrameLayout(ctx).apply {
                 background = GradientDrawable().apply { setShape(GradientDrawable.OVAL); setColor(accent); setStroke(px(3f), cutout) }
@@ -285,7 +305,7 @@ internal class CatHeroView(
                 translationY = px(31f).toFloat()
             }
             st.addView(
-                VpnIconView(ctx, if (state == 0) VIc.CHECK else VIc.SNOW, Color.WHITE),
+                VpnIconView(ctx, when (state) { 0 -> VIc.CHECK; 1 -> VIc.SNOW; else -> VIc.BOLT }, Color.WHITE),
                 FrameLayout.LayoutParams(px(18f), px(18f), Gravity.CENTER)
             )
             catBox.addView(st, FrameLayout.LayoutParams(px(30f), px(30f), Gravity.CENTER))
@@ -293,7 +313,7 @@ internal class CatHeroView(
         addView(catBox, FrameLayout.LayoutParams(px(88f), px(88f), Gravity.CENTER))
 
         // спящий кот: «z Z Z» поднимаются и растворяются; кот дышит
-        if (state == 2) {
+        if (state == 2 || state == 3) {
             val zs = listOf("z" to 13f, "Z" to 16f, "Z" to 20f)
             for ((k, z) in zs.withIndex()) {
                 val baseY = px(-26f - k * 13f).toFloat()
@@ -334,6 +354,49 @@ internal class CatHeroView(
             interpolator = AccelerateDecelerateInterpolator()
         })
 
+        // просыпающийся кот ёрзает
+        if (state == 4 && animOn) loop(ObjectAnimator.ofFloat(catBox, View.ROTATION, -7f, 7f).apply {
+            duration = 320L
+            repeatMode = ValueAnimator.REVERSE
+            interpolator = AccelerateDecelerateInterpolator()
+        })
+
+        // разовая реакция на смену состояния
+        if (animOn && react != 0) {
+            val haptic = { kind: Int -> if (Store.haptics) performHapticFeedback(kind) }
+            oneShots.add {
+                when (react) {
+                    1 -> {   // проснулся: отскок с покачиванием, всплеск света и кольца
+                        haptic(if (android.os.Build.VERSION.SDK_INT >= 30) android.view.HapticFeedbackConstants.CONFIRM else android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                        catBox.scaleX = 0.78f; catBox.scaleY = 0.78f; catBox.rotation = -12f
+                        catBox.animate().scaleX(1f).scaleY(1f).rotation(0f).setDuration(620L)
+                            .setInterpolator(OvershootInterpolator(4f)).start()
+                        glow.alpha = 0.15f
+                        glow.animate().alpha(1f).setDuration(800L).start()
+                        burst?.let { b ->
+                            b.alpha = 0.8f; b.scaleX = 1f; b.scaleY = 1f
+                            b.animate().alpha(0f).scaleX(2.5f).scaleY(2.5f).setDuration(750L)
+                                .setInterpolator(DecelerateInterpolator(1.5f)).start()
+                        }
+                    }
+                    2 -> {   // уснул: «приседает» и укладывается
+                        haptic(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                        catBox.translationY = -8f * d
+                        catBox.animate().translationY(0f).setDuration(650L).setInterpolator(BounceInterpolator()).start()
+                    }
+                    3 -> {   // ошибка: мотает головой
+                        haptic(if (android.os.Build.VERSION.SDK_INT >= 30) android.view.HapticFeedbackConstants.REJECT else android.view.HapticFeedbackConstants.LONG_PRESS)
+                        ObjectAnimator.ofFloat(catBox, View.TRANSLATION_X, 0f, -10f * d, 10f * d, -8f * d, 8f * d, -4f * d, 4f * d, 0f)
+                            .apply { duration = 460L }.start()
+                    }
+                    4 -> {   // начал просыпаться: небольшой отскок
+                        catBox.scaleX = 0.88f; catBox.scaleY = 0.88f
+                        catBox.animate().scaleX(1f).scaleY(1f).setDuration(420L).setInterpolator(OvershootInterpolator(3f)).start()
+                    }
+                }
+            }
+        }
+
         // нажатие — упругий отскок
         catBox.isClickable = true
         catBox.setOnClickListener { v ->
@@ -355,6 +418,11 @@ internal class CatHeroView(
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         sync()
+        if (oneShots.isNotEmpty()) {
+            val run = ArrayList(oneShots)
+            oneShots.clear()
+            post { for (r in run) r() }   // после первой раскладки, чтобы центр поворота и масштаба был верным
+        }
     }
 
     override fun onWindowVisibilityChanged(visibility: Int) {
@@ -552,10 +620,18 @@ private const val H_WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 private fun violetMix(base: Int) = ColorUtils.blendARGB(base, 0xFF8B7CFF.toInt(), 0.4f)
 
-/** Карточка-шапка раздела. state: 0 — защита включена, 1 — заморожена, 2 — нет подписки. В центре — кот-аватарка. */
-internal fun MainActivity.vpnHero(state: Int, title: String, sub: String, stats: List<Pair<String, String>>): LinearLayout {
-    val sc = when (state) { 0 -> GREEN; 1 -> CYAN; else -> MUTE }
-    val bg: Drawable = if (state == 2) shape(CARD, 26, LINE) else GradientDrawable(
+/**
+ * Карточка-шапка раздела. state: 0 — подписка активна, 1 — заморожена, 2 — нет подписки. В центре — кот-аватарка.
+ * conn (только при state = 0): состояние встроенного VPN — 0 включён, 3 выключен, 4 подключается; -1 — не учитывать.
+ * react: разовая реакция кота на смену состояния (см. CatHeroView). bottom — отступ снизу в dp.
+ */
+internal fun MainActivity.vpnHero(
+    state: Int, title: String, sub: String, stats: List<Pair<String, String>>,
+    conn: Int = -1, react: Int = 0, bottom: Int = 14
+): LinearLayout {
+    val cs = if (state == 0 && conn >= 0) conn else state   // состояние кота
+    val sc = when (cs) { 0 -> GREEN; 1 -> CYAN; 4 -> BLUE; else -> MUTE }
+    val bg: Drawable = if (cs == 2 || cs == 3) shape(CARD, 26, LINE) else GradientDrawable(
         GradientDrawable.Orientation.TL_BR, intArrayOf(mix(sc, 0.22f), CARD)
     ).apply {
         cornerRadius = corner(26)
@@ -564,20 +640,21 @@ internal fun MainActivity.vpnHero(state: Int, title: String, sub: String, stats:
     // кот — тот, что выбран значком приложения: аватарка цвета значка, внутри его рисунок
     val entry = AppIcon.all[AppIcon.current(this).coerceIn(0, AppIcon.all.size - 1)]
     val base = getColor(entry.bgColor)
-    val badgeBg = when (state) {
-        0 -> base
+    val badgeBg = when (cs) {
+        0, 4 -> base
         1 -> ColorUtils.blendARGB(base, CYAN, 0.45f)
+        3 -> ColorUtils.blendARGB(base, MUTE, 0.6f)
         else -> ColorUtils.blendARGB(base, MUTE, 0.75f)
     }
-    val cutout = if (state == 2) CARD else mix(sc, 0.11f)   // цвет карточки под значком состояния
+    val cutout = if (cs == 2 || cs == 3) CARD else mix(sc, 0.11f)   // цвет карточки под значком состояния
     val anim = Store.uiAnim && FxView.allowed(this)
     return LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER_HORIZONTAL
         background = bg
         setPadding(dp(16), dp(12), dp(16), dp(16))
-        layoutParams = lp(14)
-        addView(CatHeroView(this@vpnHero, sc, state, anim, badgeBg, entry.fg, cutout).apply {
+        layoutParams = lp(bottom)
+        addView(CatHeroView(this@vpnHero, sc, cs, anim, badgeBg, entry.fg, cutout, react).apply {
             layoutParams = LinearLayout.LayoutParams(H_MATCH, dp(148))
             contentDescription = title
         })

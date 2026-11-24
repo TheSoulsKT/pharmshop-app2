@@ -90,6 +90,8 @@ object VpnApi {
         Store.vpnPay = ""
         Store.vpnCache = ""
         Store.vpnNotified = ""
+        Store.vpnSubRaw = ""      // серверы прошлого аккаунта не должны мелькать у нового
+        VpnSub.clearMem()
     }
 
     /** Берёт токен из ответа входа/продления и новый ключ входа из Set-Cookie. */

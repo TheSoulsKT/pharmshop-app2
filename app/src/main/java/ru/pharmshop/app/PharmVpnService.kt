@@ -60,7 +60,7 @@ class PharmVpnService : VpnService() {
             teardown()   // переподключение (например, после смены сервера)
             val url = Store.vpnSubUrl
             if (url.isEmpty()) throw VpnSub.SubException("Нет ссылки подписки. Откройте раздел VPN и нажмите «Подключить»")
-            val server = VpnSub.pick(VpnSub.load(url))
+            val server = VpnSub.pick(VpnSub.loadFast(url))
             val config = VpnSub.buildConfig(server)
 
             val b = Builder()
