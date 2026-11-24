@@ -26,6 +26,12 @@ object Remote {
     /** Настройки раздела: enabled, title, sub, url, message (любое поле может отсутствовать). */
     fun section(key: String): JSONObject? = cached().optJSONObject("sections")?.optJSONObject(key)
 
+    /** Тех. работы чата (админ-панель → «Тех. работы чата»): включены ли и причина, которую увидят пользователи. */
+    fun chatMaintenance(): Pair<Boolean, String>? {
+        val m = cached().optJSONObject("chat_maint") ?: return null
+        return if (m.optBoolean("on")) true to m.optString("reason") else null
+    }
+
     /** Минимальная сборка, с которой приложение ещё разрешено (0 — без ограничений). */
     fun minVersion(): Int = cached().optInt("min_version_code", 0)
 

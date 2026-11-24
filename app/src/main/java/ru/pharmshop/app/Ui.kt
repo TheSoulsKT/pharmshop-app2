@@ -311,7 +311,7 @@ private val TAB_ORDER = listOf(0, 4, 5, 2, 3)
 
 internal fun MainActivity.bottomNav(active: Int): LinearLayout {
     val items = listOf(
-        Triple(Ic.BAG, "ТГ", 0),
+        Triple(Ic.BAG, "Telegram", 0),
         Triple(Ic.KEY, "VPN", 4),
         Triple(Ic.GROUP, "Чат", 5),
         Triple(Ic.USER, "Профиль", 2),

@@ -22,6 +22,10 @@ object ChatApi {
     /** Время, до которого собеседник прочитал наши сообщения (из последнего ответа сервера). */
     @Volatile var lastReadTs = 0L
 
+    /** Статус обращения ("new" / "work" / "done") и оценка текущего «Решено» (0 — не оценено): из последнего ответа сервера. */
+    @Volatile var lastStatus = ""
+    @Volatile var lastRating = 0
+
     private fun post(path: String, body: JSONObject, adminToken: String = "", adminCode: String = ""): JSONObject {
         if (BASE_URL.isEmpty()) throw IllegalStateException("not_configured")
         val c = URL(BASE_URL + path).openConnection() as HttpURLConnection
@@ -104,8 +108,16 @@ object ChatApi {
     fun userMessages(device: String, secret: String, after: Long): JSONArray {
         val r = post("/api/chat/messages", JSONObject().put("device", device).put("secret", secret).put("after", after))
         lastReadTs = r.optLong("read_ts")
+        lastStatus = r.optString("status")
+        lastRating = r.optInt("rating")
         noteSolved(r)
         return r.optJSONArray("messages") ?: JSONArray()
+    }
+
+    /** Оценка решённого обращения: 1–5 и короткий отзыв. Одна оценка на каждое «Решено», её можно исправить. */
+    fun userRate(device: String, secret: String, stars: Int, comment: String) {
+        post("/api/chat/rate", JSONObject().put("device", device).put("secret", secret).put("stars", stars).put("comment", comment))
+        lastRating = stars
     }
 
     /** Объявление, настройки разделов и минимальная версия (публично, без кода). */
@@ -131,6 +143,9 @@ object ChatApi {
         if (query.isNotEmpty()) body.put("q", query)
         return post("/api/admin/threads", body, code)
     }
+
+    /** {ratings: [{device, nick, stars, comment, ts}], stats: {n, avg, dist: [1★..5★]}}. */
+    fun adminRatings(token: String): JSONObject = post("/api/admin/ratings", JSONObject(), token)
 
     /** Фоновый опрос админа: {unread, last_ts, nick, text} — чаты с непрочитанными сообщениями. */
     fun adminPoll(token: String): JSONObject = post("/api/admin/poll", JSONObject(), token)
@@ -214,7 +229,15 @@ object ChatApi {
     /** {messages, rev, reset, me}. rev — ревизия ленты: если сервер вернул другую, ленту нужно перечитать (reset = true). */
     fun roomMessages(after: Long, rev: Long): JSONObject = post("/api/room/messages", dev().put("after", after).put("rev", rev))
 
-    fun roomSend(text: String) { noteMsgs(post("/api/room/send", dev().put("text", text))) }
+    /** replyTo — номер сообщения, на которое отвечаем (0 — обычное сообщение). */
+    fun roomSend(text: String, replyTo: Long = 0L) {
+        val body = dev().put("text", text)
+        if (replyTo > 0) body.put("reply_to", replyTo)
+        noteMsgs(post("/api/room/send", body))
+    }
+
+    /** Реакция на сообщение (та же реакция второй раз снимает её). Ответ: {reactions: [{m, e, n, me}]}. */
+    fun roomReact(id: Long, emoji: String): JSONObject = post("/api/room/react", dev().put("id", id).put("emoji", emoji))
 
     /** Сервер присылает, сколько всего сообщений написано в чате: запоминаем для достижения. */
     private fun noteMsgs(r: JSONObject) { if (r.has("msgs")) Store.noteChatMsgs(r.optInt("msgs")) }

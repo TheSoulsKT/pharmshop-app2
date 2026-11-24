@@ -305,7 +305,32 @@ internal fun MainActivity.statCard(emoji: String, value: String, label: String, 
     }
 
 /** Одно достижение. [group] — «лесенка» значков одного вида (звёзды, отчёты…): на обложке плавает только высший из полученных. */
-internal class BadgeInfo(val emoji: String, val title: String, val hint: String, val got: Boolean, val group: String)
+internal class BadgeInfo(
+    val emoji: String, val title: String, val hint: String, val got: Boolean, val group: String,
+    val cur: Int = -1, val need: Int = 0      // для достижений «по счётчику»: сколько есть и сколько нужно (cur = -1 — счётчика нет)
+)
+
+private fun badgeSection(group: String) = when (group) {
+    "order", "stars", "premium" -> "Покупки"
+    "bugs", "help" -> "Помощь приложению"
+    "chat" -> "Общение"
+    else -> "Приложение"
+}
+
+/** Окно достижения: что это, получено ли, как получить и сколько осталось. */
+internal fun MainActivity.showBadgeInfo(b: BadgeInfo) {
+    val color = if (b.got) GREEN else MUTE
+    infoSheet(
+        sheetTitle = "Достижение",
+        emoji = b.emoji, color = color,
+        caption = badgeSection(b.group),
+        title = b.title,
+        pill = if (b.got) "✓ Получено" else "🔒 Закрыто",
+        textLabel = if (b.got) "Как получено" else "Как получить",
+        text = b.hint.substringBefore(" · сейчас"),
+        progress = if (b.need > 0 && b.cur >= 0) b.cur to b.need else null
+    )
+}
 
 private fun fmtNum(n: Int): String = n.toString().reversed().chunked(3).joinToString(" ").reversed()
 
@@ -327,10 +352,10 @@ internal fun MainActivity.badgeList(orders: List<org.json.JSONObject>, stars: In
 
     // покупки
     list += BadgeInfo("🛒", "Первый заказ", "Оформите любой заказ", orders.isNotEmpty(), "order")
-    list += BadgeInfo("🧾", "5 заказов", "Оплатите 5 заказов · сейчас $paidCount", paidCount >= 5, "order")
-    list += BadgeInfo("📦", "15 заказов", "Оплатите 15 заказов · сейчас $paidCount", paidCount >= 15, "order")
+    list += BadgeInfo("🧾", "5 заказов", "Оплатите 5 заказов · сейчас $paidCount", paidCount >= 5, "order", paidCount, 5)
+    list += BadgeInfo("📦", "15 заказов", "Оплатите 15 заказов · сейчас $paidCount", paidCount >= 15, "order", paidCount, 15)
     for ((emoji, need) in listOf("⭐" to 500, "🌟" to 1000, "💫" to 2500, "✨" to 5000, "🏆" to 10000)) {
-        list += BadgeInfo(emoji, "${fmtNum(need)} звёзд", "Купите звёзд на ${fmtNum(need)} и больше · сейчас ${fmtNum(stars)}", stars >= need, "stars")
+        list += BadgeInfo(emoji, "${fmtNum(need)} звёзд", "Купите звёзд на ${fmtNum(need)} и больше · сейчас ${fmtNum(stars)}", stars >= need, "stars", stars, need)
     }
     list += BadgeInfo("👑", "Premium", "Оплатите подписку Premium", premiumBought, "premium")
 
@@ -345,12 +370,12 @@ internal fun MainActivity.badgeList(orders: List<org.json.JSONObject>, stars: In
     for ((emoji, title, need) in listOf(Triple("🐞", "Охотник за багами", 1), Triple("🔧", "Тестировщик", 3), Triple("🏅", "Золотой тестер", 10))) {
         list += BadgeInfo(emoji, title,
             "Отправьте отчёт о реальной ошибке: Настройки → Прочее → «Сообщить об ошибке». Засчитывается не чаще раза в сутки · сейчас $reports из $need",
-            reports >= need, "bugs")
+            reports >= need, "bugs", reports, need)
     }
     for ((emoji, title, need) in listOf(Triple("💬", "Решённый вопрос", 1), Triple("🙌", "Друг проекта", 3), Triple("💎", "Опора проекта", 5))) {
         list += BadgeInfo(emoji, title,
             "Задайте вопрос в поддержке: когда его решат, значок откроется · сейчас $solved из $need",
-            solved >= need, "help")
+            solved >= need, "help", solved, need)
     }
 
     // общение в чате (число сообщений приходит с сервера)
@@ -358,7 +383,7 @@ internal fun MainActivity.badgeList(orders: List<org.json.JSONObject>, stars: In
     for ((emoji, title, need) in listOf(Triple("🗨", "Первое слово", 1), Triple("🎙", "Общительный", 25), Triple("🔥", "Душа чата", 100))) {
         list += BadgeInfo(emoji, title,
             "Пишите в общем чате и личных сообщениях: вкладка «Чат» · сейчас $chatMsgs из $need",
-            chatMsgs >= need, "chat")
+            chatMsgs >= need, "chat", chatMsgs, need)
     }
     return list
 }
@@ -389,7 +414,7 @@ internal fun MainActivity.achievementsRow(orders: List<org.json.JSONObject>, sta
             setPadding(dp(8), dp(12), dp(8), dp(10))
             alpha = if (b.got) 1f else 0.55f
             isClickable = true
-            setOnClickListener { toast(if (b.got) "${b.title}: получено" else "${b.title}: ${b.hint}") }
+            setOnClickListener { showBadgeInfo(b) }
             pressable(this)
             layoutParams = LinearLayout.LayoutParams(dp(92), ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(8) }
             addView(txt(b.emoji, 24f).apply { gravity = Gravity.CENTER; layoutParams = lp(4) })

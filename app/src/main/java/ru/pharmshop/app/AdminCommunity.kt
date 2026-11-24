@@ -297,7 +297,7 @@ internal fun MainActivity.showAdminRoom() {
         sid, 0L, "Сообщений нет.", showNames = true,
         fetch = { after, rev -> ChatApi.adminRoomMessages(Store.adminToken, after, rev) },
         send = null,
-        onLong = { m ->
+        onLong = { m, _ ->
             confirmSheet("Удалить сообщение?", "${m.optString("nick")}: ${m.optString("text").take(120)}", "Удалить", danger = true) {
                 io.execute {
                     try {

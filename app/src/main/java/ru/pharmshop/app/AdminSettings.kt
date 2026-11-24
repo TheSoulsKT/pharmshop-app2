@@ -170,6 +170,38 @@ internal fun MainActivity.showAdminSections() {
     }
 }
 
+/** Админка → «Тех. работы чата»: выключает вкладку «Чат» у всех и показывает причину. Поддержка и заказы не затрагиваются. */
+internal fun MainActivity.showAdminChatMaint() {
+    adminSettingsScreen("Тех. работы чата") { col, s ->
+        val m = s.optJSONObject("chat_maint") ?: JSONObject()
+        var on = m.optBoolean("on")
+        col.addView(tv(
+            "Пока включено, общий чат и личные сообщения у всех закрыты, вместо них на вкладке «Чат» показывается причина. " +
+                "Чат поддержки, магазин и профиль работают как обычно. Админ-панель продолжает видеть переписки.", 13f, MUTE
+        ))
+        val reason = input(
+            "Причина (до 300 символов), например «Обновляем сервер до 18:00»",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        ).apply {
+            setText(m.optString("reason"))
+            minLines = 3
+            filters = arrayOf(InputFilter.LengthFilter(300))
+        }
+        col.addView(reason)
+        val toggles = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; layoutParams = lp(12) }
+        fun paint() {
+            toggles.removeAllViews()
+            toggles.addView(chip(if (on) "● Чат выключен" else "○ Чат работает", on) { on = !on; paint() })
+        }
+        paint()
+        col.addView(toggles)
+        col.addView(btn("Сохранить", true) {
+            val patch = JSONObject().put("chat_maint", JSONObject().put("on", on).put("reason", reason.text.toString().trim()))
+            adminSave(patch) { toast(if (on) "Чат выключен для всех пользователей" else "Чат снова работает") }
+        })
+    }
+}
+
 internal fun MainActivity.showAdminForceUpdate() {
     adminSettingsScreen("Обновление") { col, s ->
         val cur = s.optInt("min_version_code")

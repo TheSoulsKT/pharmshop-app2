@@ -67,6 +67,8 @@ internal fun MainActivity.adminToolsRow(): HorizontalScrollView {
     row.addView(chip("👥 Пользователи", false) { showAdminUsers() })
     row.addView(chip("💬 Личные чаты", false) { showAdminDmThreads() })
     row.addView(chip("🌐 Общий чат", false) { showAdminRoom() })
+    row.addView(chip("⭐ Оценки", false) { showAdminRatings() })
+    row.addView(chip("🛠 Тех. работы чата", false) { showAdminChatMaint() })
     row.addView(chip("⛔ Блокировки", false) { showAdminBlocks() })
     return HorizontalScrollView(this).apply {
         isHorizontalScrollBarEnabled = false
@@ -163,6 +165,14 @@ internal fun MainActivity.showAdminThreads() {
             top.addView(txt(name, 16f, TEXT, true).apply {
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
+            val stars = t.optInt("rating")   // последняя оценка пользователя (0 — не оценивал)
+            if (stars in 1..5) {
+                top.addView(txt("★ $stars", 12f, if (stars <= 2) RED else AMBER, true).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply { rightMargin = dp(8) }
+                })
+            }
             top.addView(txt(threadStatusName(st), 11f, threadStatusColor(st), true).apply {
                 background = shape(mix(threadStatusColor(st), 0.16f), 8, threadStatusColor(st))
                 setPadding(dp(8), dp(2), dp(8), dp(2))
@@ -406,5 +416,52 @@ internal fun MainActivity.showUserData(p: JSONObject?, title: String) {
             box.addView(txt(server, 13f, MUTE).apply { setTextIsSelectable(true); layoutParams = lp(14) })
         }
         box.addView(btnGrid(listOf(gbtn("Закрыть", true) { close() }), 0))
+    }
+}
+
+
+/** Оценки поддержки: средняя, сколько раз поставили каждое число звёзд и последние отзывы. */
+internal fun MainActivity.showAdminRatings() {
+    val sid = screenId
+    sheet("Оценки поддержки", scroll = true) { box, close ->
+        val info = txt("Загружаем…", 14f, MUTE).apply { layoutParams = lp(10) }
+        box.addView(info)
+        val timeFmt = SimpleDateFormat("d MMM, HH:mm", Locale.getDefault())
+        io.execute {
+            try {
+                val r = ChatApi.adminRatings(Store.adminToken)
+                ui {
+                    val stats = r.optJSONObject("stats")
+                    val n = stats?.optInt("n") ?: 0
+                    if (n == 0) { info.text = "Оценок пока нет. Пользователи ставят их, когда обращение отмечено «Решено»."; return@ui }
+                    info.text = "Средняя: ${stats?.optDouble("avg")} из 5 · всего оценок: $n"
+                    info.setTextColor(TEXT)
+                    val dist = stats?.optJSONArray("dist")
+                    for (k in 5 downTo 1) {
+                        val c = dist?.optInt(k - 1) ?: 0
+                        box.addView(txt("${"★".repeat(k)}${"☆".repeat(5 - k)}   $c", 14f, if (k <= 2) RED else AMBER))
+                    }
+                    val arr = r.optJSONArray("ratings") ?: JSONArray()
+                    box.addView(sectionTitle("Последние отзывы", 14))
+                    for (i in 0 until arr.length()) {
+                        val o = arr.getJSONObject(i)
+                        val who = o.optString("nick").let { if (it.isEmpty()) "Гость" else "@$it" }
+                        val st = o.optInt("stars")
+                        box.addView(LinearLayout(this).apply {
+                            orientation = LinearLayout.VERTICAL
+                            background = shape(CARD, 14, LINE)
+                            setPadding(dp(14), dp(10), dp(14), dp(10))
+                            layoutParams = lp(8)
+                            addView(txt("$who   ${"★".repeat(st)}${"☆".repeat(5 - st)}", 14f, TEXT, true))
+                            val c = o.optString("comment")
+                            if (c.isNotEmpty()) addView(txt(c, 13f, TEXT))
+                            addView(txt(timeFmt.format(java.util.Date(o.optLong("ts"))), 11f, MUTE))
+                        })
+                    }
+                }
+            } catch (e: Exception) {
+                ui { info.text = errText(e); if (e is ChatAuthException) { close(); if (sid == screenId) showAdminLogin() } }
+            }
+        }
     }
 }

@@ -37,6 +37,21 @@ internal object CommunityState {
 /** Пауза между сообщениями в общем чате (сервер проверяет то же самое; у модераторов с «галочкой» паузы нет). */
 internal const val ROOM_COOLDOWN_MS = 10_000L
 
+/** Реакции на сообщения общего чата. Список должен совпадать с REACTIONS в server/worker.js. */
+internal val REACTIONS = listOf("👍", "❤️", "😂", "🔥", "😮", "😢")
+
+/** «❤» и «❤️» считаем одной реакцией (как и сервер). */
+internal fun noVs(s: String): String = s.replace("\uFE0F", "")
+
+/** Что можно сделать с сообщением по долгому нажатию: ответить и поставить реакцию. */
+internal class MsgTools(
+    val canReply: Boolean,
+    val canReact: Boolean,
+    val reply: () -> Unit,
+    val react: (String) -> Unit,
+    val mine: () -> String      // моя реакция на это сообщение ("" — нет)
+)
+
 /** Ключ сайта hCaptcha для входа в чат (публичный; секрет хранится только на сервере). */
 private const val CHAT_CAPTCHA_SITEKEY = "3d88c4d4-c8f4-4e0a-8db6-21e62e840604"
 
@@ -76,13 +91,13 @@ internal fun MainActivity.nickColor(nick: String): Int {
 }
 
 /** Зелёная корона рядом с ником: собраны все достижения. Нажатие объясняет, что это. */
-internal fun MainActivity.crownIcon(size: Float): View {
+internal fun MainActivity.crownIcon(size: Float, nick: String = ""): View {
     val px = dp((size + 3f).toInt())
     return IconView(this, Ic.CROWN, GREEN).apply {
         layoutParams = LinearLayout.LayoutParams(px, px).apply { leftMargin = dp(4) }
         contentDescription = "Зелёная корона: собраны все достижения"
         isClickable = true
-        setOnClickListener { toast("Зелёная корона: у этого человека собраны все достижения") }
+        setOnClickListener { showCrownInfo(nick) }
     }
 }
 
@@ -92,8 +107,13 @@ internal fun MainActivity.nameRow(nick: String, badge: Boolean, size: Float = 12
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         addView(txt(nick, size, nickColor(nick), true))
-        if (crown) addView(crownIcon(size))
-        if (badge) addView(txt(" ✓", size, BLUE, true))
+        if (crown) addView(crownIcon(size, nick))
+        if (badge) addView(txt(" ✓", size, BLUE, true).apply {
+            contentDescription = "Модератор чата"
+            setPadding(dp(2), dp(4), dp(6), dp(4))   // удобнее попасть пальцем
+            isClickable = true
+            setOnClickListener { showModeratorInfo(nick) }
+        })
     }
 
 // ---------- вкладка ----------
@@ -111,6 +131,17 @@ internal fun MainActivity.showCommunity() {
     body.addView(tv("Загрузка…", 14f, MUTE))
     io.execute {
         try {
+            // свежие настройки: тех. работы могли включить только что (нет связи — берём сохранённые)
+            try { Remote.refresh() } catch (e: Exception) { /* работаем с сохранёнными */ }
+            val maint = Remote.chatMaintenance()
+            if (maint != null) {
+                ui {
+                    if (sid != screenId) return@ui
+                    body.removeAllViews()
+                    maintenanceView(body, maint.second)
+                }
+                return@execute
+            }
             val me = ChatApi.chatMe()
             ui {
                 if (sid != screenId) return@ui
@@ -131,6 +162,32 @@ internal fun MainActivity.showCommunity() {
             }
         }
     }
+}
+
+/** Заглушка вкладки «Чат», пока админ включил тех. работы: значок, заголовок и причина из админ-панели. */
+private fun MainActivity.maintenanceView(body: LinearLayout, reason: String) {
+    body.addView(LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        background = shape(mix(AMBER, 0.10f), 22, edge(AMBER))
+        setPadding(dp(20), dp(28), dp(20), dp(24))
+        layoutParams = lp(14)
+        addView(txt("🛠", 40f).apply {
+            gravity = Gravity.CENTER
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(mix(AMBER, 0.22f))
+                setStroke(dp(2), AMBER)
+            }
+            layoutParams = LinearLayout.LayoutParams(dp(92), dp(92)).apply { bottomMargin = dp(16) }
+        })
+        addView(txt("Чат на технических работах", 20f, TEXT, true).apply { gravity = Gravity.CENTER; layoutParams = lp(10) })
+        addView(txt(
+            reason.ifEmpty { "Мы кое-что чиним и скоро вернём чат." }, 14f, MUTE
+        ).apply { gravity = Gravity.CENTER; layoutParams = lp(6) })
+        addView(txt("Поддержка, магазин и профиль работают как обычно.", 12f, MUTE).apply { gravity = Gravity.CENTER })
+    })
+    body.addView(btnGrid(listOf(gbtn("Проверить снова", true) { showCommunity() }), 0))
 }
 
 /** Первый вход: выбор ника и проверка «я не робот» (hCaptcha). Занятый ник сервер не отдаёт. */
@@ -298,7 +355,9 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
         send = { t -> ChatApi.roomSend(t) },
         alive = alive,
         onName = { m -> if (m.optLong("uid") != myUid) openDm(m.optLong("uid"), m.optString("nick"), m.optLong("av")) },
-        onLong = { m -> roomActions(m, myUid, myBadge, openDm) },
+        onLong = { m, tools -> roomActions(m, myUid, myBadge, openDm, tools) },
+        onReact = { id, e -> ChatApi.roomReact(id, e) },
+        sendReply = { t, id -> ChatApi.roomSend(t, id) },
         onData = { r ->
             r.optJSONObject("me")?.let {
                 val b = it.optInt("badge") == 1
@@ -437,8 +496,10 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
     pollChats()
 }
 
-/** Меню по долгому нажатию на сообщение в общем чате. */
-private fun MainActivity.roomActions(m: JSONObject, myUid: Long, myBadge: Boolean, openDm: (Long, String, Long) -> Unit) {
+/** Меню по долгому нажатию на сообщение в общем чате: реакции, ответ и действия с сообщением. */
+private fun MainActivity.roomActions(
+    m: JSONObject, myUid: Long, myBadge: Boolean, openDm: (Long, String, Long) -> Unit, tools: MsgTools
+) {
     val uid = m.optLong("uid")
     val nick = m.optString("nick")
     val own = uid == myUid
@@ -448,6 +509,7 @@ private fun MainActivity.roomActions(m: JSONObject, myUid: Long, myBadge: Boolea
             try { call(); ui { toast(done) } } catch (e: Exception) { ui { toast(errText(e)) } }
         }
     }
+    if (tools.canReply) items.add("↩ Ответить" to tools.reply)
     if (!own) items.add("✉ Написать в личку" to { openDm(uid, nick, m.optLong("av")) })
     if (own || myBadge) items.add("🗑 Удалить сообщение" to { run("Сообщение удалено") { ChatApi.roomDelete(m.optLong("id")) } })
     if (myBadge && !own && m.optInt("badge") != 1) {
@@ -456,8 +518,77 @@ private fun MainActivity.roomActions(m: JSONObject, myUid: Long, myBadge: Boolea
         items.add("🔇 Заглушить на неделю" to { run("$nick заглушён на неделю") { ChatApi.roomMute(uid, 10080) } })
         items.add("🔊 Снять ограничение" to { run("Ограничение снято") { ChatApi.roomMute(uid, 0) } })
     }
-    if (items.isEmpty()) return
-    listSheet(nick, items.map { it.first }) { i -> items[i].second() }
+    if (items.isEmpty() && !tools.canReact) return
+    sheet(nick, scroll = true) { box, close ->
+        if (tools.canReact) {
+            val mine = noVs(tools.mine())
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = lp(10)
+            }
+            for (e in REACTIONS) {
+                val on = noVs(e) == mine
+                row.addView(TextView(this).apply {
+                    text = e
+                    textSize = 26f
+                    gravity = Gravity.CENTER
+                    contentDescription = "Реакция $e"
+                    background = if (on) shape(mix(BLUE, 0.25f), 14, BLUE) else null
+                    setPadding(0, dp(8), 0, dp(8))
+                    isClickable = true
+                    setOnClickListener { close(); tools.react(e) }
+                    pressable(this)
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                })
+            }
+            box.addView(row)
+        }
+        for ((label, act) in items) {
+            box.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = ripple(CARD, 14, LINE)
+                setPadding(dp(16), dp(16), dp(16), dp(16))
+                layoutParams = lp(8)
+                isClickable = true
+                setOnClickListener { close(); act() }
+                pressable(this)
+                addView(txt(label, 16f, TEXT).apply { layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f) })
+            })
+        }
+    }
+}
+
+/** Цитата в пузыре ответа: ник и начало исходного сообщения (или «удалено»). */
+private fun MainActivity.quoteView(m: JSONObject, own: Boolean, maxW: Int, onClick: () -> Unit): View {
+    val gone = m.optLong("q_id") == 0L
+    val barColor = if (own) Color.argb(150, 0, 0, 0) else BLUE
+    val nickColor = if (own) Color.BLACK else BLUE
+    val textColor = if (own) Color.argb(200, 0, 0, 0) else MUTE
+    val textMax = (maxW - dp(22) - dp(14)).coerceAtLeast(dp(80))
+    return LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        background = shape(if (own) Color.argb(28, 0, 0, 0) else mix(BLUE, 0.10f), 8)
+        setPadding(dp(6), dp(4), dp(8), dp(4))
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { bottomMargin = dp(4) }
+        isClickable = true
+        setOnClickListener { onClick() }
+        addView(View(this@quoteView).apply {
+            setBackgroundColor(barColor)
+            layoutParams = LinearLayout.LayoutParams(dp(2), ViewGroup.LayoutParams.MATCH_PARENT).apply { rightMargin = dp(6) }
+        })
+        addView(LinearLayout(this@quoteView).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(txt(if (gone) "Сообщение" else m.optString("q_nick"), 11f, nickColor, true).apply {
+                maxLines = 1; maxWidth = textMax; ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            addView(txt(if (gone) "удалено" else m.optString("q_text"), 12f, textColor).apply {
+                maxLines = 2; maxWidth = textMax; ellipsize = android.text.TextUtils.TruncateAt.END
+                if (gone) setTypeface(typeface, android.graphics.Typeface.ITALIC)
+            })
+        })
+    }
 }
 
 // ---------- личная переписка ----------
@@ -510,8 +641,10 @@ internal fun MainActivity.msgPane(
     namesOnOwn: Boolean = false,
     alive: () -> Boolean = { true },
     onName: ((JSONObject) -> Unit)? = null,
-    onLong: ((JSONObject) -> Unit)? = null,
+    onLong: ((JSONObject, MsgTools) -> Unit)? = null,
     onData: (JSONObject) -> Unit = {},
+    onReact: ((Long, String) -> JSONObject)? = null,   // реакции: (номер сообщения, эмодзи) → {reactions: [...]}
+    sendReply: ((String, Long) -> Unit)? = null,       // ответ на сообщение: (текст, номер сообщения)
     cooldownMs: () -> Long = { 0L },          // пауза между сообщениями (0 — без паузы)
     nextAt: () -> Long = { 0L },              // когда можно писать снова (время телефона, мс)
     setNextAt: (Long) -> Unit = {}
@@ -548,6 +681,57 @@ internal fun MainActivity.msgPane(
     var lastUid = -1L       // автор предыдущего сообщения: подряд идущие сообщения одного человека склеиваются в серию
     var lastDay = ""
 
+    val rows = HashMap<Long, View>()                      // номер сообщения → его строка в ленте (для перехода к цитате)
+    val reactHost = HashMap<Long, LinearLayout>()         // номер сообщения → ряд реакций под ним
+    val reactData = HashMap<Long, List<JSONObject>>()     // номер сообщения → [{e, n, me}]
+    var startReply: (JSONObject) -> Unit = {}             // включает режим ответа (назначается вместе с полем ввода)
+    var doReact: (Long, String) -> Unit = { _, _ -> }     // поставить / снять реакцию (назначается ниже)
+
+    fun fillReactions(host: LinearLayout, msgId: Long) {
+        host.removeAllViews()
+        val list0 = reactData[msgId].orEmpty()
+        host.visibility = if (list0.isEmpty()) View.GONE else View.VISIBLE
+        for (o in list0) {
+            val mineR = o.optInt("me") == 1
+            val e = o.optString("e")
+            host.addView(txt("$e ${o.optInt("n")}", 12f, if (mineR) TEXT else MUTE, mineR).apply {
+                background = shape(if (mineR) mix(BLUE, 0.25f) else mix(MUTE, 0.10f), 12, if (mineR) BLUE else 0)
+                setPadding(dp(8), dp(2), dp(8), dp(2))
+                isClickable = true
+                setOnClickListener { doReact(msgId, e) }
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { rightMargin = dp(4) }
+            })
+        }
+    }
+
+    /** Применяет список реакций с сервера: он охватывает последние 100 сообщений ленты, старые не трогаем. */
+    fun renderReactions(arr: JSONArray?) {
+        if (arr == null) return
+        val ids = rows.keys.sorted()
+        val from = if (ids.size > 100) ids[ids.size - 100] else 0L
+        reactData.keys.removeAll { it >= from }
+        val by = HashMap<Long, ArrayList<JSONObject>>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            by.getOrPut(o.optLong("m")) { ArrayList() }.add(o)
+        }
+        reactData.putAll(by)
+        for ((id, host) in reactHost) if (id >= from) fillReactions(host, id)
+    }
+
+    doReact = { id, emoji ->
+        val call = onReact
+        if (call != null) io.execute {
+            try {
+                val r = call(id, emoji)
+                ui { if (sid == screenId) renderReactions(r.optJSONArray("reactions")) }
+            } catch (e: Exception) {
+                ui { toast(errText(e)) }
+            }
+        }
+    }
+
     fun add(m: JSONObject) {
         val id = m.optLong("id")
         if (id <= lastId) return
@@ -577,13 +761,51 @@ internal fun MainActivity.msgPane(
             else -> chatAvatar(uid, nick, m.optLong("av"), 30)
         }
         val timeStr = clockFmt.format(java.util.Date(ts))
-        val (bubble, timeView) = messageBubble(m.optString("text"), own, timeStr, head, bubbleMax(avatarOn))
-        if (onLong != null) bubble.setOnLongClickListener { onLong(m); true }
+        val maxW = bubbleMax(avatarOn)
+        val quote: View? = if (m.optLong("reply_to") > 0) {
+            quoteView(m, own, maxW) {
+                val target = rows[m.optLong("q_id")]
+                if (target != null) scroll.smoothScrollTo(0, (target.top - dp(8)).coerceAtLeast(0))
+                else toast("Исходное сообщение удалено или осталось выше в ленте")
+            }
+        } else null
+        val top: View? = if (head != null && quote != null) {
+            LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(head); addView(quote) }
+        } else head ?: quote
+        val (bubble, timeView) = messageBubble(m.optString("text"), own, timeStr, top, maxW)
+        if (onLong != null) {
+            bubble.setOnLongClickListener {
+                onLong(m, MsgTools(
+                    canReply = sendReply != null, canReact = onReact != null,
+                    reply = { startReply(m) },
+                    react = { e -> doReact(id, e) },
+                    mine = { reactData[id].orEmpty().firstOrNull { it.optInt("me") == 1 }?.optString("e").orEmpty() }
+                ))
+                true
+            }
+        }
         if (receipts && own) {
             marks.add(Triple(id, timeView, timeStr))
             paintReceipt(timeView, timeStr, peerRead >= id)
         }
-        list.addView(messageRow(own, avatar, bubble, if (cont) 2 else 8))
+        val content: View = if (onReact != null) {
+            val host = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                visibility = View.GONE
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { topMargin = dp(3) }
+            }
+            reactHost[id] = host
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = if (own) Gravity.END else Gravity.START
+                addView(bubble)
+                addView(host)
+            }
+        } else bubble
+        val row = messageRow(own, avatar, content, if (cont) 2 else 8)
+        rows[id] = row
+        list.addView(row)
     }
 
     fun fetchOnce() {
@@ -602,11 +824,13 @@ internal fun MainActivity.msgPane(
                         lastUid = -1L
                         lastDay = ""
                         marks.clear()
+                        rows.clear(); reactHost.clear(); reactData.clear()
                     }
                     rev = r.optLong("rev", rev)
                     peerRead = r.optLong("peer_read", peerRead)
                     val arr = r.optJSONArray("messages") ?: JSONArray()
                     for (i in 0 until arr.length()) add(arr.getJSONObject(i))
+                    renderReactions(r.optJSONArray("reactions"))
                     updateMarks()
                     status.text = ""
                     if (lastId != before) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
@@ -630,6 +854,39 @@ internal fun MainActivity.msgPane(
     pane.addView(status)
     if (send != null) {
         val field = chatField()
+        var replyTo: JSONObject? = null
+        val replyText = txt("", 13f, MUTE).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val replyBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            background = shape(CARD, 12, LINE)
+            setPadding(dp(12), dp(8), dp(6), dp(8))
+            layoutParams = lp(4)
+        }
+        fun setReply(m: JSONObject?) {
+            replyTo = m
+            if (m == null) { replyBar.visibility = View.GONE; return }
+            replyText.text = "↩ ${m.optString("nick")}: ${m.optString("text").replace('\n', ' ').take(90)}"
+            replyBar.visibility = View.VISIBLE
+        }
+        replyBar.addView(replyText)
+        replyBar.addView(txt("✕", 16f, MUTE).apply {
+            contentDescription = "Отменить ответ"
+            setPadding(dp(12), dp(2), dp(12), dp(2))
+            isClickable = true
+            setOnClickListener { setReply(null) }
+        })
+        startReply = { m ->
+            setReply(m)
+            field.requestFocus()
+            (getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                .showSoftInput(field, 0)
+        }
         var sendBtn: View? = null
         // кнопка отправки во время паузы показывает, сколько секунд осталось
         fun tickCooldown() {
@@ -649,11 +906,14 @@ internal fun MainActivity.msgPane(
             val text = field.text.toString().trim()
             if (text.isEmpty()) return
             field.setText("")
+            val replied = replyTo                       // на какое сообщение отвечаем (null — обычное)
+            val replyId = replied?.optLong("id") ?: 0L
+            setReply(null)
             val limit = cooldownMs()
             if (limit > 0) { setNextAt(System.currentTimeMillis() + limit); tickCooldown() }   // пауза идёт сразу: двойное нажатие не пройдёт
             io.execute {
                 try {
-                    send(text)
+                    if (replyId > 0 && sendReply != null) sendReply(text, replyId) else send(text)
                     ui { fetchOnce() }
                 } catch (e: Exception) {
                     ui {
@@ -661,6 +921,7 @@ internal fun MainActivity.msgPane(
                         else if (limit > 0) setNextAt(0L)   // сообщение не ушло по другой причине — паузу не навязываем
                         if (sid == screenId) {
                             field.setText(text)
+                            if (replied != null) setReply(replied)
                             toast(errText(e))
                             tickCooldown()
                         }
@@ -670,6 +931,7 @@ internal fun MainActivity.msgPane(
         }
         val btn = sendButton { sendNow() }
         sendBtn = btn
+        pane.addView(replyBar)
         pane.addView(composerRow(null, field, btn))
         tickCooldown()   // вернулись на вкладку посреди паузы — отсчёт продолжается
     }

@@ -294,7 +294,7 @@ private fun MainActivity.interfaceBlock(body: LinearLayout, again: () -> Unit) {
     val tabs = listOf(0, 4, 5, 2)
     // раньше «Чат» здесь означал поддержку (1): теперь это общий чат
     val cur = if (Store.startTab == 1) 5 else Store.startTab
-    c.addView(segmented(listOf("ТГ", "VPN", "Чат", "Профиль"), tabs.indexOf(cur).coerceAtLeast(0)) { i ->
+    c.addView(segmented(listOf("Telegram", "VPN", "Чат", "Профиль"), tabs.indexOf(cur).coerceAtLeast(0)) { i ->
         Store.startTab = tabs[i]
         again()
     })

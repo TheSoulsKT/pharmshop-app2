@@ -42,6 +42,26 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_dm_sender ON dm_messages (sender, ts)`,
   // до какого сообщения uid прочитал переписку с peer
   `CREATE TABLE IF NOT EXISTS dm_reads (uid INTEGER NOT NULL, peer INTEGER NOT NULL, last_id INTEGER NOT NULL, PRIMARY KEY (uid, peer))`,
+  // реакции на сообщения общего чата: у одного человека на одном сообщении одна реакция
+  `CREATE TABLE IF NOT EXISTS room_reactions (
+     msg INTEGER NOT NULL, uid INTEGER NOT NULL, emoji TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (msg, uid))`,
+  // заказы, оформленные через приложение (приложение присылает их само: /api/orders/report). id — номер заказа на сайте.
+  // kind: 2 — выполнен, 3 — отменён / ошибка, остальное — в работе. created — время создания заказа (мс).
+  `CREATE TABLE IF NOT EXISTS orders (
+     id TEXT PRIMARY KEY, device TEXT NOT NULL, order_number TEXT NOT NULL DEFAULT '', username TEXT NOT NULL DEFAULT '',
+     product TEXT NOT NULL DEFAULT 'stars', quantity INTEGER NOT NULL DEFAULT 0, total TEXT NOT NULL DEFAULT '',
+     currency TEXT NOT NULL DEFAULT '', method TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
+     kind INTEGER NOT NULL DEFAULT 4, created INTEGER NOT NULL, updated INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_orders_created ON orders (created)`,
+  `CREATE INDEX IF NOT EXISTS idx_orders_device ON orders (device)`,
+  // устройства, которые купили в приложении, но ещё не писали в чат: секрет запоминается при первом заказе
+  `CREATE TABLE IF NOT EXISTS devices (device TEXT PRIMARY KEY, secret_hash TEXT NOT NULL, ts INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_react_uid ON room_reactions (uid, ts)`,
+  // оценки поддержки: round = номер «Решено» (threads.solved) на момент оценки, на каждое закрытие одна оценка
+  `CREATE TABLE IF NOT EXISTS support_ratings (
+     device TEXT NOT NULL, round INTEGER NOT NULL, stars INTEGER NOT NULL, comment TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL,
+     PRIMARY KEY (device, round))`,
+  `CREATE INDEX IF NOT EXISTS idx_ratings_ts ON support_ratings (ts)`,
 ];
 // Новые колонки для уже существующей базы (ошибка «колонка уже есть» игнорируется).
 const MIGRATIONS = [
@@ -63,6 +83,7 @@ const MIGRATIONS = [
   `ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT ''`,              // маленькая аватарка (JPEG в base64), та же, что в профиле приложения
   `ALTER TABLE users ADD COLUMN avatar_v INTEGER DEFAULT 0`,          // версия аватарки (время загрузки); 0 — аватарки нет
   `ALTER TABLE users ADD COLUMN crown INTEGER DEFAULT 0`,             // 1 — «зелёная корона»: собраны все достижения (сообщает приложение)
+  `ALTER TABLE room_messages ADD COLUMN reply_to INTEGER DEFAULT 0`,  // номер сообщения, на которое это — ответ (0 — не ответ)
 ];
 const MAX_AVATAR = 60_000;       // символов base64 (~45 КБ): приложение присылает 128×128
 const MAX_DIAG = 4000;            // символов JSON с диагностикой устройства
@@ -99,6 +120,11 @@ const CHAT_TEXT_MAX = 1000;
 // hCaptcha при первом входе в чат. Ключ сайта публичный, секрет — в переменной HCAPTCHA_SECRET (Variables and Secrets).
 const HCAPTCHA_SITEKEY = '3d88c4d4-c8f4-4e0a-8db6-21e62e840604';
 const MUTE_FOREVER = 4102444800000;    // 1 января 2100
+// Реакции в общем чате. Список должен совпадать с REACTIONS в приложении (Community.kt).
+const REACTIONS = ['👍', '❤️', '😂', '🔥', '😮', '😢'];
+const RATE_REACT_PER_MIN = 30;
+const RATING_COMMENT_MAX = 300;
+const noVS = (v) => String(v || '').replace(/\uFE0F/g, '');   // «❤» и «❤️» считаем одной реакцией
 
 async function sha256(s) {
   const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
@@ -398,8 +424,8 @@ async function userMessages(body, env) {
   const device = String(body.device || '');
   const secret = String(body.secret || '');
   if (!UUID.test(device) || secret.length < 16) return err('Некорректный запрос');
-  const t = await env.DB.prepare('SELECT secret_hash, admin_read_ts, solved FROM threads WHERE device = ?').bind(device).first();
-  if (!t) return json({ messages: [], read_ts: 0, solved: 0 });
+  const t = await env.DB.prepare('SELECT secret_hash, admin_read_ts, solved, status FROM threads WHERE device = ?').bind(device).first();
+  if (!t) return json({ messages: [], read_ts: 0, solved: 0, status: 'new', rating: 0 });
   if (t.secret_hash !== (await sha256(secret))) return err('Нет доступа', 403);
   const { results } = await env.DB.prepare(MSG_SQL).bind(device, Number(body.after) || 0).all();
   // пользователь открыл чат — ответы админа прочитаны (пишем в базу, только если есть что отметить)
@@ -407,7 +433,38 @@ async function userMessages(body, env) {
     `UPDATE threads SET user_read_ts = ? WHERE device = ?
        AND user_read_ts < (SELECT COALESCE(MAX(ts), 0) FROM messages WHERE device = ? AND sender = 'admin')`
   ).bind(Date.now(), device, device).run();
-  return json({ messages: results, read_ts: t.admin_read_ts || 0, solved: t.solved || 0 });
+  // оценка текущего «Решено»: 0 — ещё не оценивали (приложение тогда показывает «Оцените помощь»)
+  const rt = (t.solved || 0) > 0
+    ? await env.DB.prepare('SELECT stars FROM support_ratings WHERE device = ? AND round = ?').bind(device, t.solved).first()
+    : null;
+  return json({
+    messages: results, read_ts: t.admin_read_ts || 0, solved: t.solved || 0,
+    status: STATUSES.includes(t.status) ? t.status : 'new', rating: rt ? rt.stars : 0,
+  });
+}
+
+// Пользователь оценивает решённое обращение (1–5 и короткий отзыв). Одна оценка на каждое «Решено»; её можно изменить.
+async function userRate(body, env, ctx) {
+  const device = String(body.device || '');
+  const secret = String(body.secret || '');
+  if (!UUID.test(device) || secret.length < 16) return err('Некорректный запрос');
+  const t = await env.DB.prepare('SELECT secret_hash, status, solved, nick FROM threads WHERE device = ?').bind(device).first();
+  if (!t) return err('Чат не найден', 404);
+  if (t.secret_hash !== (await sha256(secret))) return err('Нет доступа', 403);
+  if (t.status !== 'done' || !(t.solved > 0)) return err('Оценить можно после того, как обращение решено');
+  const stars = Math.round(Number(body.stars));
+  if (!(stars >= 1 && stars <= 5)) return err('Поставьте оценку от 1 до 5');
+  const comment = String(body.comment || '').replace(/\s+/g, ' ').trim().slice(0, RATING_COMMENT_MAX);
+  await env.DB.prepare(
+    `INSERT INTO support_ratings (device, round, stars, comment, ts) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(device, round) DO UPDATE SET stars = excluded.stars, comment = excluded.comment, ts = excluded.ts`
+  ).bind(device, t.solved, stars, comment, Date.now()).run();
+  // низкая оценка — сразу в Telegram админу (если настроен)
+  if (stars <= 2 && env.BOT_TOKEN && env.CHAT_ID) {
+    const note = `⭐ Низкая оценка поддержки: ${stars}/5\nОт: ${t.nick ? '@' + t.nick : 'гость'}${comment ? '\n\n' + comment : ''}`;
+    ctx.waitUntil(telegramNote(env, note, '').catch(() => {}));
+  }
+  return json({ ok: true, stars });
 }
 
 // Лёгкий опрос для фоновых уведомлений: сколько ответов админа пользователь ещё не прочитал.
@@ -466,7 +523,8 @@ async function adminThreads(body, env) {
     args.push(like, like, like);
   }
   const { results } = await env.DB.prepare(
-    `SELECT device, nick, last_order, last_text, last_ts, unread, last_ip, last_dev, status
+    `SELECT device, nick, last_order, last_text, last_ts, unread, last_ip, last_dev, status,
+            (SELECT stars FROM support_ratings s WHERE s.device = threads.device ORDER BY ts DESC LIMIT 1) AS rating
        FROM threads WHERE ${where.join(' AND ')} ORDER BY last_ts DESC LIMIT 100`
   ).bind(...args).all();
 
@@ -496,7 +554,28 @@ async function adminThreads(body, env) {
   for (const r of c1) counts[STATUSES.includes(r.status) ? r.status : 'new'] += r.n;
   const c2 = await env.DB.prepare(`SELECT COUNT(*) AS n FROM threads WHERE last_text != '' AND unread > 0`).first();
   counts.unread = c2 ? c2.n : 0;
-  return json({ threads, counts });
+  return json({ threads, counts, rating: await ratingStats(env) });
+}
+
+// Сводка оценок поддержки: средняя, количество и сколько раз поставили каждое число звёзд
+async function ratingStats(env) {
+  const { results } = await env.DB.prepare('SELECT stars, COUNT(*) AS n FROM support_ratings GROUP BY stars').all();
+  const dist = [0, 0, 0, 0, 0];
+  let n = 0, sum = 0;
+  for (const r of results) {
+    if (r.stars >= 1 && r.stars <= 5) { dist[r.stars - 1] = r.n; n += r.n; sum += r.n * r.stars; }
+  }
+  return { n, avg: n ? Math.round((sum / n) * 100) / 100 : 0, dist };
+}
+
+// Последние оценки с отзывами (для админ-панели)
+async function adminRatings(body, env) {
+  const { results } = await env.DB.prepare(
+    `SELECT s.device, s.stars, s.comment, s.ts, COALESCE(t.nick, '') AS nick
+       FROM support_ratings s LEFT JOIN threads t ON t.device = s.device
+      ORDER BY s.ts DESC LIMIT 50`
+  ).all();
+  return json({ ratings: results, stats: await ratingStats(env) });
 }
 
 // Что известно о пользователе: диагностика и аналитика из приложения + сводка по чату
@@ -513,6 +592,7 @@ async function adminProfile(body, env) {
     diag, diag_ts: t.diag_ts || 0, created: t.created || 0,
     messages: m ? m.n : 0, first_message: m ? m.first_ts || 0 : 0,
     last_ip: t.last_ip || '', geo: geo ? geo.geo : '',
+    ratings: (await env.DB.prepare('SELECT stars, comment, ts FROM support_ratings WHERE device = ? ORDER BY ts DESC LIMIT 10').bind(device).all()).results,
   });
 }
 
@@ -598,6 +678,7 @@ const SECTION_KEYS = ['stars', 'premium', 'vpn', 'gifts', 'nft_buy', 'nft_rent',
 const DEFAULT_APP = {
   announcement: { active: false, text: '', level: 'info', id: 0 },
   sections: {},
+  chat_maint: { on: false, reason: '' },   // технические работы вкладки «Чат» (общий чат и личные сообщения)
   min_version_code: 0,
   update_message: '',
 };
@@ -631,6 +712,9 @@ function applyPatch(cur, patch) {
     }
     out.sections = secs;
   }
+  if (patch.chat_maint && typeof patch.chat_maint === 'object') {
+    out.chat_maint = { on: !!patch.chat_maint.on, reason: cut(patch.chat_maint.reason, 300) };
+  }
   if (patch.min_version_code !== undefined) {
     const n = Math.floor(Number(patch.min_version_code));
     out.min_version_code = Number.isFinite(n) ? Math.min(Math.max(n, 0), 1_000_000) : 0;
@@ -653,9 +737,88 @@ async function appConfig(env) {
   return json({
     announcement: a.announcement.active ? { active: true, text: a.announcement.text, level: a.announcement.level, id: a.announcement.id } : { active: false },
     sections: a.sections,
+    chat_maint: a.chat_maint && a.chat_maint.on ? { on: true, reason: a.chat_maint.reason || '' } : { on: false, reason: '' },
     min_version_code: a.min_version_code,
     update_message: a.update_message,
   });
+}
+
+// Тех. работы чата: пока включены, общий чат и личные сообщения не работают (поддержка и заказы не затронуты).
+const CHAT_MAINT_PATHS = new Set(['/api/chat/register', '/api/chat/avatar_set', '/api/chat/avatar_get']);
+async function chatMaintenance(env, path) {
+  if (!(path.startsWith('/api/room/') || path.startsWith('/api/dm/') || CHAT_MAINT_PATHS.has(path))) return null;
+  const a = await loadApp(env);
+  if (!a.chat_maint || !a.chat_maint.on) return null;
+  const reason = a.chat_maint.reason || '';
+  return json({ error: 'Чат на технических работах' + (reason ? ': ' + reason : ''), maintenance: true, reason }, 503);
+}
+
+// ---------- заказы приложения ----------
+const MAX_ORDERS_PER_DEVICE = 500;
+const ORDER_ID = /^[^\s]{1,80}$/;   // номер заказа на сайте: любые символы кроме пробелов
+const clip = (v, n) => String(v == null ? '' : v).replace(/[\u0000-\u001F]/g, ' ').trim().slice(0, n);
+
+// Приложение присылает свои новые заказы и смену их статуса. Устройство подтверждается секретом (как в чате и push):
+// если секрет уже известен серверу (чат, push, прошлый заказ), он должен совпасть; иначе запоминается первый.
+async function ordersReport(body, env) {
+  const device = String(body.device || '');
+  const secret = String(body.secret || '');
+  if (!UUID.test(device) || secret.length < 16) return err('Некорректный запрос');
+  const list = Array.isArray(body.orders) ? body.orders.slice(0, 20) : [];
+  if (!list.length) return json({ ok: true, saved: 0 });
+  const hash = await sha256(secret);
+  const known = await env.DB.prepare(
+    `SELECT secret_hash FROM threads WHERE device = ? UNION ALL SELECT secret_hash FROM users WHERE device = ?
+     UNION ALL SELECT secret_hash FROM push_user WHERE device = ? UNION ALL SELECT secret_hash FROM devices WHERE device = ?`
+  ).bind(device, device, device, device).all();
+  if (known.results.some((r) => r.secret_hash !== hash)) return err('Нет доступа', 403);
+  const now = Date.now();
+  if (!known.results.length) {
+    await env.DB.prepare('INSERT OR IGNORE INTO devices (device, secret_hash, ts) VALUES (?, ?, ?)').bind(device, hash, now).run();
+  }
+  const have = await env.DB.prepare('SELECT COUNT(*) AS n FROM orders WHERE device = ?').bind(device).first();
+  if (have && have.n >= MAX_ORDERS_PER_DEVICE) return err('Слишком много заказов', 429);
+  const stmts = [];
+  for (const o of list) {
+    if (!o || typeof o !== 'object') continue;
+    const id = String(o.id == null ? '' : o.id);
+    if (!ORDER_ID.test(id)) continue;
+    const created = Date.parse(String(o.created_at || ''));
+    const qty = Math.floor(Number(o.quantity));
+    const kind = Math.floor(Number(o.kind));
+    // заказ с этим номером уже принадлежит другому устройству — не перезаписываем (WHERE в конце)
+    stmts.push(env.DB.prepare(
+      `INSERT INTO orders (id, device, order_number, username, product, quantity, total, currency, method, status, kind, created, updated)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET status = excluded.status, kind = excluded.kind, total = excluded.total, updated = excluded.updated
+       WHERE orders.device = excluded.device`
+    ).bind(
+      id, device, clip(o.order_number, 40), clip(o.username, 64).replace(/^@/, ''), o.product === 'premium' ? 'premium' : 'stars',
+      Number.isFinite(qty) ? Math.min(Math.max(qty, 0), 10_000_000) : 0, clip(o.total, 24), clip(o.currency, 8), clip(o.method, 60),
+      clip(o.status, 40), kind >= 0 && kind <= 4 ? kind : 4, Number.isFinite(created) ? created : now, now
+    ));
+  }
+  if (stmts.length) await env.DB.batch(stmts);
+  return json({ ok: true, saved: stmts.length });
+}
+
+// Админка → «Заказы». filter: all | active | done | failed; before — показать заказы старше этого времени (мс).
+async function adminOrders(body, env) {
+  const filter = ['active', 'done', 'failed'].includes(body.filter) ? body.filter : 'all';
+  let before = Number(body.before);
+  if (!(before > 0) || before > 4102444800000) before = 4102444800000;
+  const cond = { all: '1 = 1', active: 'o.kind NOT IN (2, 3)', done: 'o.kind = 2', failed: 'o.kind = 3' }[filter];
+  const { results } = await env.DB.prepare(
+    `SELECT o.id, o.order_number, o.username, o.product, o.quantity, o.total, o.currency, o.method, o.status, o.kind, o.created,
+            COALESCE(NULLIF(t.nick, ''), u.nick, '') AS nick
+       FROM orders o LEFT JOIN threads t ON t.device = o.device LEFT JOIN users u ON u.device = o.device
+      WHERE ${cond} AND o.created < ? ORDER BY o.created DESC LIMIT 40`
+  ).bind(before).all();
+  const c = await env.DB.prepare(
+    `SELECT COUNT(*) AS n, COALESCE(SUM(kind = 2), 0) AS done, COALESCE(SUM(kind = 3), 0) AS failed FROM orders`
+  ).first();
+  const n = c ? c.n : 0, done = c ? c.done : 0, failed = c ? c.failed : 0;
+  return json({ orders: results, counts: { all: n, active: n - done - failed, done, failed } });
 }
 
 async function adminMessages(body, env) {
@@ -859,8 +1022,25 @@ async function crownSet(body, env, request) {
 }
 
 // ----- общий чат (одна комната) -----
-const ROOM_SQL = `SELECT r.id, r.uid, COALESCE(u.nick, 'удалён') AS nick, COALESCE(u.badge, 0) AS badge, COALESCE(u.crown, 0) AS crown, COALESCE(u.avatar_v, 0) AS av, r.text, r.ts
-                    FROM room_messages r LEFT JOIN users u ON u.id = r.uid`;
+// reply_to > 0 и q_id = null — оригинал, на который отвечали, уже удалён
+const ROOM_SQL = `SELECT r.id, r.uid, COALESCE(u.nick, 'удалён') AS nick, COALESCE(u.badge, 0) AS badge, COALESCE(u.crown, 0) AS crown, COALESCE(u.avatar_v, 0) AS av, r.text, r.ts,
+                         COALESCE(r.reply_to, 0) AS reply_to, q.id AS q_id, COALESCE(qu.nick, 'удалён') AS q_nick, substr(q.text, 1, 140) AS q_text
+                    FROM room_messages r LEFT JOIN users u ON u.id = r.uid
+                    LEFT JOIN room_messages q ON q.id = r.reply_to AND r.reply_to > 0
+                    LEFT JOIN users qu ON qu.id = q.uid`;
+
+// Реакции на последние 100 сообщений ленты: [{m: номер сообщения, e: эмодзи, n: сколько, me: 1 — это моя}].
+// Приходят с каждым опросом, поэтому реакции на старых сообщениях обновляются без перечитывания ленты.
+async function roomReactions(env, uid) {
+  const f = await env.DB.prepare('SELECT COALESCE(MIN(id), 0) AS m FROM (SELECT id FROM room_messages ORDER BY id DESC LIMIT 100)').first();
+  const from = f ? f.m : 0;
+  if (!from) return [];
+  const { results } = await env.DB.prepare(
+    `SELECT msg AS m, emoji AS e, COUNT(*) AS n, MAX(CASE WHEN uid = ? THEN 1 ELSE 0 END) AS me
+       FROM room_reactions WHERE msg >= ? GROUP BY msg, emoji ORDER BY msg, MIN(ts)`
+  ).bind(uid, from).all();
+  return results;
+}
 
 async function roomRev(env) {
   const r = await env.DB.prepare(`SELECT v FROM settings WHERE k = 'room_rev'`).first();
@@ -888,7 +1068,7 @@ async function roomMessages(body, env, request) {
   let after = Number(body.after) || 0;
   const reset = body.rev === undefined || Number(body.rev) !== rev;
   if (reset) after = 0;
-  return json({ messages: await roomFetch(env, after), rev, reset, me: meOf(a.u, a.now) });
+  return json({ messages: await roomFetch(env, after), rev, reset, me: meOf(a.u, a.now), reactions: await roomReactions(env, a.u.id) });
 }
 
 async function roomSend(body, env, request) {
@@ -909,7 +1089,13 @@ async function roomSend(body, env, request) {
       return json({ error: `Подождите ${Math.ceil(wait / 1000)} с до следующего сообщения`, retry_ms: wait }, 429);
     }
   }
-  await env.DB.prepare('INSERT INTO room_messages (uid, text, ts) VALUES (?, ?, ?)').bind(u.id, text, now).run();
+  // ответ на сообщение: если оригинала уже нет, отправляем как обычное
+  let replyTo = Number(body.reply_to) || 0;
+  if (replyTo > 0) {
+    const q = await env.DB.prepare('SELECT id FROM room_messages WHERE id = ?').bind(replyTo).first();
+    if (!q) replyTo = 0;
+  } else replyTo = 0;
+  await env.DB.prepare('INSERT INTO room_messages (uid, text, ts, reply_to) VALUES (?, ?, ?, ?)').bind(u.id, text, now, replyTo).run();
   return json({ ok: true, msgs: await countMsgs(env, u.id), cooldown_ms: u.badge ? 0 : ROOM_COOLDOWN_MS });
 }
 
@@ -921,9 +1107,38 @@ async function roomDelete(body, env, request) {
   const m = await env.DB.prepare('SELECT uid FROM room_messages WHERE id = ?').bind(id).first();
   if (!m) return json({ ok: true });
   if (m.uid !== a.u.id && !a.u.badge) return err('Нет прав', 403);
-  await env.DB.prepare('DELETE FROM room_messages WHERE id = ?').bind(id).run();
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM room_messages WHERE id = ?').bind(id),
+    env.DB.prepare('DELETE FROM room_reactions WHERE msg = ?').bind(id),
+  ]);
   await bumpRoomRev(env);
   return json({ ok: true });
+}
+
+// Реакция на сообщение. Та же реакция второй раз — снимается, другая — заменяет прежнюю. emoji = '' тоже снимает.
+async function roomReact(body, env, request) {
+  const a = await chatUser(body, env, request);
+  if (a.e) return a.e;
+  const { u, now } = a;
+  if (u.muted_until > now) return err('Вам закрыта отправка сообщений в общий чат', 403);
+  const id = Number(body.id) || 0;
+  const raw = noVS(body.emoji);
+  const emoji = raw ? REACTIONS.find((x) => noVS(x) === raw) : '';
+  if (emoji === undefined) return err('Такой реакции нет');
+  const m = await env.DB.prepare('SELECT id FROM room_messages WHERE id = ?').bind(id).first();
+  if (!m) return err('Сообщение уже удалено', 404);
+  const r = await env.DB.prepare('SELECT COUNT(*) AS n FROM room_reactions WHERE uid = ? AND ts > ?').bind(u.id, now - 60_000).first();
+  if (r && r.n >= RATE_REACT_PER_MIN) return err('Слишком часто. Подождите минуту', 429);
+  const cur = await env.DB.prepare('SELECT emoji FROM room_reactions WHERE msg = ? AND uid = ?').bind(id, u.id).first();
+  if (!emoji || (cur && cur.emoji === emoji)) {
+    await env.DB.prepare('DELETE FROM room_reactions WHERE msg = ? AND uid = ?').bind(id, u.id).run();
+  } else {
+    await env.DB.prepare(
+      `INSERT INTO room_reactions (msg, uid, emoji, ts) VALUES (?, ?, ?, ?)
+         ON CONFLICT(msg, uid) DO UPDATE SET emoji = excluded.emoji, ts = excluded.ts`
+    ).bind(id, u.id, emoji, now).run();
+  }
+  return json({ ok: true, reactions: await roomReactions(env, u.id) });
 }
 
 // Модератор закрывает пользователю отправку в общий чат. minutes: 0 — снять, иначе из списка. Другого модератора заглушить нельзя.
@@ -1065,6 +1280,7 @@ async function adminUserMute(body, env) {
 async function adminUserReset(body, env) {
   const uid = Number(body.uid) || 0;
   await env.DB.batch([
+    env.DB.prepare('DELETE FROM room_reactions WHERE uid = ? OR msg IN (SELECT id FROM room_messages WHERE uid = ?)').bind(uid, uid),
     env.DB.prepare('DELETE FROM room_messages WHERE uid = ?').bind(uid),
     env.DB.prepare('DELETE FROM dm_reads WHERE uid = ? OR peer = ?').bind(uid, uid),
     env.DB.prepare('DELETE FROM users WHERE id = ?').bind(uid),
@@ -1078,10 +1294,14 @@ async function adminRoomMessages(body, env) {
   let after = Number(body.after) || 0;
   const reset = body.rev === undefined || Number(body.rev) !== rev;
   if (reset) after = 0;
-  return json({ messages: await roomFetch(env, after), rev, reset });
+  return json({ messages: await roomFetch(env, after), rev, reset, reactions: await roomReactions(env, 0) });
 }
 async function adminRoomDelete(body, env) {
-  await env.DB.prepare('DELETE FROM room_messages WHERE id = ?').bind(Number(body.id) || 0).run();
+  const id = Number(body.id) || 0;
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM room_messages WHERE id = ?').bind(id),
+    env.DB.prepare('DELETE FROM room_reactions WHERE msg = ?').bind(id),
+  ]);
   await bumpRoomRev(env);
   return json({ ok: true });
 }
@@ -1108,7 +1328,67 @@ async function adminDmMessages(body, env) {
   return json({ messages: await dmFetch(env, x, y, Number(body.after) || 0) });
 }
 
-export default {
+// ----- прокси личного кабинета VPN для PWA (в браузере прямые запросы к pvpn.vitrinka.net закрыты CORS) -----
+// Запрос: { device, m, p, b, bearer, refresh, ref } -> ответ: { code, text, refresh }.
+// refresh — значение cookie client_refresh: сервер подставляет его в запрос и отдаёт новое из Set-Cookie.
+const VPN_BASE = 'https://pvpn.vitrinka.net';
+const VPN_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+const VPN_PATH = /^\/api\/[A-Za-z0-9_\-./~%?&=+:,;@!$*()]*$/;
+const VPN_TOKEN = /^[A-Za-z0-9._~+\/=-]{1,4000}$/;
+const VPN_REF = /^\/[A-Za-z0-9_\-./]{0,100}$/;
+async function vpnCall(body) {
+  const device = String(body.device || '');
+  if (!UUID.test(device)) return err('Некорректный запрос');
+  const m = String(body.m || 'GET').toUpperCase();
+  const p = String(body.p || '');
+  if (!VPN_METHODS.includes(m)) return err('Некорректный запрос');
+  if (!VPN_PATH.test(p) || p.length > 500 || p.includes('..') || p.includes('//')) return err('Некорректный адрес');
+  const b = body.b == null ? null : String(body.b);
+  if (b !== null && b.length > 100_000) return err('Слишком большой запрос', 413);
+  const bearer = String(body.bearer || '');
+  const refresh = String(body.refresh || '');
+  if ((bearer && !VPN_TOKEN.test(bearer)) || (refresh && !VPN_TOKEN.test(refresh))) return err('Некорректный запрос');
+  const ref = VPN_REF.test(String(body.ref || '')) ? String(body.ref) : '/app/plans';
+
+  const headers = {
+    Accept: 'application/json',
+    'User-Agent': 'PharmShopApp/1.0',
+    Origin: VPN_BASE,
+    Referer: VPN_BASE + ref,
+  };
+  if (bearer) headers.Authorization = 'Bearer ' + bearer;
+  if (refresh) headers.Cookie = 'client_refresh=' + refresh;
+  if (b !== null) headers['Content-Type'] = 'application/json';
+
+  let res, text;
+  try {
+    res = await fetch(VPN_BASE + p, {
+      method: m,
+      headers,
+      body: b !== null && m !== 'GET' ? b : undefined,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(20000),
+    });
+    text = await res.text();
+  } catch (e) {
+    return err('Сервер VPN недоступен. Попробуйте позже', 502);
+  }
+  let cookies = [];
+  if (typeof res.headers.getSetCookie === 'function') cookies = res.headers.getSetCookie();
+  else { const c = res.headers.get('set-cookie'); if (c) cookies = [c]; }
+  const mm = /(?:^|[\s,])client_refresh=([^;,\s]*)/.exec(cookies.join('\n'));
+  return json({ code: res.status, text, refresh: mm ? mm[1] : '' });
+}
+
+// ----- CORS: PWA открывается с другого адреса и ходит на воркер из браузера -----
+const CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'POST, GET, OPTIONS',
+  'access-control-allow-headers': 'content-type',
+  'access-control-max-age': '86400',
+};
+
+const app = {
   async fetch(request, env, ctx) {
     if (request.method === 'GET') return new Response('PharmShop chat OK');
     if (request.method !== 'POST') return err('Not found', 404);
@@ -1119,10 +1399,15 @@ export default {
     let body = {};
     try { body = await request.json(); } catch (e) { /* пустое тело */ }
 
+    const maint = await chatMaintenance(env, path);
+    if (maint) return maint;
+    if (path === '/api/vpn/call') return vpnCall(body);
+    if (path === '/api/orders/report') return ordersReport(body, env);
     if (path === '/api/chat/send') return userSend(body, env, ctx, request);
     if (path === '/api/chat/messages') return userMessages(body, env);
     if (path === '/api/chat/image') return userImage(body, env);
     if (path === '/api/chat/poll') return userPoll(body, env);
+    if (path === '/api/chat/rate') return userRate(body, env, ctx);
     if (path === '/api/push/register') return pushRegister(body, env);
     if (path === '/api/app/config') return appConfig(env);
     if (path === '/api/chat/me') return chatMe(body, env, request);
@@ -1133,6 +1418,7 @@ export default {
     if (path === '/api/room/messages') return roomMessages(body, env, request);
     if (path === '/api/room/send') return roomSend(body, env, request);
     if (path === '/api/room/delete') return roomDelete(body, env, request);
+    if (path === '/api/room/react') return roomReact(body, env, request);
     if (path === '/api/room/mute') return roomMute(body, env, request);
     if (path === '/api/dm/find') return dmFind(body, env, request);
     if (path === '/api/dm/list') return dmList(body, env, request);
@@ -1152,6 +1438,8 @@ export default {
       if (path === '/api/admin/related') return adminRelated(body, env);
       if (path === '/api/admin/profile') return adminProfile(body, env);
       if (path === '/api/admin/status') return adminSetStatus(body, env);
+      if (path === '/api/admin/ratings') return adminRatings(body, env);
+      if (path === '/api/admin/orders') return adminOrders(body, env);
       if (path === '/api/admin/block') return adminBlock(body, env);
       if (path === '/api/admin/unblock') return adminUnblock(body, env);
       if (path === '/api/admin/blocks') return adminBlocks(env);
@@ -1170,5 +1458,16 @@ export default {
       if (path === '/api/admin/dm_messages') return adminDmMessages(body, env);
     }
     return err('Not found', 404);
+  },
+};
+
+export default {
+  async fetch(request, env, ctx) {
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+    let res;
+    try { res = await app.fetch(request, env, ctx); } catch (e) { res = err('Ошибка сервера', 500); }
+    const h = new Headers(res.headers);
+    for (const k in CORS) h.set(k, CORS[k]);
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
   },
 };

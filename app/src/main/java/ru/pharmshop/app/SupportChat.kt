@@ -10,6 +10,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -360,16 +361,22 @@ internal fun MainActivity.showSupport() {
     backRow(root, "Поддержка", back)
     val nick = Store.lastUser
     val order = Store.orders().firstOrNull()?.optString("order_number").orEmpty()
+    val rating = ratingCard()
     val chat = chatPane(
         sid, "user",
         "Напишите нам, ответ придёт сюда, в чат. Если вопрос по заказу, укажите его номер. " +
             "Можно прикрепить фото (скрин ошибки, чек) кнопкой 📎.\n\n" +
             "Вместе с обращением уходят технические данные устройства. Что именно: Настройки → Прочее.",
-        { after -> ChatApi.userMessages(Store.deviceId, Store.deviceSecret, after) },
+        { after ->
+            ChatApi.userMessages(Store.deviceId, Store.deviceSecret, after).also {
+                ui { if (sid == screenId) rating.refresh() }   // статус «Решён» мог появиться только что
+            }
+        },
         { text, image -> ChatApi.userSend(Store.deviceId, Store.deviceSecret, nick, order, BuildConfig.VERSION_NAME, text, image) },
         { id -> ChatApi.userImage(Store.deviceId, Store.deviceSecret, id) },
         readTs = { ChatApi.lastReadTs }
     )
+    chat.addView(rating.box, 1)   // между лентой и полем ввода
     val faq = faqView()
     val tabs = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -389,4 +396,114 @@ internal fun MainActivity.showSupport() {
     root.addView(tabs)
     root.addView(body)
     select(true)
+}
+
+
+// ---------- оценка решённого обращения ----------
+
+/** Карточка «Оцените помощь»: появляется, когда обращение отмечено «Решено». [refresh] вызывают после каждого опроса чата. */
+internal class RatingCard(val box: LinearLayout, val refresh: () -> Unit)
+
+internal fun MainActivity.ratingCard(): RatingCard {
+    val box = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = shape(CARD, 16, LINE)
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        layoutParams = lp(8)
+        visibility = View.GONE
+    }
+    var shownKey = ""
+    var redraw: () -> Unit = {}   // перерисовать карточку (после отправки оценки)
+
+    fun starsLine(n: Int) = "★".repeat(n) + "☆".repeat(5 - n)
+
+    fun form(initial: Int, initialComment: String = "") {
+        box.removeAllViews()
+        var picked = initial
+        box.addView(txt("Вопрос решён? Оцените помощь", 15f, TEXT, true).apply { layoutParams = lp(6) })
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = lp(6)
+        }
+        val comment = EditText(this).apply {
+            hint = "Что понравилось или что улучшить? (необязательно)"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setTextColor(TEXT)
+            setHintTextColor(MUTE)
+            textSize = 14f * Theme.textScale
+            maxLines = 3
+            filters = arrayOf(InputFilter.LengthFilter(300))
+            background = shape(BG, 12, LINE)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            layoutParams = lp(8)
+            setText(initialComment)
+        }
+        val send = gbtn("Отправить оценку", true) {}
+        val starViews = ArrayList<TextView>()
+        fun paint() {
+            for ((i, v) in starViews.withIndex()) {
+                v.text = if (i < picked) "★" else "☆"
+                v.setTextColor(if (i < picked) AMBER else MUTE)
+            }
+            val on = picked > 0
+            comment.visibility = if (on) View.VISIBLE else View.GONE
+            send.visibility = if (on) View.VISIBLE else View.GONE
+        }
+        for (i in 1..5) {
+            val v = txt("☆", 32f, MUTE).apply {
+                gravity = Gravity.CENTER
+                contentDescription = "Оценка $i из 5"
+                isClickable = true
+                setOnClickListener { picked = i; paint() }
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            starViews.add(v)
+            row.addView(v)
+        }
+        box.addView(row)
+        box.addView(comment)
+        send.setOnClickListener {
+            if (picked == 0) return@setOnClickListener
+            val stars = picked
+            val text = comment.text.toString().trim()
+            send.isEnabled = false
+            io.execute {
+                try {
+                    ChatApi.userRate(Store.deviceId, Store.deviceSecret, stars, text)
+                    ui { shownKey = ""; toast("Спасибо за оценку!"); redraw() }
+                } catch (e: Exception) {
+                    ui { send.isEnabled = true; toast(errText(e)) }
+                }
+            }
+        }
+        box.addView(send)
+        paint()
+    }
+
+    fun refresh() {
+        val done = ChatApi.lastStatus == "done"
+        val r = ChatApi.lastRating
+        val key = if (!done) "off" else "on/$r"
+        if (key == shownKey) return
+        shownKey = key
+        box.removeAllViews()
+        if (!done) { box.visibility = View.GONE; return }
+        box.visibility = View.VISIBLE
+        if (r > 0) {
+            val line = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            line.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                addView(txt("Спасибо за оценку!", 14f, TEXT, true))
+                addView(txt(starsLine(r), 20f, AMBER))
+            })
+            line.addView(chip("Изменить", false) { form(r) }.apply { (layoutParams as LinearLayout.LayoutParams).rightMargin = 0 })
+            box.addView(line)
+        } else {
+            form(0)
+        }
+    }
+    redraw = { refresh() }
+    return RatingCard(box) { refresh() }
 }
