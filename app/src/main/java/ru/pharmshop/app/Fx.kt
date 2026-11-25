@@ -11,7 +11,8 @@ import android.view.View
 import kotlin.math.sin
 
 /**
- * Анимированный фон оформления поверх экрана: снег, листья, лепестки, солнечные блики, звёзды, «рэп-символы».
+ * Анимированный фон оформления поверх экрана: снег, листья, лепестки, солнечные блики, звёзды, «рэп-символы»,
+ * искры, руны, трассеры, неон, дождь из символов, цифровые полосы, пузырьки.
  * Касания пропускает к экрану под собой.
  */
 class FxView(ctx: Context, private val kind: Fx) : View(ctx) {
@@ -86,6 +87,57 @@ class FxView(ctx: Context, private val kind: Fx) : View(ctx) {
                 vr = (rnd.nextFloat() - 0.5f) * 40f
                 ch = arrayOf("$", "◆", "$", "✦")[rnd.nextInt(4)]
             }
+            Fx.EMBERS -> {   // искры летят вверх и мерцают
+                s = (1.2f + rnd.nextFloat() * 2.2f) * d
+                v = -(40f + rnd.nextFloat() * 60f) * d
+                sway = (10f + rnd.nextFloat() * 18f) * d
+                a = 130 + rnd.nextInt(120)
+                col = pick("#FF5A1F", "#FF9A1F", "#FFD23F", "#FF3B0F")
+            }
+            Fx.RUNES -> {    // медленно падающие руны
+                s = (9f + rnd.nextFloat() * 8f) * d
+                v = (18f + rnd.nextFloat() * 24f) * d
+                sway = (6f + rnd.nextFloat() * 16f) * d
+                a = 90 + rnd.nextInt(100)
+                col = if (Theme.light) pick("#D8432A", "#B8860B", "#8C2A1B") else pick("#E8553A", "#FFD27A", "#FFFFFF", "#C23C2A")
+                vr = (rnd.nextFloat() - 0.5f) * 50f
+                ch = arrayOf("◆", "✦", "◇", "▲")[rnd.nextInt(4)]
+            }
+            Fx.TRACERS -> {  // быстрые трассеры: s — длина полоски
+                s = (20f + rnd.nextFloat() * 28f) * d
+                v = (420f + rnd.nextFloat() * 380f) * d
+                sway = 0f
+                a = 70 + rnd.nextInt(110)
+                col = if (Theme.light) pick("#E08A12", "#B86A00") else pick("#FFB347", "#FFE08A", "#FFFFFF")
+            }
+            Fx.NEON -> {     // неоновое боке поднимается вверх
+                s = (4f + rnd.nextFloat() * 12f) * d
+                v = -(10f + rnd.nextFloat() * 20f) * d
+                sway = (10f + rnd.nextFloat() * 14f) * d
+                a = (if (Theme.light) 70 else 45) + rnd.nextInt(70)
+                col = pick("#FF4FA3", "#00E5FF", "#FFB35C", "#B66DFF")
+            }
+            Fx.MATRIX -> {   // дождь из символов
+                s = (11f + rnd.nextFloat() * 5f) * d
+                v = (60f + rnd.nextFloat() * 90f) * d
+                sway = 0f
+                a = 70 + rnd.nextInt(150)
+                col = if (Theme.light) pick("#0FA84A", "#0B7A36") else pick("#00FF66", "#2EFF8B", "#00C853")
+                ch = arrayOf("0", "1", "2", "3", "5", "7", "9", "A", "X", "Z")[rnd.nextInt(10)]
+            }
+            Fx.GLITCH -> {   // мигающие полосы: s — полудлина
+                s = (6f + rnd.nextFloat() * 28f) * d
+                v = 0f; sway = 0f
+                a = 80 + rnd.nextInt(150)
+                col = if (Theme.light) pick("#D9A800", "#0891B2", "#DB2777") else pick("#FCEE0A", "#00F0FF", "#FF2E93")
+            }
+            Fx.BUBBLES -> {  // пузырьки всплывают
+                s = (2f + rnd.nextFloat() * 7f) * d
+                v = -(24f + rnd.nextFloat() * 34f) * d
+                sway = (8f + rnd.nextFloat() * 12f) * d
+                a = 70 + rnd.nextInt(90)
+                col = if (Theme.light) pick("#0E9CB8", "#38BDF8") else pick("#7FE9F2", "#FFFFFF", "#38BDF8")
+            }
             Fx.NONE -> { s = d; v = 0f; sway = 0f; a = 0; col = Color.TRANSPARENT }
         }
         val y = when {
@@ -93,7 +145,8 @@ class FxView(ctx: Context, private val kind: Fx) : View(ctx) {
             v < 0 -> h + s * 2
             else -> -s * 2
         }
-        return P(rnd.nextFloat() * w, y, s, v, sway, rnd.nextFloat() * 6.28f, a, rnd.nextFloat() * 360f, vr, col, ch)
+        val rot0 = if (kind == Fx.MATRIX) 0f else rnd.nextFloat() * 360f   // символы «дождя» стоят прямо
+        return P(rnd.nextFloat() * w, y, s, v, sway, rnd.nextFloat() * 6.28f, a, rot0, vr, col, ch)
     }
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
@@ -102,6 +155,8 @@ class FxView(ctx: Context, private val kind: Fx) : View(ctx) {
         val n = when (kind) {
             Fx.SNOW -> 45; Fx.LEAVES -> 26; Fx.PETALS -> 30; Fx.SUN -> 22
             Fx.STARS -> 70; Fx.RAP -> 22; Fx.NONE -> 0
+            Fx.EMBERS -> 46; Fx.RUNES -> 20; Fx.TRACERS -> 12; Fx.NEON -> 24
+            Fx.MATRIX -> 36; Fx.GLITCH -> 18; Fx.BUBBLES -> 26
         }
         val k = when (Store.fxDensity) { 0 -> 0.5f; 2 -> 1.7f; else -> 1f }
         repeat(if (n > 0) maxOf(1, (n * k).toInt()) else 0) { ps.add(make(w, h, true)) }
@@ -114,7 +169,7 @@ class FxView(ctx: Context, private val kind: Fx) : View(ctx) {
         t += dt
         for (i in ps.indices) {
             val p = ps[i]
-            if (kind != Fx.STARS) {
+            if (kind != Fx.STARS && kind != Fx.GLITCH) {
                 p.y += p.v * dt
                 p.rot += p.vr * dt
                 if (p.v > 0 && p.y > height + p.s * 2 || p.v < 0 && p.y < -p.s * 2) {
@@ -141,7 +196,7 @@ class FxView(ctx: Context, private val kind: Fx) : View(ctx) {
                     c.drawPath(path, paint)
                     c.restore()
                 }
-                Fx.SUN -> {
+                Fx.SUN, Fx.NEON, Fx.BUBBLES -> {
                     paint.alpha = p.a / 2
                     c.drawCircle(x, p.y, p.s, paint)
                     paint.style = Paint.Style.STROKE
@@ -154,7 +209,24 @@ class FxView(ctx: Context, private val kind: Fx) : View(ctx) {
                     paint.alpha = (p.a * (0.25f + 0.75f * tw)).toInt().coerceIn(0, 255)
                     c.drawCircle(p.x, p.y, p.s, paint)
                 }
-                Fx.RAP -> {
+                Fx.EMBERS -> {
+                    val fl = 0.55f + 0.45f * sin(t * 7f + p.ph)
+                    paint.alpha = (p.a * fl).toInt().coerceIn(0, 255)
+                    c.drawCircle(x, p.y, p.s, paint)
+                }
+                Fx.TRACERS -> {
+                    streak.strokeWidth = 1.4f * resources.displayMetrics.density
+                    streak.color = p.col
+                    streak.alpha = p.a
+                    c.drawLine(x + p.s * 0.18f, p.y - p.s, x, p.y, streak)
+                }
+                Fx.GLITCH -> {
+                    val k = 0.5f + 0.5f * sin(t * (2f + p.ph % 3f) + p.ph)
+                    paint.alpha = (p.a * k * k * k).toInt().coerceIn(0, 255)
+                    val h = resources.displayMetrics.density * 1.5f
+                    c.drawRect(p.x - p.s, p.y - h, p.x + p.s, p.y + h, paint)
+                }
+                Fx.RAP, Fx.RUNES, Fx.MATRIX -> {
                     paint.alpha = p.a
                     paint.textSize = p.s
                     paint.textAlign = Paint.Align.CENTER

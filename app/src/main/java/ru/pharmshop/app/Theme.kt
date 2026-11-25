@@ -5,7 +5,16 @@ import android.graphics.Color
 import androidx.appcompat.app.AppCompatDelegate
 
 /** Анимированный фон темы. */
-enum class Fx { NONE, SNOW, LEAVES, PETALS, SUN, STARS, RAP }
+enum class Fx {
+    NONE, SNOW, LEAVES, PETALS, SUN, STARS, RAP,
+    /** Искры, летящие вверх (Ад). */ EMBERS,
+    /** Падающие руны-ромбы (Dota 2). */ RUNES,
+    /** Быстрые трассеры (CS:GO). */ TRACERS,
+    /** Неоновое боке (GTA 6). */ NEON,
+    /** Дождь из символов (Матрица). */ MATRIX,
+    /** Мигающие цифровые полосы (Киберпанк). */ GLITCH,
+    /** Поднимающиеся пузырьки (Океан). */ BUBBLES
+}
 
 /** Палитра темы для одного режима (тёмного или светлого). Цвет «accent» — заливка кнопок, текст на нём чёрный. */
 class Pal(bgHex: String, cardHex: String, lineHex: String, accentHex: String) {
@@ -30,7 +39,22 @@ enum class Skin(val id: Int, val emoji: String, val title: String, val fx: Fx, v
     SPACE(5, "🚀", "Космос", Fx.STARS,
         Pal("#06071A", "#0F1130", "#222550", "#8B7CFF"), Pal("#EEF0FF", "#FFFFFF", "#D6D9F5", "#7C6CF5")),
     RAP(6, "🎤", "Rap", Fx.RAP,
-        Pal("#0A0A0A", "#161616", "#2C2C2C", "#D4FF00"), Pal("#F0F0F0", "#FFFFFF", "#DADADA", "#FF2E93"));
+        Pal("#0A0A0A", "#161616", "#2C2C2C", "#D4FF00"), Pal("#F0F0F0", "#FFFFFF", "#DADADA", "#FF2E93")),
+    // Игровые и тематические оформления: только цвета и фон, без логотипов и картинок игр.
+    DOTA(7, "⚔️", "Dota 2", Fx.RUNES,
+        Pal("#0D0A0A", "#1A1212", "#32201E", "#E8553A"), Pal("#F7F1EE", "#FFFFFF", "#E6D5CF", "#D8432A")),
+    CSGO(8, "🔫", "CS:GO", Fx.TRACERS,
+        Pal("#0E1115", "#181D24", "#2A323D", "#F2A33A"), Pal("#F2F4F7", "#FFFFFF", "#DDE2E9", "#E08A12")),
+    GTA6(9, "🌴", "GTA 6", Fx.NEON,
+        Pal("#14081F", "#20102F", "#3A1F52", "#FF4FA3"), Pal("#FFF2F0", "#FFFFFF", "#F5D2DE", "#F0388E")),
+    HELL(10, "🔥", "Ад (Hell)", Fx.EMBERS,
+        Pal("#120504", "#200B08", "#3D1710", "#FF4A1C"), Pal("#FFF1EA", "#FFFFFF", "#F2CDBF", "#E5380B")),
+    MATRIX(11, "🟩", "Матрица", Fx.MATRIX,
+        Pal("#020B05", "#08170C", "#12301B", "#00FF66"), Pal("#EDF7F0", "#FFFFFF", "#C9E4D1", "#0FA84A")),
+    CYBER(12, "🌆", "Киберпанк", Fx.GLITCH,
+        Pal("#0B0A14", "#15132B", "#2B2850", "#FCEE0A"), Pal("#F7F6E8", "#FFFFFF", "#E6E3B8", "#D9A800")),
+    OCEAN(13, "🌊", "Океан", Fx.BUBBLES,
+        Pal("#04141F", "#0A2333", "#123A52", "#2BD4E0"), Pal("#EAF6FA", "#FFFFFF", "#C5E2EC", "#0E9CB8"));
 
     companion object {
         fun byId(id: Int): Skin = values().firstOrNull { it.id == id } ?: CLASSIC
@@ -45,7 +69,7 @@ class Banner(val title: String, val sub: String, val c1: Int, val c2: Int, val o
 
 /**
  * Тема оформления. Режим (Store.theme): 1 — тёмная (по умолчанию), 2 — светлая, 0 — как в системе.
- * Оформление (Store.skin): Стандарт, Осень, Новый год, Лето, Весна, Космос, Rap.
+ * Оформление (Store.skin): Стандарт, Осень, Новый год, Лето, Весна, Космос, Rap, Dota 2, CS:GO, GTA 6, Ад, Матрица, Киберпанк, Океан.
  */
 object Theme {
     @JvmField var light = false
@@ -131,6 +155,13 @@ object Theme {
         Skin.SPRING -> Banner("🌸 Весна пришла", "Пусть всё расцветает — и звёзды тоже", c("#E0579B"), c("#8E4FD6"), Color.WHITE, c("#FDE7F2"))
         Skin.SPACE -> Banner("🚀 Полёт нормальный", "Звёзды ближе, чем кажется", c("#3A2C9E"), c("#12154A"), Color.WHITE, c("#D9DBFF"))
         Skin.RAP -> Banner("🎤 Stars on the beat", "Свежие звёзды — без лишних слов", c("#D4FF00"), c("#7CFF3A"), Color.BLACK, c("#1E2A00"))
+        Skin.DOTA -> Banner("⚔️ Да начнётся бой", "Звёзды — для тех, кто в игре", c("#A3231A"), c("#2A0B0A"), Color.WHITE, c("#FFD9D2"))
+        Skin.CSGO -> Banner("🔫 Раунд за нами", "Звёзды — как фраги: чем больше, тем лучше", c("#B86A00"), c("#1E2530"), Color.WHITE, c("#FFE2B8"))
+        Skin.GTA6 -> Banner("🌴 Закат, неон и звёзды", "Вайб большого города — без пробок", c("#FF4FA3"), c("#6B3DFF"), Color.WHITE, c("#FFE3F1"))
+        Skin.HELL -> Banner("🔥 Добро пожаловать в Ад", "Здесь жарко — и со звёздами тоже", c("#D62E0F"), c("#4A0C06"), Color.WHITE, c("#FFD9CC"))
+        Skin.MATRIX -> Banner("🟩 Проснись…", "Звёзды ближе, чем кажется", c("#00843A"), c("#021A0B"), Color.WHITE, c("#B8FFD0"))
+        Skin.CYBER -> Banner("🌆 Ночной город", "Неон, хром и звёзды", c("#FCEE0A"), c("#FF2E93"), Color.BLACK, c("#2A2400"))
+        Skin.OCEAN -> Banner("🌊 Спокойно, как на дне", "Звёзды всплывают сами", c("#0E7FA6"), c("#06223F"), Color.WHITE, c("#CFF3FA"))
     }
 
     private fun newYearBanner() = Banner(
