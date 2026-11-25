@@ -86,7 +86,7 @@ internal fun MainActivity.chatRulesSheet(need: Boolean, onAccept: () -> Unit = {
 
 private val LINK_RE = Regex(
     """(?:https?://|www\.|\bt\.me/|\bwa\.me/|\btg://|[a-z0-9-]+(?:\.|\[\.\]|\(\.\)|\s(?:dot|точка)\s)(?:com|net|org|ru|su|io|me|info|biz|xyz|top|club|online|site|shop|store|app|dev|cc|tv|ly|gl|by|ua|kz|to|gg|рф)(?![\p{L}\d])|\S+\s+точка\s+(?:ком|ру|нет|орг|инфо)(?![\p{L}]))""",
-    setOf(RegexOption.IGNORE_CASE, RegexOption.UNICODE_CASE)   // как флаги iu на сервере: «РФ», «ТОЧКА» тоже находятся
+    RegexOption.IGNORE_CASE   // в Kotlin/JVM IGNORE_CASE уже включает UNICODE_CASE: «РФ», «ТОЧКА» тоже находятся
 )
 private val URL_RE = Regex("""https?://\S+""")
 
