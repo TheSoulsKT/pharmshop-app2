@@ -68,8 +68,9 @@ internal fun MainActivity.chatAvatar(uid: Long, nick: String, av: Long, sizeDp: 
     fun show(b: Bitmap) { iv.setImageBitmap(b); iv.visibility = View.VISIBLE }
 
     if (uid == CommunityState.myUid && uid != 0L) {
-        Avatar.bitmap()?.let { show(it) }          // своя — всегда та же, что в профиле
-        return box
+        val mine = Avatar.bitmap()                 // своя — та же, что в профиле
+        if (mine != null) { show(mine); return box }
+        // на этом телефоне своего фото нет, но оно могло быть поставлено в PWA или на другом устройстве: берём с сервера
     }
     if (av <= 0L) { ChatAvatars.cache.remove(uid); return box }
     val cached = ChatAvatars.cache[uid]

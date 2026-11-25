@@ -26,13 +26,27 @@ object Frames {
     /** Цвет рамки по номеру; у профиля без рамки — золотой, как в PWA. */
     fun color(n: Int): Int = if (n in 1..10) COLORS[n] else Color.parseColor("#FFD54F")
 
-    /** Номер уровня 0..9 по дням с регистрации в чате. */
+    /** Значки уровней — те же, что в PWA. */
+    val ICONS = arrayOf("🌱", "👋", "🙂", "🏠", "⚡", "🔥", "🧠", "🛡️", "💎", "🏆")
+
+    /** Сколько дней человек «с нами»: от регистрации в чате, а если сервер её не прислал — от первого просмотра уровня (как в PWA). */
+    fun days(): Int {
+        val t0 = Store.chatCreated.takeIf { it > 0 } ?: Store.levelSince()
+        return ((System.currentTimeMillis() - t0) / 86_400_000L).toInt().coerceAtLeast(0)
+    }
+
+    /** Номер уровня 0..9 по дням «с нами». */
     fun level(): Int {
-        val t0 = Store.chatCreated.takeIf { it > 0 } ?: System.currentTimeMillis()
-        val days = ((System.currentTimeMillis() - t0) / 86_400_000L).toInt().coerceAtLeast(0)
+        val days = days()
         var i = 0
         DAYS.forEachIndexed { n, d -> if (days >= d) i = n }
         return i
+    }
+
+    /** Сколько процентов пути до следующего уровня пройдено (на последнем уровне — 100). */
+    fun progress(): Int {
+        val next = DAYS.getOrNull(level() + 1) ?: return 100
+        return Math.min(100, Math.round(days() * 100f / next))
     }
 }
 

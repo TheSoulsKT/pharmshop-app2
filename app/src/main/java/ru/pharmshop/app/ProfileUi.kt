@@ -5,6 +5,7 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Outline
 import android.graphics.Typeface
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.text.Editable
@@ -47,7 +48,11 @@ internal fun MainActivity.coverColors(): Pair<Int, Int> {
     return if (c != null) c.c1 to c.c2 else BLUE to ColorUtils.blendARGB(BLUE, BG, 0.5f)
 }
 
-internal fun MainActivity.coverDrawable(radius: Int = 0): GradientDrawable {
+internal fun MainActivity.coverDrawable(radius: Int = 0): Drawable {
+    if (Store.profileCover == CoverPhoto.ID) {
+        val photo = CoverPhoto.bitmap()
+        if (photo != null) return CoverPhotoDrawable(photo, dp(radius).toFloat())
+    }
     val (a, b) = coverColors()
     return GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(a, b)).apply { cornerRadius = dp(radius).toFloat() }
 }
@@ -284,6 +289,9 @@ internal fun MainActivity.profileHero(body: LinearLayout, sid: Int, user: String
             gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(8)
         }
     })
+
+    // уровень: плашка, путь до следующего и дни «с нами» (как в PWA); нужен ник в чате, от него считаются дни
+    if (chatNick.isNotEmpty()) card.addView(levelBlock())
 
     // описание: текст или приглашение его добавить
     val hasBio = Store.bio.isNotEmpty()
@@ -565,7 +573,47 @@ internal fun MainActivity.photoSheet(body: LinearLayout, sid: Int, user: String)
 /** Выбор обложки: образцы в два ряда, выбранная отмечена галочкой. */
 internal fun MainActivity.coverSheet(body: LinearLayout, sid: Int) {
     sheet("Обложка профиля") { box, close ->
-        box.addView(txt("Цвет верхней части карточки профиля. «По теме» подстраивается под выбранное оформление.", 13f, MUTE).apply { layoutParams = lp(12) })
+        box.addView(txt("Цвет верхней части карточки профиля или своё фото из галереи. «По теме» подстраивается под выбранное оформление.", 13f, MUTE).apply { layoutParams = lp(12) })
+
+        // своё фото из галереи
+        val hasPhoto = CoverPhoto.has()
+        val photoSel = hasPhoto && Store.profileCover == CoverPhoto.ID
+        box.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val bmp = if (hasPhoto) CoverPhoto.bitmap() else null
+            background = if (bmp != null) CoverPhotoDrawable(bmp, corner(16)) else shape(CARD, 16, if (photoSel) TEXT else LINE)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            isClickable = true
+            setOnClickListener {
+                when {
+                    hasPhoto && !photoSel -> {
+                        Store.profileCover = CoverPhoto.ID
+                        close()
+                        if (sid == screenId) renderProfile(body, sid)
+                    }
+                    else -> { close(); pickCoverPhoto(body, sid) }
+                }
+            }
+            pressable(this)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(64)).apply { bottomMargin = dp(10) }
+            addView(txt(
+                if (hasPhoto) "🖼 Своё фото" + (if (photoSel) "  ✓" else "") else "🖼 Выбрать из галереи",
+                14f, if (bmp != null) Color.WHITE else TEXT, true
+            ))
+        })
+        if (hasPhoto) {
+            box.addView(btnGrid(listOf(
+                gbtn("Другое фото") { close(); pickCoverPhoto(body, sid) },
+                gbtn("Убрать фото") {
+                    CoverPhoto.remove()
+                    if (Store.profileCover == CoverPhoto.ID) Store.profileCover = 0
+                    close()
+                    if (sid == screenId) renderProfile(body, sid)
+                }
+            ), 10))
+        }
+
         val options = listOf(ProfileCover(0, "По теме", BLUE, ColorUtils.blendARGB(BLUE, BG, 0.5f))) + PROFILE_COVERS
         var i = 0
         while (i < options.size) {

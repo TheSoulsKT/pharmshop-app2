@@ -73,11 +73,11 @@ internal fun MainActivity.showProfile() {
 internal fun MainActivity.syncChatInfo(body: LinearLayout, sid: Int) {
     syncMyAvatar()
     io.execute {
-        val before = Store.chatNick + "|" + Store.chatMsgs + "|" + Store.allBadgesGranted + "|" + Store.chatFrame
+        val before = Store.chatNick + "|" + Store.chatMsgs + "|" + Store.allBadgesGranted + "|" + Store.chatFrame + "|" + Store.chatCreated
         val me = try { ChatApi.chatMe() } catch (e: Exception) { return@execute }
         if (me.optBoolean("registered")) syncCrown(me.optInt("crown") == 1)   // зелёная корона в чате: все достижения собраны?
         ui { syncMyAvatar() }   // ник мог стать известен только сейчас (выбран до этого обновления)
-        if (before != Store.chatNick + "|" + Store.chatMsgs + "|" + Store.allBadgesGranted + "|" + Store.chatFrame) ui { if (sid == screenId) renderProfile(body, sid) }
+        if (before != Store.chatNick + "|" + Store.chatMsgs + "|" + Store.allBadgesGranted + "|" + Store.chatFrame + "|" + Store.chatCreated) ui { if (sid == screenId) renderProfile(body, sid) }
     }
 }
 

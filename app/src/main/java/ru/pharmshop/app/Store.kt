@@ -249,6 +249,15 @@ object Store {
         get() = sp.getLong("chat_created", 0L)
         set(v) { sp.edit().putLong("chat_created", v).apply() }
 
+    /** Запасная точка отсчёта уровня, если сервер не прислал дату регистрации: время первого просмотра уровня. */
+    fun levelSince(): Long {
+        val v = sp.getLong("level_since", 0L)
+        if (v > 0L) return v
+        val now = System.currentTimeMillis()
+        sp.edit().putLong("level_since", now).apply()
+        return now
+    }
+
     /** Администратор выдал все достижения: в профиле они все открыты (флаг приходит с сервера). */
     var allBadgesGranted: Boolean
         get() = sp.getBoolean("all_badges_granted", false)
@@ -334,10 +343,11 @@ object Store {
             "accent_id", "corner_style", "card_size", "hide_soon", "hidden_sections", "profile_cover"
         )) e.remove(k)
         e.apply()
+        CoverPhoto.remove()
     }
 
     /** Полный сброс данных приложения (если забыли PIN). */
-    fun wipeAll() { sp.edit().clear().commit(); Avatar.remove(); Diag.reset() }
+    fun wipeAll() { sp.edit().clear().commit(); Avatar.remove(); CoverPhoto.remove(); Diag.reset() }
 
     // ----- обновления в фоне -----
     /** Скачивать новые версии в фоне, когда телефон на Wi-Fi. */
@@ -357,6 +367,7 @@ object Store {
     fun init(ctx: Context) {
         sp = ctx.applicationContext.getSharedPreferences("pharmshop", Context.MODE_PRIVATE)
         Avatar.init(ctx.applicationContext)
+        CoverPhoto.init(ctx.applicationContext)
         // старые версии хранили сам код админа открытым текстом — стираем; админ войдёт заново и получит токен
         if (sp.contains("admin_code")) sp.edit().remove("admin_code").apply()
     }

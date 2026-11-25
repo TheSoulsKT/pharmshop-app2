@@ -151,7 +151,7 @@ private fun MainActivity.settingsHero(body: LinearLayout) {
         ellipsize = android.text.TextUtils.TruncateAt.END
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) }
     })
-    val lvl = if (Store.chatCreated > 0) "Уровень ${Frames.level() + 1} · ${Frames.NAMES[Frames.level()]} · " else ""
+    val lvl = if (Store.chatCreated > 0) "${Frames.ICONS[Frames.level()]} Уровень ${Frames.level() + 1} · ${Frames.NAMES[Frames.level()]} · " else ""
     card.addView(txt(lvl + "версия " + BuildConfig.VERSION_NAME, 12f, ColorUtils.setAlphaComponent(Color.WHITE, 220)).apply {
         gravity = Gravity.CENTER
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) }

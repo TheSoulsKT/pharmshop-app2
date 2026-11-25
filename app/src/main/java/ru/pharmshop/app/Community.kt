@@ -356,9 +356,18 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
         background = shape(CARD, 18, LINE)
-        setPadding(dp(10), dp(8), dp(10), dp(8))
+        setPadding(dp(14), dp(10), dp(12), dp(10))
         layoutParams = lp(10)
-        addView(chatAvatar(myUid, myNick, 0, 38).apply { (layoutParams as LinearLayout.LayoutParams).rightMargin = dp(10) })
+        clipChildren = false
+        clipToPadding = false
+        // миниатюра профиля: фото с рамкой, нажатие открывает профиль
+        addView(chatAvatar(myUid, myNick, me.optLong("av"), 38).apply {
+            (layoutParams as LinearLayout.LayoutParams).rightMargin = dp(14)
+            isClickable = true
+            contentDescription = "Мой профиль"
+            setOnClickListener { openTab(2) }
+            pressable(this)
+        })
         addView(LinearLayout(this@communityMain).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -368,7 +377,7 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
                 addView(whoNick)
                 addView(whoCrown)
             })
-            addView(txt("Ваш ник в чате", 11f, MUTE))
+            addView(txt("Ваш ник · " + Frames.ICONS[Frames.level()] + " уровень " + (Frames.level() + 1), 11f, MUTE))
         })
         addView(chip("📜", false) { chatRulesSheet(false) }.apply { contentDescription = "Правила чата" })
         addView(chip("Сменить", false) { changeNickSheet(myNick) { myNick = it; renderWho() } }.apply {
