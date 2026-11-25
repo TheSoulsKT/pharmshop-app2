@@ -44,10 +44,16 @@ private fun MainActivity.circle(v: View) {
  * [av] — версия аватарки с сервера (0 — аватарки нет).
  */
 internal fun MainActivity.chatAvatar(uid: Long, nick: String, av: Long, sizeDp: Int, frame: Int = -1): View {
-    val box = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)) }
+    // Квадрат аватарки сразу включает место под рамку (у всех одинаковый), поэтому рамка не вылезает за границы,
+    // лента её не обрезает, а подписи и пузыри стоят ровно, есть рамка у человека или нет.
+    val pad = framePadDp(sizeDp)
+    val outer = sizeDp + 2 * pad
+    val box = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(dp(outer), dp(outer)) }
     // frame = -1 — взять рамку из своих данных, если это мой аватар; иначе рамка, пришедшая с сервера (0 — нет)
     val fr = if (frame < 0) (if (uid == CommunityState.myUid && uid != 0L) Store.chatFrame else 0) else frame
-    if (fr in 1..10) addFrameRing(box, sizeDp, Frames.color(fr))
+    if (fr in 1..10) box.addView(FrameView(this, fr, dp(pad).toFloat()).apply {
+        layoutParams = FrameLayout.LayoutParams(dp(outer), dp(outer))
+    })
     box.addView(TextView(this).apply {
         text = nick.firstOrNull()?.uppercaseChar()?.toString() ?: "?"
         textSize = sizeDp * 0.42f
@@ -55,13 +61,13 @@ internal fun MainActivity.chatAvatar(uid: Long, nick: String, av: Long, sizeDp: 
         gravity = Gravity.CENTER
         setTypeface(typeface, Typeface.BOLD)
         background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(nickColor(nick)) }
-        layoutParams = FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
+        layoutParams = FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp), Gravity.CENTER)
     })
     val iv = ImageView(this).apply {
         scaleType = ImageView.ScaleType.CENTER_CROP
         circle(this)
         visibility = View.GONE
-        layoutParams = FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
+        layoutParams = FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp), Gravity.CENTER)
     }
     box.addView(iv)
 
@@ -136,7 +142,7 @@ internal fun MainActivity.dateChip(ts: Long): View =
 /** Ширина пузыря: не больше 72% экрана (минус место под аватарку). */
 internal fun MainActivity.bubbleMax(withAvatar: Boolean): Int {
     val w = resources.displayMetrics.widthPixels - dp(36)   // поля экрана
-    return ((w - if (withAvatar) dp(36) else 0) * 0.82f).toInt()
+    return ((w - if (withAvatar) dp(frameOuterDp(30) + 2) else 0) * 0.82f).toInt()
 }
 
 /**
@@ -209,8 +215,15 @@ internal fun MainActivity.messageRow(own: Boolean, avatar: View?, content: View,
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             .apply { topMargin = dp(gapTop) }
         if (avatar != null) {
-            (avatar.layoutParams as LinearLayout.LayoutParams).rightMargin = dp(6)
+            (avatar.layoutParams as LinearLayout.LayoutParams).rightMargin = dp(2)
             addView(avatar)
+            // квадрат аватарки выше самого фото на поле рамки: приподнимаем пузырь, чтобы низ фото и низ пузыря совпали
+            if (avatar.tag != "ph") {
+                val clp = (content.layoutParams as? LinearLayout.LayoutParams)
+                    ?: LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                clp.bottomMargin = dp(framePadDp(30))
+                content.layoutParams = clp
+            }
         }
         addView(content)
     }

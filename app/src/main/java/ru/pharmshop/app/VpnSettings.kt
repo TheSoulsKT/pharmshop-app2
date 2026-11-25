@@ -10,7 +10,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.LinearLayout
 
-// Настройки VPN (вкладка «Прочее»): проверка VPN, kill switch, российские сайты напрямую, DNS, блокировка рекламы, IPv6,
+// Настройки VPN (вкладка «Настройки» в разделе VPN): проверка VPN, kill switch, российские сайты напрямую, DNS, блокировка рекламы, IPv6,
 // автоподключение, обход DPI, приложения в VPN.
 // Все параметры применяются при следующем подключении; если VPN включён — переподключаем сразу.
 
@@ -71,8 +71,8 @@ private fun MainActivity.killSwitchHint(): LinearLayout? {
     return box
 }
 
-internal fun MainActivity.vpnSettingsBlock(body: LinearLayout, again: () -> Unit) {
-    body.addView(txt("VPN", 20f, TEXT, true).apply { layoutParams = lp(10).apply { topMargin = dp(10) } })
+internal fun MainActivity.vpnSettingsBlock(body: LinearLayout, again: () -> Unit, withTitle: Boolean = true) {
+    if (withTitle) body.addView(txt("VPN", 20f, TEXT, true).apply { layoutParams = lp(10).apply { topMargin = dp(10) } })
     val c = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         background = shape(CARD, 18, LINE)
@@ -204,6 +204,30 @@ internal fun MainActivity.vpnSettingsBlock(body: LinearLayout, again: () -> Unit
     }
     pressable(row)
     c.addView(row)
+    body.addView(c)
+}
+
+/** Защита VPN (раньше была в «Защите данных»): прятать ссылку подписки, PIN при выходе; подсказка про виджет. */
+internal fun MainActivity.vpnPrivacyBlock(body: LinearLayout) {
+    body.addView(txt("Защита", 16f, TEXT, true).apply { layoutParams = lp(8).apply { topMargin = dp(4) } })
+    val c = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = shape(CARD, 18, LINE)
+        setPadding(dp(16), dp(14), dp(16), dp(14))
+        layoutParams = lp(12)
+    }
+    val lock = lockEnabled()
+    c.addView(switchRow("Прятать ссылку подписки", "Ссылка показывается только после нажатия на неё", Store.vpnMaskLink) { on ->
+        Store.vpnMaskLink = on
+    })
+    c.addView(switchRow(
+        "PIN для выхода из VPN",
+        if (lock) "Спрашивать PIN при выходе из аккаунта и смене ссылки" else "Сначала включите вход по PIN или отпечатку в Настройки → Безопасность",
+        Store.vpnPinGuard && lock, lock
+    ) { on -> Store.vpnPinGuard = on })
+    c.addView(txt("Виджет VPN: удерживайте палец на рабочем столе → «Виджеты» → PharmShop.", 12f, MUTE).apply {
+        layoutParams = lp(0).apply { topMargin = dp(6) }
+    })
     body.addView(c)
 }
 

@@ -50,7 +50,7 @@ import kotlin.math.sin
 
 internal enum class VIc {
     PAW, CHECK, SNOW, SUN, RENEW, USERS, CHART, PHONE, LINK,
-    WALLET, BAG, LOGOUT, COPY, BOLT, SPEED, CLOCK, STAR
+    WALLET, BAG, LOGOUT, COPY, BOLT, SPEED, CLOCK, STAR, GEAR
 }
 
 private val BOLT_P = Path().apply {
@@ -155,6 +155,17 @@ internal fun drawVIc(c: Canvas, k: VIc, p: Paint) {
             }
             s.close()
             c.drawPath(s, p)
+        }
+        VIc.GEAR -> {   // шестерёнка: кольцо, втулка и восемь зубцов
+            c.drawCircle(12f, 12f, 3f, p)
+            c.drawCircle(12f, 12f, 6.6f, p)
+            for (i in 0 until 8) {
+                val a = PI / 4 * i
+                c.drawLine(
+                    12f + (6.6f * cos(a)).toFloat(), 12f + (6.6f * sin(a)).toFloat(),
+                    12f + (9.6f * cos(a)).toFloat(), 12f + (9.6f * sin(a)).toFloat(), p
+                )
+            }
         }
     }
 }

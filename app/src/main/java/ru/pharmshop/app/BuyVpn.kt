@@ -319,7 +319,7 @@ private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArr
     list.sortWith(compareBy<JSONObject>({ it.optInt("days") }, { it.optLong("total_price_display") }))
     val canBuy = list.isNotEmpty() && methods.isNotEmpty()
 
-    var tab = if (vpnTab in 0..1) vpnTab else if (subs.length() > 0) 0 else 1
+    var tab = if (vpnTab in 0..2) vpnTab else if (subs.length() > 0) 0 else 1
 
     // состояние покупки живёт здесь, чтобы не сбрасываться при переключении вкладок
     var plan: JSONObject = list.firstOrNull { it.optBoolean("is_popular") } ?: list.firstOrNull() ?: JSONObject()
@@ -358,7 +358,7 @@ private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArr
     lateinit var renderTab: () -> Unit
 
     // переключатель вкладок со скользящей капсулой
-    val seg = vpnSegment(listOf("Моя подписка", "Купить"), listOf(VIc.PAW, VIc.BAG), tab) { i ->
+    val seg = vpnSegment(listOf("Подписка", "Купить", "Настройки"), listOf(VIc.PAW, VIc.BAG, VIc.GEAR), tab) { i ->
         if (tab != i) { tab = i; vpnTab = i; renderTab(); riseIn(content) }
     }
     col.addView(seg.root)
@@ -503,10 +503,21 @@ private fun MainActivity.buildVpnForm(col: LinearLayout, sid: Int, subs: JSONArr
         requestQuote()
     }
 
+    // ---------- вкладка «Настройки»: DNS, маршруты, автоподключение, приложения в VPN (раньше были в общих настройках) ----------
+    fun fillSettings(box: LinearLayout) {
+        vpnSettingsBlock(box, { if (sid == screenId) renderTab() }, withTitle = false)
+        vpnPrivacyBlock(box)
+    }
+
     renderTab = {
         content.removeAllViews()
-        if (tab == 0) (col.tag as? android.widget.FrameLayout)?.removeAllViews()
-        if (tab == 0) fillMine(content) else fillBuy(content)
+        // закреплённая панель оплаты нужна только на вкладке «Купить»
+        if (tab != 1) (col.tag as? android.widget.FrameLayout)?.removeAllViews()
+        when (tab) {
+            0 -> fillMine(content)
+            1 -> fillBuy(content)
+            else -> fillSettings(content)
+        }
     }
     renderTab()
     riseIn(col, firstNew)

@@ -235,14 +235,31 @@ internal fun MainActivity.profileHero(body: LinearLayout, sid: Int, user: String
         layoutParams = FrameLayout.LayoutParams(dp(102), dp(102), Gravity.CENTER)
     }
     ring.layoutParams = FrameLayout.LayoutParams(dp(96), dp(96), Gravity.CENTER)
+    val framed = Store.chatFrame in 1..10
+    val fpad = framePadDp(96)                 // место под узорную рамку внутри квадрата
+    val fout = 96 + 2 * fpad
     val photoWrap = FrameLayout(this).apply {
-        layoutParams = LinearLayout.LayoutParams(dp(112), dp(110)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = -dp(55) }
-        addView(frameGlow)
-        addView(frameRing)
-        addView(ring)
-        addView(roundBtn("📷", 32, BLUE, CARD, "Изменить фото") { photoSheet(body, sid, user) }.apply {
-            layoutParams = FrameLayout.LayoutParams(dp(32), dp(32), Gravity.END or Gravity.BOTTOM).apply { bottomMargin = dp(9) }
-        })
+        if (framed) {
+            // выбранная рамка с узором: фото в карточном кольце, вокруг — рамка своего уровня
+            layoutParams = LinearLayout.LayoutParams(dp(fout), dp(fout)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = -dp(fout / 2) }
+            addView(FrameView(this@profileHero, Store.chatFrame, dp(fpad).toFloat()).apply {
+                layoutParams = FrameLayout.LayoutParams(dp(fout), dp(fout))
+            })
+            addView(ring)
+            addView(roundBtn("📷", 32, BLUE, CARD, "Изменить фото") { photoSheet(body, sid, user) }.apply {
+                layoutParams = FrameLayout.LayoutParams(dp(32), dp(32), Gravity.END or Gravity.BOTTOM).apply {
+                    bottomMargin = dp(fpad - 2); rightMargin = dp(fpad - 2)
+                }
+            })
+        } else {
+            layoutParams = LinearLayout.LayoutParams(dp(112), dp(110)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = -dp(55) }
+            addView(frameGlow)
+            addView(frameRing)
+            addView(ring)
+            addView(roundBtn("📷", 32, BLUE, CARD, "Изменить фото") { photoSheet(body, sid, user) }.apply {
+                layoutParams = FrameLayout.LayoutParams(dp(32), dp(32), Gravity.END or Gravity.BOTTOM).apply { bottomMargin = dp(9) }
+            })
+        }
     }
     card.addView(photoWrap)
 

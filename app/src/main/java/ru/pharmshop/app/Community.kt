@@ -1002,7 +1002,7 @@ internal fun MainActivity.msgPane(
         val avatarOn = showNames && !own
         val avatar: View? = when {
             !avatarOn -> null
-            cont -> View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(30), dp(30)) }
+            cont -> View(this).apply { tag = "ph"; layoutParams = LinearLayout.LayoutParams(dp(frameOuterDp(30)), dp(1)) }
             else -> chatAvatar(uid, nick, m.optLong("av"), 30, m.optInt("fr"))
         }
         val timeStr = clockFmt.format(java.util.Date(ts))

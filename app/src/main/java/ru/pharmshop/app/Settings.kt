@@ -50,11 +50,10 @@ private class SettingsPage(val emoji: String, val title: String, val sub: String
 
 private val SETTINGS_PAGES = listOf(
     SettingsPage("🎨", "Тема и цвета", "Режим, оформление, цвет акцента"),
-    SettingsPage("✨", "Эффекты и интерфейс", "Анимации, вибрация, размер текста"),
-    SettingsPage("🏠", "Главный экран", "Разделы, значок, заказы"),
-    SettingsPage("🔒", "Безопасность", "PIN, отпечаток, блокировка"),
+    SettingsPage("✨", "Эффекты и интерфейс", "Анимации, вибрация, текст, скругления"),
+    SettingsPage("🏠", "Главный экран", "Запуск, разделы, значок, заказы"),
+    SettingsPage("🔒", "Безопасность", "PIN, отпечаток, неудачные входы"),
     SettingsPage("🛡️", "Защита данных", "Скрытие сумм, оплата, буфер обмена"),
-    SettingsPage("🌐", "VPN", "DNS, маршруты, автоподключение"),
     SettingsPage("🔔", "Уведомления", "Push и напоминания"),
     SettingsPage("⬆️", "Обновления", "Версия и проверка"),
     SettingsPage("💬", "Помощь и сброс", "Подсказки, сброс настроек"),
@@ -68,10 +67,9 @@ private fun MainActivity.pageColor(i: Int): Int = when (i) {
     2 -> ORANGE
     3 -> GREEN
     4 -> CYAN
-    5 -> VIOLET
-    6 -> RED
-    7 -> GOLD
-    8 -> if (Theme.light) Color.parseColor("#0F8F82") else Color.parseColor("#2DD4BF")
+    5 -> RED
+    6 -> GOLD
+    7 -> if (Theme.light) Color.parseColor("#0F8F82") else Color.parseColor("#2DD4BF")
     else -> MUTE
 }
 
@@ -79,8 +77,8 @@ private fun MainActivity.pageColor(i: Int): Int = when (i) {
 private fun MainActivity.pageValue(i: Int): String = when (i) {
     0 -> Theme.skin.title
     3 -> when (Store.lockMode) { 1 -> "PIN"; 2 -> "Отпечаток"; else -> "Выкл." }
-    6 -> if (Store.pushEnabled) "Вкл." else "Выкл."
-    7 -> BuildConfig.VERSION_NAME
+    5 -> if (Store.pushEnabled) "Вкл." else "Выкл."
+    6 -> BuildConfig.VERSION_NAME
     else -> ""
 }
 
@@ -93,8 +91,8 @@ internal fun MainActivity.renderSettings(body: LinearLayout, sid: Int) {
         settingsHero(body)
         menuGroup(body, "Внешний вид", listOf(0, 1, 2), again)
         menuGroup(body, "Защита", listOf(3, 4), again)
-        menuGroup(body, "Сервисы", listOf(5, 6, 7), again)
-        menuGroup(body, "О приложении", listOf(8, 9), again)
+        menuGroup(body, "Сервисы", listOf(5, 6), again)
+        menuGroup(body, "О приложении", listOf(7, 8), again)
         return
     }
     val toMain: () -> Unit = { settingsPage = -1; again() }
@@ -103,13 +101,12 @@ internal fun MainActivity.renderSettings(body: LinearLayout, sid: Int) {
     when (settingsPage) {
         0 -> { appearanceBlock(body); accentBlock(body) }
         1 -> { effectsBlock(body, again); interfaceBlock(body, again) }
-        2 -> { sectionsBlock(body); iconBlock(body, again); ordersBlock(body, again) }
+        2 -> { homeLayoutBlock(body, again); sectionsBlock(body); iconBlock(body, again); ordersBlock(body, again) }
         3 -> securityBlock(body, again)
         4 -> dataProtectionBlock(body, again)
-        5 -> vpnSettingsBlock(body, again)
-        6 -> notificationsBlock(body)
-        7 -> updatesBlock(body, again)
-        8 -> { helpBlock(body); resetBlock(body) }
+        5 -> notificationsBlock(body)
+        6 -> updatesBlock(body, again)
+        7 -> { helpBlock(body); resetBlock(body) }
         else -> dataBlock(body)
     }
 }
@@ -133,7 +130,16 @@ private fun MainActivity.settingsHero(body: LinearLayout) {
         pressable(this)
     }
     val fc = Frames.color(Store.chatFrame)
-    card.addView(FrameLayout(this).apply {
+    val sfPad = framePadDp(72)
+    val sfOut = 72 + 2 * sfPad
+    if (Store.chatFrame in 1..10) card.addView(FrameLayout(this).apply {
+        // выбранная рамка с узором вокруг фото
+        layoutParams = LinearLayout.LayoutParams(dp(sfOut), dp(sfOut))
+        addView(FrameView(this@settingsHero, Store.chatFrame, dp(sfPad).toFloat()).apply {
+            layoutParams = FrameLayout.LayoutParams(dp(sfOut), dp(sfOut))
+        })
+        addView(avatarView(72, name, 28f).apply { layoutParams = FrameLayout.LayoutParams(dp(72), dp(72), Gravity.CENTER) })
+    }) else card.addView(FrameLayout(this).apply {
         layoutParams = LinearLayout.LayoutParams(dp(88), dp(88))
         addView(View(this@settingsHero).apply {
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(fc) }
@@ -427,17 +433,25 @@ private fun MainActivity.interfaceBlock(body: LinearLayout, again: () -> Unit) {
         Theme.update(this)
         reopenSettings()
     })
-    c.addView(caption("Карточки разделов на главной"))
-    c.addView(segmented(listOf("Обычные", "Компактные"), Store.cardSize.coerceIn(0, 1)) { i ->
-        Store.cardSize = i
-        again()
-    })
+    body.addView(c)
+}
+
+// ---------- главный экран: запуск и вид карточек ----------
+
+private fun MainActivity.homeLayoutBlock(body: LinearLayout, again: () -> Unit) {
+    sectionLabel(body, "Запуск и вид")
+    val c = groupCard()
     c.addView(caption("Какая вкладка открывается при запуске"))
     val tabs = listOf(0, 4, 5, 2)
     // раньше «Чат» здесь означал поддержку (1): теперь это общий чат
     val cur = if (Store.startTab == 1) 5 else Store.startTab
     c.addView(segmented(listOf("Telegram", "VPN", "Чат", "Профиль"), tabs.indexOf(cur).coerceAtLeast(0)) { i ->
         Store.startTab = tabs[i]
+        again()
+    })
+    c.addView(caption("Карточки разделов на главной"))
+    c.addView(segmented(listOf("Обычные", "Компактные"), Store.cardSize.coerceIn(0, 1)) { i ->
+        Store.cardSize = i
         again()
     })
     c.addView(switchRow("Скрывать поздравление", "Убрать цветную плашку на главном экране", Store.hideBanner) { on ->
@@ -617,7 +631,6 @@ private fun MainActivity.effectsBlock(body: LinearLayout, again: () -> Unit) {
 private fun MainActivity.dataProtectionBlock(body: LinearLayout, again: () -> Unit) {
     sectionLabel(body, "Защита данных")
     val c = groupCard()
-    val lock = lockEnabled()
     c.addView(switchRow("Скрывать экран в «Недавних»", "Запрещает скриншоты и прячет содержимое в списке приложений", Store.secureScreen) { on ->
         Store.secureScreen = on
         applySecureScreen()
@@ -629,22 +642,9 @@ private fun MainActivity.dataProtectionBlock(body: LinearLayout, again: () -> Un
     c.addView(switchRow("Подтверждать оплату", "Окно с суммой перед переходом к оплате", Store.confirmPay) { on ->
         Store.confirmPay = on
     })
-    c.addView(switchRow("Прятать ссылку подписки VPN", "Ссылка показывается только после нажатия на неё", Store.vpnMaskLink) { on ->
-        Store.vpnMaskLink = on
-    })
     c.addView(switchRow("Очищать буфер обмена", "Через минуту после копирования ссылки подписки", Store.clipAutoClear) { on ->
         Store.clipAutoClear = on
     })
-    c.addView(switchRow(
-        "PIN для выхода из VPN",
-        if (lock) "Спрашивать PIN при выходе из аккаунта и смене ссылки" else "Сначала включите вход по PIN или отпечатку",
-        Store.vpnPinGuard && lock, lock
-    ) { on -> Store.vpnPinGuard = on })
-    c.addView(switchRow(
-        "Показывать неудачные попытки входа",
-        if (lock) "После входа скажем, сколько раз PIN вводили неверно" else "Сначала включите вход по PIN или отпечатку",
-        Store.showFailedPins && lock, lock
-    ) { on -> Store.showFailedPins = on })
     body.addView(c)
 }
 
@@ -661,10 +661,6 @@ private fun MainActivity.helpBlock(body: LinearLayout) {
         gbtn("Сообщить об ошибке", true) { openBugReport() },
         gbtn("Что нового", false) { showWhatsNew(true) }
     ), 10))
-    c.addView(txt(
-        "Виджет VPN: удерживайте палец на рабочем столе → «Виджеты» → PharmShop.",
-        12f, MUTE
-    ).apply { layoutParams = lp(0) })
     body.addView(c)
 }
 
@@ -772,6 +768,9 @@ private fun MainActivity.securityBlock(body: LinearLayout, again: () -> Unit) {
                 again()
             })
         }
+        c.addView(switchRow("Показывать неудачные попытки входа", "После входа скажем, сколько раз PIN вводили неверно", Store.showFailedPins) { on ->
+            Store.showFailedPins = on
+        })
         c.addView(LinearLayout(this).apply {
             addView(chip("Сменить PIN", false) { showPinSetup(true) { _ -> reopenSettings() } })
         })
