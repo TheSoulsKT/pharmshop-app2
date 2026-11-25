@@ -8,7 +8,6 @@ import android.graphics.Path
 import android.graphics.Typeface
 import android.provider.Settings
 import android.view.View
-import kotlin.math.cos
 import kotlin.math.sin
 
 /**

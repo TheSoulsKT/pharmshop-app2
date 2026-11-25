@@ -12,23 +12,29 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.graphics.ColorUtils
 
-// Настройки по категориям: Оформление, Безопасность, Прочее (уведомления, обновления, помощь, данные приложения).
+// Настройки: главный экран со списком цветных разделов, каждый раздел открывается отдельной страницей (кнопка «назад» возвращает в список).
 
 internal fun MainActivity.showSettings() {
     onHome = false
     val col = screen(3)
     val sid = screenId
-    titleRow(col, "Настройки", 3)
     val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
     col.addView(body)
     renderSettings(body, sid)
     appFooter(col)
     riseIn(body)
+}
+
+/** Открыть настройки с главного списка (с нижней панели): прошлая открытая страница не запоминается. */
+internal fun MainActivity.openSettingsMain() {
+    settingsPage = -1
+    showSettings()
 }
 
 /** Перерисовать экран целиком (после смены темы: поменялись все цвета). Только плавное появление, без выезда. */
@@ -37,38 +43,174 @@ internal fun MainActivity.reopenSettings() {
     showSettings()
 }
 
-/** Открытая категория настроек: 0 — Оформление, 1 — Безопасность, 2 — Прочее. Помнится, пока открыто приложение. */
-private var settingsTab = 0
+/** Открытая страница настроек: -1 — главный список, иначе номер страницы из SETTINGS_PAGES. Помнится, пока открыто приложение. */
+private var settingsPage = -1
+
+private class SettingsPage(val emoji: String, val title: String, val sub: String)
+
+private val SETTINGS_PAGES = listOf(
+    SettingsPage("🎨", "Тема и цвета", "Режим, оформление, цвет акцента"),
+    SettingsPage("✨", "Эффекты и интерфейс", "Анимации, вибрация, размер текста"),
+    SettingsPage("🏠", "Главный экран", "Разделы, значок, заказы"),
+    SettingsPage("🔒", "Безопасность", "PIN, отпечаток, блокировка"),
+    SettingsPage("🛡️", "Защита данных", "Скрытие сумм, оплата, буфер обмена"),
+    SettingsPage("🌐", "VPN", "DNS, маршруты, автоподключение"),
+    SettingsPage("🔔", "Уведомления", "Push и напоминания"),
+    SettingsPage("⬆️", "Обновления", "Версия и проверка"),
+    SettingsPage("💬", "Помощь и сброс", "Подсказки, сброс настроек"),
+    SettingsPage("📄", "Данные приложения", "Что собирает приложение")
+)
+
+/** Цвет значка страницы: берутся цвета, которые сами подстраиваются под светлую и тёмную тему. */
+private fun MainActivity.pageColor(i: Int): Int = when (i) {
+    0 -> BLUE
+    1 -> PINK
+    2 -> ORANGE
+    3 -> GREEN
+    4 -> CYAN
+    5 -> VIOLET
+    6 -> RED
+    7 -> GOLD
+    8 -> if (Theme.light) Color.parseColor("#0F8F82") else Color.parseColor("#2DD4BF")
+    else -> MUTE
+}
+
+/** Короткое значение справа в строке списка. */
+private fun MainActivity.pageValue(i: Int): String = when (i) {
+    0 -> Theme.skin.title
+    3 -> when (Store.lockMode) { 1 -> "PIN"; 2 -> "Отпечаток"; else -> "Выкл." }
+    6 -> if (Store.pushEnabled) "Вкл." else "Выкл."
+    7 -> BuildConfig.VERSION_NAME
+    else -> ""
+}
 
 internal fun MainActivity.renderSettings(body: LinearLayout, sid: Int) {
     body.removeAllViews()
     val again: () -> Unit = { if (sid == screenId) renderSettings(body, sid) }
-    body.addView(segmented(listOf("Оформление", "Безопасность", "Прочее"), settingsTab) { i ->
-        settingsTab = i
-        again()
-    })
-    when (settingsTab) {
-        0 -> {
-            appearanceBlock(body)
-            accentBlock(body)
-            interfaceBlock(body, again)
-            sectionsBlock(body)
-            iconBlock(body, again)
-            effectsBlock(body, again)
-            ordersBlock(body, again)
-        }
-        1 -> {
-            securityBlock(body, again)
-            dataProtectionBlock(body, again)
-        }
-        else -> {
-            notificationsBlock(body)
-            updatesBlock(body, again)
-            helpBlock(body)
-            resetBlock(body)
-            dataBlock(body)
-        }
+    if (settingsPage < 0) {
+        backAction = null
+        titleRow(body, "Настройки", 3)
+        settingsHero(body)
+        menuGroup(body, "Внешний вид", listOf(0, 1, 2), again)
+        menuGroup(body, "Защита", listOf(3, 4), again)
+        menuGroup(body, "Сервисы", listOf(5, 6, 7), again)
+        menuGroup(body, "О приложении", listOf(8, 9), again)
+        return
     }
+    val toMain: () -> Unit = { settingsPage = -1; again() }
+    backAction = toMain
+    backRow(body, SETTINGS_PAGES[settingsPage].title) { toMain() }
+    when (settingsPage) {
+        0 -> { appearanceBlock(body); accentBlock(body) }
+        1 -> { effectsBlock(body, again); interfaceBlock(body, again) }
+        2 -> { sectionsBlock(body); iconBlock(body, again); ordersBlock(body, again) }
+        3 -> securityBlock(body, again)
+        4 -> dataProtectionBlock(body, again)
+        5 -> vpnSettingsBlock(body, again)
+        6 -> notificationsBlock(body)
+        7 -> updatesBlock(body, again)
+        8 -> { helpBlock(body); resetBlock(body) }
+        else -> dataBlock(body)
+    }
+}
+
+/** Карточка сверху: обложка профиля, фото в рамке, ник и версия. Нажатие открывает профиль. */
+private fun MainActivity.settingsHero(body: LinearLayout) {
+    val name = Store.chatNick.ifEmpty { Store.lastUser }
+    val shown = when {
+        name.isEmpty() -> "Гость"
+        hiddenData() -> "••••••"
+        else -> name
+    }
+    val card = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        background = coverDrawable(22)
+        setPadding(dp(16), dp(20), dp(16), dp(18))
+        layoutParams = lp(14)
+        isClickable = true
+        setOnClickListener { openTab(2) }
+        pressable(this)
+    }
+    val fc = Frames.color(Store.chatFrame)
+    card.addView(FrameLayout(this).apply {
+        layoutParams = LinearLayout.LayoutParams(dp(88), dp(88))
+        addView(View(this@settingsHero).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(fc) }
+            layoutParams = FrameLayout.LayoutParams(dp(88), dp(88), Gravity.CENTER)
+        })
+        addView(View(this@settingsHero).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(CARD) }
+            layoutParams = FrameLayout.LayoutParams(dp(82), dp(82), Gravity.CENTER)
+        })
+        addView(avatarView(76, name, 30f).apply { layoutParams = FrameLayout.LayoutParams(dp(76), dp(76), Gravity.CENTER) })
+    })
+    card.addView(txt(shown, 19f, Color.WHITE, true).apply {
+        gravity = Gravity.CENTER
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.END
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) }
+    })
+    val lvl = if (Store.chatCreated > 0) "Уровень ${Frames.level() + 1} · ${Frames.NAMES[Frames.level()]} · " else ""
+    card.addView(txt(lvl + "версия " + BuildConfig.VERSION_NAME, 12f, ColorUtils.setAlphaComponent(Color.WHITE, 220)).apply {
+        gravity = Gravity.CENTER
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) }
+    })
+    body.addView(card)
+}
+
+/** Подпись группы и карточка со строками: у каждой строки свой цветной значок. */
+private fun MainActivity.menuGroup(body: LinearLayout, label: String, pages: List<Int>, again: () -> Unit) {
+    body.addView(txt(label, 13f, MUTE, true).apply {
+        layoutParams = lp(6).apply { leftMargin = dp(6); topMargin = dp(4) }
+    })
+    val card = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = shape(CARD, 18, LINE)
+        clipToOutline = true
+        layoutParams = lp(14)
+    }
+    for ((n, i) in pages.withIndex()) {
+        if (n > 0) card.addView(View(this).apply {
+            setBackgroundColor(LINE)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply { leftMargin = dp(66) }
+        })
+        card.addView(menuRow(i, again))
+    }
+    body.addView(card)
+}
+
+private fun MainActivity.menuRow(i: Int, again: () -> Unit): LinearLayout {
+    val p = SETTINGS_PAGES[i]
+    val color = pageColor(i)
+    val row = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(14), dp(12), dp(12), dp(12))
+        background = ripple(Color.TRANSPARENT, 0)
+        isClickable = true
+        setOnClickListener { settingsPage = i; again() }
+    }
+    row.addView(txt(p.emoji, 18f).apply {
+        gravity = Gravity.CENTER
+        background = shape(ColorUtils.setAlphaComponent(color, 64), 11)
+        layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply { rightMargin = dp(14) }
+    })
+    val texts = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+    }
+    texts.addView(txt(p.title, 16f, TEXT, true))
+    texts.addView(txt(p.sub, 12f, MUTE))
+    row.addView(texts)
+    val v = pageValue(i)
+    if (v.isNotEmpty()) row.addView(txt(v, 13f, color, true).apply {
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) }
+    })
+    row.addView(txt("›", 22f, MUTE).apply {
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) }
+    })
+    return row
 }
 
 // ---------- общие элементы ----------

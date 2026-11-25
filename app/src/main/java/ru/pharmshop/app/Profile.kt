@@ -3,22 +3,10 @@ package ru.pharmshop.app
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.graphics.Color
-import android.graphics.Outline
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
-import android.text.InputType
 import android.view.Gravity
-import android.view.View
 import android.view.ViewGroup
-import android.view.ViewOutlineProvider
-import android.widget.EditText
 import android.widget.HorizontalScrollView
-import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
-import androidx.appcompat.app.AlertDialog
 import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -85,11 +73,11 @@ internal fun MainActivity.showProfile() {
 internal fun MainActivity.syncChatInfo(body: LinearLayout, sid: Int) {
     syncMyAvatar()
     io.execute {
-        val before = Store.chatNick + "|" + Store.chatMsgs + "|" + Store.allBadgesGranted
+        val before = Store.chatNick + "|" + Store.chatMsgs + "|" + Store.allBadgesGranted + "|" + Store.chatFrame
         val me = try { ChatApi.chatMe() } catch (e: Exception) { return@execute }
         if (me.optBoolean("registered")) syncCrown(me.optInt("crown") == 1)   // зелёная корона в чате: все достижения собраны?
         ui { syncMyAvatar() }   // ник мог стать известен только сейчас (выбран до этого обновления)
-        if (before != Store.chatNick + "|" + Store.chatMsgs + "|" + Store.allBadgesGranted) ui { if (sid == screenId) renderProfile(body, sid) }
+        if (before != Store.chatNick + "|" + Store.chatMsgs + "|" + Store.allBadgesGranted + "|" + Store.chatFrame) ui { if (sid == screenId) renderProfile(body, sid) }
     }
 }
 
@@ -104,18 +92,6 @@ internal fun MainActivity.startAutoRefresh(body: LinearLayout, sid: Int) {
         }
     }
     main.postDelayed(r, 5000L)
-}
-
-internal fun MainActivity.statTile(value: String, label: String): LinearLayout {
-    val t = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER
-        background = shape(CARD, 16, LINE)
-        setPadding(dp(8), dp(14), dp(8), dp(14))
-    }
-    t.addView(txt(value, 18f, TEXT, true).apply { gravity = Gravity.CENTER })
-    t.addView(txt(label, 11f, MUTE).apply { gravity = Gravity.CENTER })
-    return t
 }
 
 internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: Boolean = false) {

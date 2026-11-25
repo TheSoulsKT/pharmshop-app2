@@ -1,7 +1,5 @@
 package ru.pharmshop.app
 
-import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
@@ -132,52 +130,11 @@ internal fun MainActivity.shownMethods(c: JSONObject): List<Pair<String, String>
     for (pos in all.indices) {
         val m = methods.getJSONObject(all[pos])
         if (tonRe.containsMatchIn(m.optString("name")) || tonRe.containsMatchIn(m.optString("id"))) continue
-        out.add(Pair(m.getString("id"), methods.getJSONObject(pos).getString("name")))
+        out.add(Pair(m.getString("id"), m.getString("name")))
     }
     // запоминаем подписи, чтобы заказы в профиле подписывались так же
     val names = JSONObject()
     for ((id, nm) in out) names.put(id, nm)
     Store.methodNames = names.toString()
     return out
-}
-
-/** Список с радио-точками: один выбранный пункт. */
-internal fun MainActivity.selectList(
-    box: LinearLayout, items: List<Pair<String, String>>, initial: String,
-    palette: List<Int> = listOf(BLUE),
-    onSelect: (String, String) -> Unit
-) {
-    val rows = ArrayList<MethodRow>()
-    var cur = initial
-    fun paint() {
-        for (r in rows) {
-            val sel = r.id == cur
-            r.row.background = shape(if (sel) mix(r.tint, 0.2f) else CARD, 14, if (sel) r.tint else LINE)
-            val dot = GradientDrawable()
-            dot.setShape(GradientDrawable.OVAL)
-            dot.setColor(if (sel) r.tint else Color.TRANSPARENT)
-            dot.setStroke(dp(2), if (sel) r.tint else MUTE)
-            r.dot.background = dot
-            dotState(r.dot, sel)
-        }
-    }
-    for ((id, name) in items) {
-        val dotView = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(18), dp(18)).apply { rightMargin = dp(14) }
-        }
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            layoutParams = lp(8)
-            isClickable = true
-            setOnClickListener { cur = id; paint(); onSelect(id, name) }
-            pressable(this)
-        }
-        row.addView(dotView)
-        row.addView(txt(name, 16f, TEXT))
-        box.addView(row)
-        rows.add(MethodRow(id, name, row, dotView, palette[rows.size % palette.size]))
-    }
-    paint()
 }

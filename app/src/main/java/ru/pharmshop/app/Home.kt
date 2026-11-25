@@ -14,62 +14,83 @@ import android.widget.TextView
 
 // Главный экран и карточки меню.
 
-// ---------- карточки главного меню ----------
-internal fun MainActivity.menuWide(icon: Ic, title: String, sub: String, onClick: () -> Unit): Pair<LinearLayout, TextView> {
-    val subView = txt(sub, 13f, MUTE)
-    val ic = IconView(this, icon, BLUE).apply {
-        layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply { rightMargin = dp(14) }
-    }
-    val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-    texts.addView(txt(title, 17f, TEXT, true))
-    texts.addView(subView)
-    val row = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        background = ripple(CARD, 18, LINE)
-        setPadding(dp(16), dp(12), dp(16), dp(12))
-        layoutParams = lp(10).apply { height = CARD_H }
+// ---------- плитки главного меню ----------
+
+/** Крупная плитка (Звёзды, Premium). accent: заливка цветом темы и чёрный текст. Возвращает плитку и строку подписи (её можно обновить позже). */
+internal fun MainActivity.bigTile(icon: Ic, title: String, sub: String, accent: Boolean, onClick: () -> Unit): Pair<LinearLayout, TextView> {
+    val fg = if (accent) Color.BLACK else TEXT
+    val subView = txt(sub, 13f, if (accent) Color.argb(190, 0, 0, 0) else MUTE)
+    val t = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = if (accent) ripple(BLUE, 22, BLUE) else ripple(CARD, 22, LINE)
+        setPadding(dp(16), dp(16), dp(16), dp(16))
         isClickable = true
         setOnClickListener { onClick() }
         pressable(this)
+        addView(IconView(this@bigTile, icon, if (accent) Color.BLACK else BLUE).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(28), dp(28))
+        })
+        addView(View(this@bigTile).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        })
+        addView(txt(title, 22f, fg, true))
+        addView(subView)
     }
-    row.addView(ic)
-    row.addView(texts)
-    return Pair(row, subView)
+    return Pair(t, subView)
 }
 
-internal fun MainActivity.tile(icon: Ic, title: String, sub: String, onClick: () -> Unit): LinearLayout {
-    val ic = IconView(this, icon, BLUE).apply {
-        layoutParams = LinearLayout.LayoutParams(dp(24), dp(24))
+/** Ряд из одной или двух крупных плиток (одна растягивается на всю ширину). */
+internal fun MainActivity.bigRow(a: View, b: View?): LinearLayout {
+    val h = CARD_H + dp(72)
+    a.layoutParams = if (b == null) LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, h)
+    else LinearLayout.LayoutParams(0, h, 1f).apply { rightMargin = dp(5) }
+    b?.layoutParams = LinearLayout.LayoutParams(0, h, 1f).apply { leftMargin = dp(5) }
+    return LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        layoutParams = lp(10)
+        addView(a)
+        if (b != null) addView(b)
     }
-    val spacer = View(this).apply {
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-    }
+}
+
+/** Малая плитка. dim: раздел ещё не открыт («Скоро»), плитка приглушена, но нажимается и показывает пояснение. */
+internal fun MainActivity.tile(icon: Ic, title: String, sub: String, dim: Boolean = false, onClick: () -> Unit): LinearLayout {
     val t = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         background = ripple(CARD, 18, LINE)
         setPadding(dp(16), dp(14), dp(16), dp(14))
+        alpha = if (dim) 0.65f else 1f
         isClickable = true
         setOnClickListener { onClick() }
         pressable(this)
+        addView(IconView(this@tile, icon, if (dim) MUTE else BLUE).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(24), dp(24))
+        })
+        addView(View(this@tile).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        })
+        addView(txt(title, 16f, TEXT, true))
+        if (sub.isNotEmpty()) addView(txt(sub, 12f, MUTE))
     }
-    t.addView(ic)
-    t.addView(spacer)
-    t.addView(txt(title, 16f, TEXT, true))
-    if (sub.isNotEmpty()) t.addView(txt(sub, 12f, MUTE))
     return t
 }
 
 internal fun MainActivity.gridRow(a: View, b: View): LinearLayout {
-    a.layoutParams = LinearLayout.LayoutParams(0, dp(96), 1f)
-        .apply { rightMargin = dp(5) }
-    b.layoutParams = LinearLayout.LayoutParams(0, dp(96), 1f)
-        .apply { leftMargin = dp(5) }
+    a.layoutParams = LinearLayout.LayoutParams(0, CARD_H, 1f).apply { rightMargin = dp(5) }
+    b.layoutParams = LinearLayout.LayoutParams(0, CARD_H, 1f).apply { leftMargin = dp(5) }
     return LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         layoutParams = lp(10)
         addView(a)
         addView(b)
+    }
+}
+
+/** Плитки по две в ряд; если их нечётное число, последний ряд добивается невидимой заглушкой. */
+private fun MainActivity.addTiles(col: LinearLayout, tiles: List<View>) {
+    for (i in tiles.indices step 2) {
+        val second: View = tiles.getOrNull(i + 1) ?: View(this).apply { visibility = View.INVISIBLE }
+        col.addView(gridRow(tiles[i], second))
     }
 }
 
@@ -108,13 +129,13 @@ internal fun MainActivity.showHome() {
     val col = screen(0)
     val sid = screenId
 
-    // шапка: логотип и название (профиль, поддержка и настройки — в нижней панели)
+    // шапка: приветствие и название слева, логотип справа (профиль, поддержка и настройки — в нижней панели)
     val logo = LogoView(this).apply {
-        layoutParams = LinearLayout.LayoutParams(dp(56), dp(56)).apply { rightMargin = dp(14) }
+        layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply { leftMargin = dp(14) }
         setOnLongClickListener { showAdminEntry(); true }
     }
     val title = TextView(this).apply {
-        textSize = 30f
+        textSize = 30f * Theme.textScale
         setTypeface(typeface, Typeface.BOLD)
         val sb = SpannableStringBuilder("Pharm")
         sb.setSpan(ForegroundColorSpan(TEXT), 0, 5, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
@@ -125,18 +146,16 @@ internal fun MainActivity.showHome() {
     val titles = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        addView(txt("Добро пожаловать в", 13f, MUTE))
+        addView(title)
     }
-    titles.addView(title)
-    titles.addView(txt("Telegram магазин • Stars • NFT • Подарки", 12f, MUTE))
-
-    val head = LinearLayout(this).apply {
+    col.addView(LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        layoutParams = lp(22)
-        addView(logo)
+        layoutParams = lp(18)
         addView(titles)
-    }
-    col.addView(head)
+        addView(logo)
+    })
     // плашка выбранной темы (у «Стандарта» — новогодняя в сезон)
     (if (Store.hideBanner) null else Theme.banner())?.let { bn ->
         col.addView(LinearLayout(this).apply {
@@ -161,16 +180,15 @@ internal fun MainActivity.showHome() {
             addView(txt(a.optString("text"), 15f, TEXT))
         })
     }
-    col.addView(tv("Выберите, что вам нужно", 15f, MUTE))
 
     // разделы можно включать и выключать удалённо (админ-панель → «Разделы»), а ещё скрывать у себя (Настройки → Оформление)
     val hiddenSet = Store.hiddenSections.split(',').filter { it.isNotEmpty() }.toSet()
-    class Entry(val key: String, val icon: Ic, val sv: SecView, val wide: Boolean, val action: (SecView) -> Unit)
+    class Entry(val key: String, val icon: Ic, val sv: SecView, val big: Boolean, val action: (SecView) -> Unit)
     val external = { v: SecView -> openUrl(v.url.ifEmpty { BOT_URL }) }
     val entries = listOf(
         Entry("stars", Ic.STAR, sec("stars", "Звёзды", rateText(), true, "Временно недоступно"), true, { _ -> showStars() }),
         Entry("premium", Ic.CROWN, sec("premium", "Купить Premium", "Покупка подписки", true, "Временно недоступно"), true, { _ -> showPremium() }),
-        Entry("gifts", Ic.GIFT, sec("gifts", "Обычные подарки", "Покупка за рубли", false), true, external),
+        Entry("gifts", Ic.GIFT, sec("gifts", "Обычные подарки", "Покупка за рубли", false), false, external),
         Entry("nft_buy", Ic.BOX, sec("nft_buy", "Купить NFT", "", false), false, external),
         Entry("nft_rent", Ic.KEY, sec("nft_rent", "Аренда NFT", "", false), false, external),
         Entry("stars_sell", Ic.DB, sec("stars_sell", "Продать звёзды", "", false), false, external),
@@ -180,51 +198,46 @@ internal fun MainActivity.showHome() {
     fun click(e: Entry) {
         if (e.sv.enabled) e.action(e.sv) else toast(e.sv.message.ifEmpty { "Скоро будет доступно" })
     }
-    fun wideCard(e: Entry): LinearLayout {
-        val (card, subView) = menuWide(e.icon, e.sv.title, e.sv.sub) { click(e) }
-        // курс подставится после загрузки конфигурации, если подпись не переопределена удалённо
-        if (e.key == "stars" && e.sv.enabled && Remote.section("stars")?.optString("sub").isNullOrEmpty()) starsSub = subView
-        return card
-    }
     val on = entries.filter { it.sv.enabled }
     val off = entries.filter { !it.sv.enabled }
+
+    // «Купить»: Звёзды и Premium крупными плитками, остальные открытые разделы — обычными
     if (on.isNotEmpty()) {
-        col.addView(sectionTitle("Купить", 4))
-        for (e in on) col.addView(wideCard(e))
-    }
-    if (off.isNotEmpty() && !Store.hideSoon) {
-        col.addView(sectionTitle("Скоро", if (on.isNotEmpty()) 10 else 4))
-        for (e in off.filter { it.wide }) col.addView(wideCard(e))
-        val tiles = off.filter { !it.wide }
-        var i = 0
-        while (i < tiles.size) {
-            val t1 = tiles[i]
-            val first = tile(t1.icon, t1.sv.title, t1.sv.sub) { click(t1) }
-            val second: View = if (i + 1 < tiles.size) {
-                val t2 = tiles[i + 1]
-                tile(t2.icon, t2.sv.title, t2.sv.sub) { click(t2) }
-            } else View(this).apply { visibility = View.INVISIBLE }
-            col.addView(gridRow(first, second))
-            i += 2
+        col.addView(sectionTitle("Купить", 0))
+        val big = on.filter { it.big }.map { e ->
+            val (t, sub) = bigTile(e.icon, e.sv.title, e.sv.sub, e.key == "stars") { click(e) }
+            // курс подставится после загрузки конфигурации, если подпись не переопределена удалённо
+            if (e.key == "stars" && Remote.section("stars")?.optString("sub").isNullOrEmpty()) starsSub = sub
+            t
         }
+        if (big.isNotEmpty()) col.addView(bigRow(big[0], big.getOrNull(1)))
+        addTiles(col, on.filter { !it.big }.map { e -> tile(e.icon, e.sv.title, e.sv.sub) { click(e) } })
+    }
+    // «Скоро»: всё, что выключено (в том числе Звёзды или Premium, если их отключили удалённо)
+    if (off.isNotEmpty() && !Store.hideSoon) {
+        col.addView(sectionTitle("Скоро", if (on.isNotEmpty()) 10 else 0))
+        addTiles(col, off.map { e -> tile(e.icon, e.sv.title, e.sv.sub, dim = true) { click(e) } })
     }
 
-    // кнопка бота
-    val botIcon = IconView(this, Ic.SEND, Color.BLACK).apply {
-        layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply { bottomMargin = dp(8) }
-    }
+    // кнопка бота: внизу, после обеих категорий
     val bot = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
         background = ripple(BLUE, 20, BLUE)
-        setPadding(dp(20), dp(18), dp(20), dp(18))
-        layoutParams = lp(14)
+        setPadding(dp(18), dp(14), dp(18), dp(14))
+        layoutParams = lp(14).apply { topMargin = dp(14) }
         isClickable = true
         setOnClickListener { openUrl(BOT_URL) }
         pressable(this)
+        addView(IconView(this@showHome, Ic.SEND, Color.BLACK).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply { rightMargin = dp(14) }
+        })
+        addView(LinearLayout(this@showHome).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(txt("Заказать в боте", 13f, Color.BLACK))
+            addView(txt("@" + BOT_URL.substringAfterLast('/'), 18f, Color.BLACK, true))
+        })
     }
-    bot.addView(botIcon)
-    bot.addView(txt("Заказать в боте", 13f, Color.BLACK))
-    bot.addView(txt("@pharmaishop_bot", 20f, Color.BLACK, true))
     col.addView(bot)
 
     col.addView(txt("Цены на услуги могут меняться в зависимости от курса", 12f, MUTE).apply {

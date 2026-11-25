@@ -32,7 +32,7 @@ object Diag {
     private val LABELS = mapOf(
         "home" to "Главная", "support" to "Поддержка", "profile" to "Профиль", "settings" to "Настройки", "vpn" to "VPN", "community" to "Чат",
         "stars" to "Звёзды", "premium" to "Premium", "bug_report" to "Отчёт об ошибке", "speed_test" to "Скорость VPN",
-        "avatar" to "Фото профиля"
+        "avatar" to "Фото профиля", "vpn_check" to "Проверка VPN"
     )
 
     fun init(c: Context) {
@@ -80,7 +80,7 @@ object Diag {
     /** Открыта вкладка нижней панели (номера как в openTab). */
     fun tab(tab: Int) { TABS[tab]?.let { bump("screens", it) } }
 
-    /** Использована функция: stars, premium, bug_report, speed_test, avatar. */
+    /** Использована функция: stars, premium, bug_report, speed_test, avatar, vpn_check. */
     fun feature(name: String) = bump("features", name)
 
     @Synchronized

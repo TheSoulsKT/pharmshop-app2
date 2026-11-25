@@ -23,6 +23,11 @@ class PollWorker(ctx: Context, params: WorkerParameters) : Worker(ctx, params) {
         val c = applicationContext
         Store.init(c)
         AppLog.init(c)
+        // geo-файлы VPN обновляются раз в неделю независимо от уведомлений
+        if (Store.vpnSubUrl.isNotEmpty()) try { GeoFiles.updateIfStale(c) } catch (e: Exception) { AppLog.e("geo", e) }
+        try { VpnAutostart.poll(c) } catch (e: Exception) { AppLog.e("vpn-auto", e) }
+        // список серверов и пинги тоже готовим заранее, чтобы подключение стартовало быстрее
+        if (Store.vpnSubUrl.isNotEmpty()) try { VpnWatch.prefetch(c) } catch (e: Exception) { AppLog.e("vpn-prefetch", e) }
         if (!Store.pushEnabled || AppState.visible || !Notifier.enabled(c)) return Result.success()
         // каждая проверка независима: сбой одной (нет сети, 401) не мешает остальным
         try { checkSupport(c) } catch (e: Exception) { }

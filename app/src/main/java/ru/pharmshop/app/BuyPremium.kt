@@ -1,9 +1,7 @@
 package ru.pharmshop.app
 
 import android.content.Intent
-import android.graphics.Color
 import android.net.Uri
-import android.text.InputType
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView

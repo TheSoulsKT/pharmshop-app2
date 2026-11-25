@@ -1,6 +1,5 @@
 package ru.pharmshop.app
 
-import androidx.appcompat.app.AlertDialog
 
 // Обновление приложения, удалённые настройки и обязательное обновление.
 

@@ -38,6 +38,34 @@ object VpnWatch {
         try { VpnWidget.updateAll(c) } catch (e: Exception) { AppLog.e("widget", e) }
     }
 
+    private const val PREFETCH_EVERY_MS = 3 * 60 * 60 * 1000L
+    private const val PREFETCH_RETRY_MS = 30 * 60 * 1000L
+    @Volatile private var lastPrefetchTry = 0L
+
+    /**
+     * Предзагрузка в фоне (из PollWorker): раз в несколько часов обновляет список серверов и замеряет пинги.
+     * Подключение тогда берёт готовый список и ранжирование «Автоматически» по свежим данным и стартует без ожидания панели и замеров.
+     * Пинги привязаны к типу сети: сменилась сеть (Wi‑Fi → мобильная) — замер повторится. Сбой повторяем не чаще раза в 30 минут.
+     */
+    fun prefetch(c: Context) {
+        val url = Store.vpnSubUrl
+        if (url.isEmpty()) return
+        if (VpnState.state == VpnState.S.CONNECTING) return
+        val kind = VpnNet.kind(c)
+        if (kind == VpnNet.NONE) return
+        val now = System.currentTimeMillis()
+        if (now - Store.vpnWarmAt < PREFETCH_EVERY_MS && Store.vpnWarmNet == kind) return
+        if (now - lastPrefetchTry < PREFETCH_RETRY_MS) return
+        lastPrefetchTry = now
+        try {
+            VpnAuto.init(c)
+            val list = VpnSub.load(url)
+            VpnAuto.prefetch(list)
+        } catch (e: Exception) {
+            AppLog.e("vpn-prefetch", e)
+        }
+    }
+
     fun cached(): JSONArray = try { JSONArray(Store.vpnCache) } catch (e: Exception) { JSONArray() }
 
     /** Загружает подписки с сервера и обновляет кэш и виджеты. Бросает исключение при сбое сети или входа. */

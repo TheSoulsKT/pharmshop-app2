@@ -95,13 +95,3 @@ internal fun MainActivity.showModeratorInfo(nick: String) {
     )
 }
 
-/** Окно про зелёную корону: нажатие на корону рядом с ником. */
-internal fun MainActivity.showCrownInfo(nick: String) {
-    infoSheet(
-        sheetTitle = "Корона",
-        emoji = "👑", color = GREEN,
-        title = "Зелёная корона",
-        pill = nick,
-        text = "Этот человек собрал все достижения в приложении, до единого."
-    )
-}

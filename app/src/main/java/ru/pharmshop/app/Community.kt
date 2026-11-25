@@ -30,10 +30,22 @@ internal const val CHAT_PRIVACY_TEXT =
     "3-тие лица не видят ваши личные чаты, они остаются в пределах приложения и администрация может получить к ним доступ."
 
 /** Состояние вкладки «Чат», которое переживает переходы между экранами. */
+/** Каналы общего чата (как в PWA; список и id совпадают с CH_IDS в server/worker.js). В «Новостях» пишут только модераторы. */
+internal class RoomChannel(val id: String, val emoji: String, val name: String, val desc: String)
+internal val ROOM_CHANNELS = listOf(
+    RoomChannel("general", "💬", "Общий чат", "Болтаем обо всём"),
+    RoomChannel("help", "🛟", "Помощь", "Вопросы по VPN и приложению"),
+    RoomChannel("vpn", "🛡️", "VPN", "Серверы, скорость, клиенты"),
+    RoomChannel("flood", "🎲", "Флуд", "Мемы, игры и всё остальное"),
+    RoomChannel("news", "📣", "Новости", "Объявления · пишут только модераторы")
+)
+internal fun roomChannel(id: String): RoomChannel = ROOM_CHANNELS.firstOrNull { it.id == id } ?: ROOM_CHANNELS[0]
+
 internal object CommunityState {
     var tab = 0            // 0 — общий чат, 1 — личные
     var pane = 0           // номер текущей ленты: устаревшие ленты перестают опрашивать сервер
     var myUid = 0L
+    var myBadge = false    // у меня «галочка» модератора: ограничений на текст нет (нужно экрану личных сообщений)
     var roomNextAt = 0L    // когда снова можно писать в общий чат (время телефона, мс): пауза не сбрасывается при смене вкладки
 }
 
@@ -146,7 +158,11 @@ internal fun MainActivity.nameRow(nick: String, badge: Boolean, size: Float = 12
         gravity = Gravity.CENTER_VERTICAL
         addView(txt(nick, size, nickColor(nick), true))
         if (crown) addView(crownIcon(size))
-        if (badge) addView(txt(" ✓", size, BLUE, true))
+        if (badge) addView(txt(" ✓", size, BLUE, true).apply {
+            contentDescription = "Модератор чата"
+            isClickable = true
+            setOnClickListener { showModeratorInfo(nick) }
+        })
     }
 
 // ---------- вкладка ----------
@@ -215,6 +231,9 @@ private fun MainActivity.registerView(body: LinearLayout) {
             13f, MUTE
         ))
     })
+    inner.addView(chip("📜 Правила чата", false) { chatRulesSheet(!Store.chatRulesOk) }.apply {
+        (layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(14)
+    })
     inner.addView(txt("Выберите ник", 18f, TEXT, true).apply { layoutParams = lp(6) })
     inner.addView(txt(
         "Под ним вас увидят в общем чате и личных сообщениях. Ник уникален: двух одинаковых быть не может.",
@@ -222,7 +241,7 @@ private fun MainActivity.registerView(body: LinearLayout) {
     ).apply { layoutParams = lp(8) })
     inner.addView(txt(
         "3–20 символов: латиница или кириллица (не вперемешку), цифры и «_». Менять ник можно раз в 7 дней. " +
-            "Перед входом нужно пройти короткую проверку, что вы не робот.",
+            "Перед входом нужно принять правила чата и пройти короткую проверку, что вы не робот.",
         12f, MUTE
     ).apply { layoutParams = lp(14) })
     val field = input("Ник", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS).apply {
@@ -237,10 +256,10 @@ private fun MainActivity.registerView(body: LinearLayout) {
     }
     inner.addView(field)
     inner.addView(info)
-    inner.addView(btn("Занять ник", true) {
-        if (working) return@btn
+    fun start() {
+        if (working) return
         val nick = field.text.toString().trim().removePrefix("@")
-        if (nick.isEmpty()) return@btn
+        if (nick.isEmpty()) return
         working = true
         info.setTextColor(MUTE)
         info.text = "Проверяем ник…"
@@ -272,11 +291,20 @@ private fun MainActivity.registerView(body: LinearLayout) {
                 )
             }
         }
+    }
+    // без принятых правил войти в чат нельзя: сначала окно с галочкой, после «Принимаю» вход продолжается
+    inner.addView(btn("Занять ник", true) {
+        if (Store.chatRulesOk) start() else chatRulesSheet(true) { start() }
     })
     body.addView(ScrollView(this).apply {
         isVerticalScrollBarEnabled = false
         addView(inner)
     })
+    // при первом входе правила открываются сами
+    if (!Store.chatRulesOk) {
+        val rid = screenId
+        main.postDelayed({ if (rid == screenId && !Store.chatRulesOk) chatRulesSheet(true) }, 300L)
+    }
 }
 
 private fun MainActivity.changeNickSheet(current: String, done: (String) -> Unit) {
@@ -307,6 +335,7 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
     var myBadge = me.optInt("badge") == 1
     var myCrown = me.optInt("crown") == 1
     CommunityState.myUid = myUid
+    CommunityState.myBadge = myBadge
     var unread = 0
     var renderChats: ((JSONObject) -> Unit)? = null
     var dmStatus: TextView? = null
@@ -341,6 +370,7 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
             })
             addView(txt("Ваш ник в чате", 11f, MUTE))
         })
+        addView(chip("📜", false) { chatRulesSheet(false) }.apply { contentDescription = "Правила чата" })
         addView(chip("Сменить", false) { changeNickSheet(myNick) { myNick = it; renderWho() } }.apply {
             (layoutParams as LinearLayout.LayoutParams).rightMargin = 0
         })
@@ -365,28 +395,150 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
         tabs.addView(chatSegment("💬", "Личные", unread, CommunityState.tab == 1) { selectTab(1) })
     }
 
+    // ----- каналы общего чата -----
+    var ch = roomChannel(Store.chatChannel).id
+    val unrCh = HashMap<String, Int>()      // канал → сколько новых сообщений от других
+    val chHost = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+    }
+    fun badge(n: Int): TextView = txt(if (n > 99) "99+" else n.toString(), 11f, Color.WHITE, true).apply {
+        gravity = Gravity.CENTER
+        background = shape(RED, 10)
+        setPadding(dp(7), dp(1), dp(7), dp(1))
+    }
+    var loadUnread: () -> Unit = {}
+    fun channelSheet() {
+        loadUnread()
+        sheet("Выберите канал") { box, close ->
+            for (c in ROOM_CHANNELS) {
+                val on = c.id == ch
+                val n = unrCh[c.id] ?: 0
+                box.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    background = ripple(if (on) mix(BLUE, 0.18f) else CARD, 16, if (on) BLUE else LINE)
+                    setPadding(dp(14), dp(11), dp(14), dp(11))
+                    layoutParams = lp(8)
+                    isClickable = true
+                    pressable(this)
+                    setOnClickListener {
+                        close()
+                        if (c.id != ch) {
+                            ch = c.id
+                            Store.chatChannel = ch
+                            selectTab(0)
+                        }
+                    }
+                    addView(txt(c.emoji, 22f).apply { layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(12) } })
+                    addView(LinearLayout(this@communityMain).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                        addView(txt(c.name, 15f, TEXT, true))
+                        addView(txt(c.desc, 12f, MUTE))
+                    })
+                    if (on) addView(txt("✓", 16f, BLUE, true))
+                    else if (n > 0) addView(badge(n))
+                })
+            }
+        }
+    }
+    fun renderChBar() {
+        chHost.removeAllViews()
+        val c = roomChannel(ch)
+        val others = ROOM_CHANNELS.sumOf { if (it.id == ch) 0 else (unrCh[it.id] ?: 0) }
+        chHost.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = ripple(CARD, 16, LINE)
+            setPadding(dp(14), dp(9), dp(14), dp(9))
+            layoutParams = lp(10)
+            isClickable = true
+            pressable(this)
+            setOnClickListener { channelSheet() }
+            addView(txt(c.emoji, 20f).apply { layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(10) } })
+            addView(LinearLayout(this@communityMain).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                addView(txt(c.name, 14f, TEXT, true))
+                addView(txt(c.desc, 11f, MUTE).apply {
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                })
+            })
+            if (others > 0) addView(badge(others).apply { layoutParams = LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) } })
+            addView(txt("▾", 16f, MUTE))
+        })
+    }
+    loadUnread = {
+        io.execute {
+            try {
+                val seen = HashMap<String, Long>()
+                for (c in ROOM_CHANNELS) { val v = Store.chatSeen(c.id); if (v > 0) seen[c.id] = v }
+                val r = ChatApi.roomUnread(seen)
+                val un = r.optJSONObject("unread") ?: JSONObject()
+                val mx = r.optJSONObject("max") ?: JSONObject()
+                ui {
+                    if (sid != screenId) return@ui
+                    for (c in ROOM_CHANNELS) {
+                        var n = un.optInt(c.id)
+                        // первый заход в канал: всё, что там уже есть, считаем прочитанным
+                        if (Store.chatSeen(c.id) == 0L && mx.optLong(c.id) > 0) { Store.setChatSeen(c.id, mx.optLong(c.id)); n = 0 }
+                        unrCh[c.id] = n
+                    }
+                    renderChBar()
+                }
+            } catch (e: Exception) { }
+        }
+    }
+    fun pollUnread() {
+        if (sid != screenId) return
+        loadUnread()
+        main.postDelayed({ pollUnread() }, 30_000L)
+    }
+
     // ----- общий чат -----
-    fun roomPane(alive: () -> Boolean): LinearLayout = msgPane(
+    fun roomPane(alive: () -> Boolean): LinearLayout {
+        val cid = ch
+        val readOnly = cid == "news" && !myBadge     // в «Новостях» пишут только модераторы
+        val pane = msgPane(
         sid, myUid, "Здесь пока тихо. Напишите первым!", showNames = true,
-        fetch = { after, rev -> ChatApi.roomMessages(after, rev) },
-        fetchRx = { after, rev, rx -> ChatApi.roomMessages(after, rev, rx) },
-        send = { t -> ChatApi.roomSend(t) },
+        fetch = { after, rev -> ChatApi.roomMessages(after, rev, ch = cid) },
+        fetchRx = { after, rev, rx -> ChatApi.roomMessages(after, rev, rx, cid) },
+        send = if (readOnly) null else ({ t: String -> ChatApi.roomSend(t, 0L, cid) }),
         alive = alive,
         onName = { m -> if (m.optLong("uid") != myUid) openDm(m.optLong("uid"), m.optString("nick"), m.optLong("av")) },
         onLong = { m, tools -> roomActions(m, myUid, myBadge, openDm, tools) },
         onReact = { id, e -> ChatApi.roomReact(id, e) },
-        sendReply = { t, id -> ChatApi.roomSend(t, id) },
+        sendReply = if (readOnly) null else ({ t: String, id: Long -> ChatApi.roomSend(t, id, cid) }),
         onData = { r ->
+            val arr = r.optJSONArray("messages")
+            if (arr != null && arr.length() > 0) {
+                val mx = arr.getJSONObject(arr.length() - 1).optLong("id")
+                if (mx > Store.chatSeen(cid)) {
+                    Store.setChatSeen(cid, mx)
+                    if ((unrCh[cid] ?: 0) != 0) { unrCh[cid] = 0; renderChBar() }
+                }
+            }
             r.optJSONObject("me")?.let {
                 val b = it.optInt("badge") == 1
                 val c = it.optInt("crown") == 1
-                if (b != myBadge || c != myCrown) { myBadge = b; myCrown = c; renderWho() }
+                if (b != myBadge || c != myCrown) { myBadge = b; myCrown = c; CommunityState.myBadge = b; renderWho() }
             }
         },
         cooldownMs = { if (myBadge) 0L else ROOM_COOLDOWN_MS },
         nextAt = { CommunityState.roomNextAt },
-        setNextAt = { CommunityState.roomNextAt = it }
-    )
+        setNextAt = { CommunityState.roomNextAt = it },
+        mentions = true,
+        maxLen = if (myBadge) 0 else CHAT_MSG_MAX,
+        check = { t -> if (myBadge) "" else chatTextProblem(t) }
+        )
+        if (readOnly) pane.addView(txt("📣 В этом канале пишут только модераторы", 13f, MUTE).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(8), dp(10), dp(8), dp(10))
+        })
+        return pane
+    }
 
     // ----- личные чаты -----
     fun dmPane(): LinearLayout {
@@ -447,7 +599,7 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
                     orientation = LinearLayout.VERTICAL
                     layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
                 }
-                card.addView(chatAvatar(c.optLong("uid"), c.optString("nick"), c.optLong("av"), 42).apply {
+                card.addView(chatAvatar(c.optLong("uid"), c.optString("nick"), c.optLong("av"), 42, c.optInt("fr")).apply {
                     (layoutParams as LinearLayout.LayoutParams).rightMargin = dp(12)
                 })
                 card.addView(col)
@@ -480,8 +632,10 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
         val my = ++CommunityState.pane
         renderTabs()
         content.removeAllViews()
+        chHost.visibility = if (i == 0) View.VISIBLE else View.GONE
         if (i == 0) {
             renderChats = null
+            renderChBar()
             content.addView(roomPane { CommunityState.pane == my })
         } else {
             content.addView(dmPane())
@@ -512,9 +666,11 @@ private fun MainActivity.communityMain(body: LinearLayout, sid: Int, me: JSONObj
     }
 
     body.addView(tabs)
+    body.addView(chHost)
     body.addView(content)
     selectTab(CommunityState.tab)
     pollChats()
+    pollUnread()
 }
 
 /** Меню по долгому нажатию на сообщение в общем чате: реакции, ответ и действия с сообщением. */
@@ -643,7 +799,9 @@ internal fun MainActivity.showDm(peer: Long, nick: String, av: Long = 0L) {
     root.addView(msgPane(
         sid, CommunityState.myUid, "Переписки пока нет. Напишите первым.", showNames = false, receipts = true,
         fetch = { after, _ -> ChatApi.dmMessages(peer, after) },
-        send = { t -> ChatApi.dmSend(peer, t) }
+        send = { t -> ChatApi.dmSend(peer, t) },
+        maxLen = if (CommunityState.myBadge) 0 else CHAT_MSG_MAX,
+        check = { t -> if (CommunityState.myBadge) "" else chatTextProblem(t) }
     ))
 }
 
@@ -669,7 +827,10 @@ internal fun MainActivity.msgPane(
     sendReply: ((String, Long) -> Unit)? = null,       // ответ на сообщение: (текст, номер сообщения)
     cooldownMs: () -> Long = { 0L },          // пауза между сообщениями (0 — без паузы)
     nextAt: () -> Long = { 0L },              // когда можно писать снова (время телефона, мс)
-    setNextAt: (Long) -> Unit = {}
+    setNextAt: (Long) -> Unit = {},
+    mentions: Boolean = false,                // @упоминания: подсветка, переход в личку по нажатию, подсказки ников при наборе
+    maxLen: Int = 0,                          // предел длины сообщения (0 — без предела; у модераторов его нет)
+    check: ((String) -> String)? = null       // проверка текста перед отправкой: текст проблемы или "" (КАПС, ссылки)
 ): LinearLayout {
     val pane = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
@@ -700,6 +861,12 @@ internal fun MainActivity.msgPane(
         }
     }
 
+    var ownStatus = false   // в строке статуса сейчас счётчик символов или ошибка текста (опрос ленты её не стирает)
+    var fetchStarted = 0    // сколько раз начинали читать ленту (чтобы знать, какое чтение уже содержит отправленное нами)
+    class Pend(val row: View) { var sent = false; var needSeq = 0 }
+    val pend = ArrayList<Pend>()                          // сообщения, показанные сразу при отправке, пока сервер не подтвердил
+    val nickMsg = HashMap<String, JSONObject>()           // ник → последнее его сообщение в ленте (для перехода в личку по @нику)
+    val nickOrder = ArrayList<String>()                   // ники из ленты по порядку появления (для подсказок при наборе @)
     var lastUid = -1L       // автор предыдущего сообщения: подряд идущие сообщения одного человека склеиваются в серию
     var lastDay = ""
 
@@ -808,6 +975,12 @@ internal fun MainActivity.msgPane(
         val cont = uid == lastUid
         lastUid = uid
         val nick = m.optString("nick")
+        if (mentions && !own && nick.isNotEmpty()) {
+            val key = nickKey(nick)
+            nickMsg[key] = m
+            nickOrder.removeAll { nickKey(it) == key }
+            nickOrder.add(nick)
+        }
         val head = if (showNames && (!own || namesOnOwn) && !cont) {
             nameRow(nick, m.optInt("badge") == 1, crown = m.optInt("crown") == 1).apply {
                 (this as View).setPadding(0, 0, 0, dp(1))
@@ -821,7 +994,7 @@ internal fun MainActivity.msgPane(
         val avatar: View? = when {
             !avatarOn -> null
             cont -> View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(30), dp(30)) }
-            else -> chatAvatar(uid, nick, m.optLong("av"), 30)
+            else -> chatAvatar(uid, nick, m.optLong("av"), 30, m.optInt("fr"))
         }
         val timeStr = clockFmt.format(java.util.Date(ts))
         val maxW = bubbleMax(avatarOn)
@@ -835,7 +1008,15 @@ internal fun MainActivity.msgPane(
         val top: View? = if (head != null && quote != null) {
             LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; addView(head); addView(quote) }
         } else head ?: quote
-        val (bubble, timeView) = messageBubble(m.optString("text"), own, timeStr, top, maxW)
+        val onMn: ((String) -> Unit)? = if (mentions) ({ n: String ->
+            val key = nickKey(n)
+            val target = nickMsg[key]
+            if (key == nickKey(Store.chatNick)) Unit
+            else if (target != null) onName?.invoke(target)
+            else toast("Этого пользователя нет в ленте")
+        }) else null
+        val hit = mentions && !own && mentionsMe(m, Store.chatNick)
+        val (bubble, timeView) = messageBubble(m.optString("text"), own, timeStr, top, maxW, Store.chatNick, onMn, hit)
         if (onLong != null) {
             bubble.setOnLongClickListener {
                 onLong(m, MsgTools(
@@ -877,7 +1058,26 @@ internal fun MainActivity.msgPane(
         list.addView(row)
     }
 
+    /** Показывает своё сообщение сразу, не дожидаясь сервера: полупрозрачное, с пометкой «отправка…». */
+    fun addPending(text: String, replied: JSONObject?): Pend {
+        if (emptyHint.parent != null) list.removeView(emptyHint)
+        val maxW = bubbleMax(false)
+        val quote: View? = if (replied != null) {
+            val q = JSONObject()
+                .put("reply_to", replied.optLong("id")).put("q_id", replied.optLong("id"))
+                .put("q_nick", replied.optString("nick")).put("q_text", replied.optString("text").take(140))
+            quoteView(q, true, maxW) { }
+        } else null
+        val (bubble, _) = messageBubble(text, true, "отправка…", quote, maxW)
+        bubble.alpha = 0.65f
+        val row = messageRow(true, null, bubble, 8)
+        list.addView(row)
+        scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+        return Pend(row).also { pend.add(it) }
+    }
+
     fun fetchOnce() {
+        val mySeq = ++fetchStarted
         io.execute {
             try {
                 val r = fetchRx?.invoke(lastId, rev, if (rev >= 0) rx else -1L) ?: fetch(lastId, rev)
@@ -898,6 +1098,12 @@ internal fun MainActivity.msgPane(
                     }
                     rev = r.optLong("rev", rev)
                     peerRead = r.optLong("peer_read", peerRead)
+                    // отправленное нами уже в этой выдаче: убираем временный пузырь, настоящий добавится ниже
+                    if (pend.isNotEmpty()) {
+                        val done = pend.filter { it.sent && mySeq >= it.needSeq }
+                        for (p in done) list.removeView(p.row)
+                        pend.removeAll(done.toSet())
+                    }
                     val arr = r.optJSONArray("messages") ?: JSONArray()
                     for (i in 0 until arr.length()) add(arr.getJSONObject(i))
                     if (reactPending == 0) {
@@ -905,7 +1111,7 @@ internal fun MainActivity.msgPane(
                         if (r.has("rx")) rx = r.optLong("rx")
                     }
                     updateMarks()
-                    status.text = ""
+                    if (!ownStatus) status.text = ""
                     if (lastId != before) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
                 }
             } catch (e: ChatAuthException) {
@@ -931,6 +1137,7 @@ internal fun MainActivity.msgPane(
     pane.addView(status)
     if (send != null) {
         val field = chatField()
+        if (maxLen > 0) field.filters = arrayOf(InputFilter.LengthFilter(maxLen))
         var replyTo: JSONObject? = null
         val replyText = txt("", 13f, MUTE).apply {
             maxLines = 1
@@ -964,6 +1171,52 @@ internal fun MainActivity.msgPane(
             (getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
                 .showSoftInput(field, 0)
         }
+        // подсказки ников: пока в тексте набирается «@ни…», над полем показываются люди из ленты
+        val mnBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val mnHost = android.widget.HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            visibility = View.GONE
+            addView(mnBar)
+            layoutParams = lp(4)
+        }
+        val mentionTail = Regex("""(?:^|\s)@([^\s@]{0,21})$""")
+        fun updateMentions() {
+            if (!mentions) return
+            val pos = field.selectionStart.coerceAtLeast(0)
+            val before = field.text.toString().take(pos)
+            val m = mentionTail.find(before)
+            mnBar.removeAllViews()
+            if (m == null) { mnHost.visibility = View.GONE; return }
+            val q = m.groupValues[1].lowercase()
+            val me = nickKey(Store.chatNick)
+            val ns = nickOrder.filter { nickKey(it) != me && it.lowercase().startsWith(q) }.takeLast(6).reversed()
+            if (ns.isEmpty()) { mnHost.visibility = View.GONE; return }
+            for (n in ns) mnBar.addView(chip("@$n", false) {
+                val cur = field.text.toString()
+                val p = field.selectionStart.coerceIn(0, cur.length)
+                val tail = mentionTail.find(cur.take(p)) ?: return@chip
+                val start = p - (tail.groupValues[1].length + 1)
+                field.setText(cur.take(start) + "@$n " + cur.substring(p))
+                field.setSelection((start + n.length + 2).coerceAtMost(field.text.length))
+            })
+            mnHost.visibility = View.VISIBLE
+        }
+        field.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
+            override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                val n = s?.length ?: 0
+                if (maxLen > 0 && n >= maxLen - 30) {
+                    ownStatus = true
+                    status.setTextColor(if (n >= maxLen) RED else MUTE)
+                    status.text = "$n / $maxLen"
+                } else if (ownStatus) {
+                    ownStatus = false
+                    status.text = ""
+                }
+                updateMentions()
+            }
+        })
         var sendBtn: View? = null
         // кнопка отправки во время паузы показывает, сколько секунд осталось
         fun tickCooldown() {
@@ -1011,12 +1264,19 @@ internal fun MainActivity.msgPane(
             val replyId = replied?.optLong("id") ?: 0L
             val limit = cooldownMs()
             if (limit > 0) { setNextAt(System.currentTimeMillis() + limit); tickCooldown() }   // пауза идёт сразу: двойное нажатие не пройдёт
+            val shown = addPending(text, replied)      // сообщение видно сразу, а не после двух обращений к серверу
             io.execute {
                 try {
                     if (replyId > 0 && sendReply != null) sendReply(text, replyId) else send(text)
-                    ui { fetchOnce() }
+                    ui {
+                        shown.sent = true
+                        shown.needSeq = fetchStarted + 1   // его заменит настоящее сообщение из первой же ленты, начатой после отправки
+                        fetchOnce()
+                    }
                 } catch (e: Exception) {
                     ui {
+                        list.removeView(shown.row)
+                        pend.remove(shown)
                         if (e is ChatCooldownException) setNextAt(System.currentTimeMillis() + e.retryMs)
                         else if (limit > 0) setNextAt(0L)   // сообщение не ушло по другой причине — паузу не навязываем
                         if (sid == screenId) {
@@ -1031,6 +1291,13 @@ internal fun MainActivity.msgPane(
         fun sendNow() {
             val text = field.text.toString().trim()
             if (text.isEmpty()) return
+            val problem = check?.invoke(text).orEmpty()
+            if (problem.isNotEmpty()) {                 // КАПС, ссылки, длина: текст остаётся в поле, чтобы его поправить
+                ownStatus = true
+                status.setTextColor(RED)
+                status.text = problem
+                return
+            }
             val replied = replyTo                       // на какое сообщение отвечаем (null — обычное)
             if (!deliver(text, replied)) return
             hideFailed()
@@ -1061,6 +1328,7 @@ internal fun MainActivity.msgPane(
         sendBtn = btn
         pane.addView(failedBar)
         pane.addView(replyBar)
+        if (mentions) pane.addView(mnHost)
         pane.addView(composerRow(null, field, btn))
         tickCooldown()   // вернулись на вкладку посреди паузы — отсчёт продолжается
     }

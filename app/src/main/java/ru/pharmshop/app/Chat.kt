@@ -216,6 +216,8 @@ object ChatApi {
         if (it.optBoolean("registered")) {
             Store.chatNick = it.optString("nick"); noteMsgs(it)
             Store.allBadgesGranted = it.optInt("all_badges") == 1
+            Store.chatFrame = it.optInt("frame")
+            if (it.optLong("created") > 0) Store.chatCreated = it.optLong("created")
         }
     }
 
@@ -235,17 +237,27 @@ object ChatApi {
     fun crownSet(all: Boolean) { post("/api/chat/crown", dev().put("crown", all)) }
 
     /** {messages, rev, reset, me}. rev — ревизия ленты: если сервер вернул другую, ленту нужно перечитать (reset = true). */
-    fun roomMessages(after: Long, rev: Long, rx: Long = -1L): JSONObject {
-        val body = dev().put("after", after).put("rev", rev)
+    fun roomMessages(after: Long, rev: Long, rx: Long = -1L, ch: String = "general"): JSONObject {
+        val body = dev().put("after", after).put("rev", rev).put("ch", ch)
         if (rx >= 0) body.put("rx", rx)   // версия реакций: если не изменилась, сервер их не присылает
         return post("/api/room/messages", body)
     }
 
     /** replyTo — номер сообщения, на которое отвечаем (0 — обычное сообщение). */
-    fun roomSend(text: String, replyTo: Long = 0L) {
-        val body = dev().put("text", text)
+    fun roomSend(text: String, replyTo: Long = 0L, ch: String = "general") {
+        val body = dev().put("text", text).put("ch", ch)
         if (replyTo > 0) body.put("reply_to", replyTo)
         noteMsgs(post("/api/room/send", body))
+    }
+
+    /**
+     * Непрочитанные по каналам. [seen] — канал → номер последнего просмотренного сообщения.
+     * Ответ: {unread: {канал: n}, max: {канал: номер последнего сообщения}}.
+     */
+    fun roomUnread(seen: Map<String, Long>): JSONObject {
+        val s = JSONObject()
+        for ((k, v) in seen) s.put(k, v)
+        return post("/api/room/unread", dev().put("seen", s))
     }
 
     /** Реакция на сообщение (та же реакция второй раз снимает её). Ответ: {reactions: [{m, e, n, me}]}. */
@@ -256,6 +268,9 @@ object ChatApi {
 
     /** Загрузить на сервер аватарку профиля (пустая строка — убрать): чтобы её видели в чате. Возвращает версию. */
     fun avatarSet(image: String): Long = post("/api/chat/avatar_set", dev().put("image", image)).optLong("av")
+
+    /** Выбрать рамку аватара (0 — снять). Сервер сам проверяет, что рамка уже открыта по дням с регистрации. */
+    fun frameSet(frame: Int): Int = post("/api/chat/frame_set", dev().put("frame", frame)).optInt("frame", frame)
 
     /** Аватарка другого пользователя: {av, image}. */
     fun avatarGet(uid: Long): JSONObject = post("/api/chat/avatar_get", dev().put("uid", uid))

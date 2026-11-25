@@ -59,6 +59,12 @@ object VpnSub {
     private class Mem(val url: String, val at: Long, val list: List<VpnServer>)
     @Volatile private var mem: Mem? = null
     private const val MEM_TTL = 5 * 60_000L
+    /** Сохранённой копии списка (с прошлой загрузки или фоновой предзагрузки) доверяем при подключении до 8 часов. */
+    private const val STORED_TTL = 8 * 60 * 60_000L
+
+    /** Последний отданный список — сохранённая копия, а не свежая загрузка. Если по ней не подключились, сервис берёт свежий список. */
+    @Volatile var fromStore = false
+        private set
 
     /** Забывает список (при выходе из аккаунта). */
     fun clearMem() { mem = null }
@@ -69,11 +75,13 @@ object VpnSub {
             val raw = download(url)
             val list = parse(raw)
             Store.vpnSubRaw = raw
+            Store.vpnSubAt = System.currentTimeMillis()
             mem = Mem(url, System.currentTimeMillis(), list)
+            fromStore = false
             return list
         } catch (e: java.io.IOException) {
             val cached = Store.vpnSubRaw
-            if (cached.isNotEmpty()) return parse(cached)
+            if (cached.isNotEmpty()) { fromStore = true; return parse(cached) }
             throw e
         }
     }
@@ -81,7 +89,29 @@ object VpnSub {
     /** Как load, но если список скачан меньше 5 минут назад — отдаёт его сразу, без запроса к панели. */
     fun loadFast(url: String): List<VpnServer> {
         val m = mem
-        if (m != null && m.url == url && System.currentTimeMillis() - m.at < MEM_TTL) return m.list
+        if (m != null && m.url == url && System.currentTimeMillis() - m.at < MEM_TTL) { fromStore = false; return m.list }
+        return load(url)
+    }
+
+    /**
+     * Список для подключения. Если он скачан недавно (в приложении или фоновой предзагрузкой, см. VpnWatch.prefetch),
+     * берём сохранённую копию и подключаемся сразу, не дожидаясь панели подписки (до 15 с, если панель медленная или недоступна).
+     * Окна и экраны по-прежнему пользуются loadFast: им нужен свежий список.
+     */
+    fun loadForConnect(url: String): List<VpnServer> {
+        val now = System.currentTimeMillis()
+        val m = mem
+        if (m != null && m.url == url && now - m.at < MEM_TTL) { fromStore = false; return m.list }
+        val at = Store.vpnSubAt
+        val raw = Store.vpnSubRaw
+        if (at > 0L && now - at < STORED_TTL && raw.isNotEmpty()) {
+            try {
+                val list = parse(raw)
+                mem = Mem(url, at, list)
+                fromStore = true
+                return list
+            } catch (e: Exception) { /* копия повреждена — скачиваем заново */ }
+        }
         return load(url)
     }
 
@@ -415,13 +445,152 @@ object VpnSub {
                 }
                 if (!drop) keep.put(sv)
             }
-            if (keep.length() == 0) keep.put("1.1.1.1").put("8.8.8.8")
+            if (keep.length() == 0) VpnDns.current().servers.forEach { keep.put(it) }
             cfg.getJSONObject("dns").put("servers", keep)
         }
     }
 
-    /** Конфиг Xray для выбранного сервера. Вход — TUN: файловый дескриптор интерфейса отдаёт VpnService. */
-    fun buildConfig(s: VpnServer): String {
+    private fun rule() = JSONObject().put("type", "field")
+
+    /** Тег первого «настоящего» исходящего (не freedom/blackhole/dns/loopback): сюда уходит всё, что должно идти через VPN. */
+    private fun proxyTag(cfg: JSONObject): String? {
+        val obs = cfg.optJSONArray("outbounds") ?: return null
+        for (i in 0 until obs.length()) {
+            val o = obs.optJSONObject(i) ?: continue
+            if (o.optString("protocol") in listOf("freedom", "blackhole", "dns", "loopback")) continue
+            val tag = o.optString("tag")
+            if (tag.isNotEmpty()) return tag
+        }
+        return null
+    }
+
+    private fun ensureOutbound(obs: JSONArray, tag: String, protocol: String) {
+        for (i in 0 until obs.length()) if (obs.optJSONObject(i)?.optString("tag") == tag) return
+        obs.put(JSONObject().put("tag", tag).put("protocol", protocol))
+    }
+
+    private fun hasOutboundProtocol(obs: JSONArray, protocol: String): Boolean {
+        for (i in 0 until obs.length()) if (obs.optJSONObject(i)?.optString("protocol") == protocol) return true
+        return false
+    }
+
+    private const val FRAG_TAG = "pharm-frag"
+
+    /**
+     * Обход DPI (экспериментально): первый пакет TLS (ClientHello) уходит к серверу кусками, как в Happ и v2rayNG.
+     * Делается так: отдельный исходящий «freedom» с настройкой fragment, а на исходящем до сервера в streamSettings.sockopt
+     * указывается dialerProxy на него. Трогаем только серверы с tls и reality на TCP-подобных транспортах;
+     * если подписка уже задала свой dialerProxy, оставляем как есть. Для Reality помогает не всегда.
+     */
+    private fun applyFragment(cfg: JSONObject) {
+        val obs = cfg.optJSONArray("outbounds") ?: return
+        var used = false
+        for (i in 0 until obs.length()) {
+            val o = obs.optJSONObject(i) ?: continue
+            if (o.optString("protocol") in listOf("freedom", "blackhole", "dns", "loopback")) continue
+            val st = o.optJSONObject("streamSettings") ?: continue
+            val sec = st.optString("security")
+            if (sec != "tls" && sec != "reality") continue
+            if (st.optString("network", "tcp") in listOf("kcp", "mkcp", "quic")) continue   // это UDP: дробить нечего
+            val sock = st.optJSONObject("sockopt") ?: JSONObject().also { st.put("sockopt", it) }
+            if (sock.optString("dialerProxy").isNotEmpty()) continue
+            sock.put("dialerProxy", FRAG_TAG)
+            used = true
+        }
+        if (!used) return
+        for (i in 0 until obs.length()) if (obs.optJSONObject(i)?.optString("tag") == FRAG_TAG) return
+        obs.put(JSONObject().put("tag", FRAG_TAG).put("protocol", "freedom")
+            .put("settings", JSONObject().put("fragment", JSONObject()
+                .put("packets", "tlshello").put("length", "100-200").put("interval", "10-20"))))
+    }
+
+    /** Собственный DNS ядра на случай, если подписка не принесла секцию «dns»: выбранный пользователем провайдер. */
+    private fun ownDns(): JSONObject {
+        val servers = JSONArray()
+        VpnDns.current().servers.forEach { servers.put(it) }
+        return JSONObject().put("servers", servers).put("queryStrategy", if (Store.vpnIpv6) "UseIP" else "UseIPv4")
+    }
+
+    /**
+     * Российские домены резолвим через Яндекс DNS: зарубежный резолвер мог бы вернуть IP зарубежного CDN, и правило geoip:ru
+     * не сработало бы. Запись ставится первой в списке серверов и действует только для перечисленных доменов; остальные
+     * по-прежнему идут на выбранный DNS. Запросы к самому Яндекс DNS уходят напрямую (правило в applyPolicies).
+     */
+    private fun yandexDns(cfg: JSONObject) {
+        val dns = cfg.optJSONObject("dns") ?: JSONObject().also { cfg.put("dns", it) }
+        val servers = dns.optJSONArray("servers") ?: JSONArray().also { dns.put("servers", it) }
+        for (i in 0 until servers.length()) {
+            val v = servers.opt(i)
+            val addr = if (v is JSONObject) v.optString("address") else v?.toString()
+            if (addr in VpnDns.YANDEX) return
+        }
+        val ru = JSONObject().put("address", VpnDns.YANDEX[0]).put("domains", JSONArray()
+            .put("domain:ru").put("domain:su").put("domain:xn--p1ai").put("geosite:ru-available-only-inside"))
+        val out = JSONArray().put(ru)
+        for (i in 0 until servers.length()) out.put(servers.get(i))
+        if (servers.length() == 0) VpnDns.current().servers.forEach { out.put(it) }   // кроме российских доменов, должен остаться обычный DNS
+        dns.put("servers", out)
+    }
+
+    /**
+     * Правила приложения поверх конфига (и из подписки, и из ссылки). Свои исходящие с уникальными тегами,
+     * чтобы не зависеть от того, как назвала теги панель. Порядок правил: проверочный вход → реклама → IPv6 → DNS (перехват) → российское.
+     *  • Проверка канала: трафик локального SOCKS-входа (см. VpnProbe) идёт в прокси-исходящий, что бы ни говорили остальные правила.
+     *  • Блокировка рекламы (нужны geo-файлы с тегом category-ads-all): домены рекламы уходят в blackhole.
+     *  • IPv6 выключен (по умолчанию): весь глобальный IPv6 (2000::/3) сразу «блокируем» в ядре. Маршрут ::/0 остаётся в туннеле,
+     *    поэтому утечки мимо VPN нет, а приложения мгновенно откатываются на IPv4 вместо ожидания таймаута.
+     *  • «Российское напрямую» (нужны geo-файлы): заблокированное в РФ — через VPN, .ru/.su/.рф и IP России — напрямую;
+     *    российские домены резолвятся через Яндекс DNS напрямую, а DNS-запросы приложений перехватывает ядро, чтобы это работало.
+     */
+    private fun applyPolicies(cfg: JSONObject, geo: Boolean, probe: VpnProbe.Cfg?, ads: Boolean) {
+        val ruDirect = geo && Store.vpnBypassRu
+        if (Store.vpnIpv6 && !ruDirect && !ads && probe == null) return
+        val obs = cfg.optJSONArray("outbounds") ?: JSONArray().also { cfg.put("outbounds", it) }
+        val routing = cfg.optJSONObject("routing") ?: JSONObject().also { cfg.put("routing", it) }
+        val rules = routing.optJSONArray("rules") ?: JSONArray()
+        val add = ArrayList<JSONObject>()
+        val proxy = proxyTag(cfg)
+
+        if (probe != null && proxy != null) {
+            add.add(rule().put("inboundTag", JSONArray().put(VpnProbe.INBOUND_TAG)).put("outboundTag", proxy))
+        }
+        if (ads) {
+            ensureOutbound(obs, "pharm-block", "blackhole")
+            add.add(rule().put("domain", JSONArray().put("geosite:${GeoFiles.ADS_TAG}")).put("outboundTag", "pharm-block"))
+        }
+        if (!Store.vpnIpv6) {
+            ensureOutbound(obs, "pharm-block", "blackhole")
+            add.add(rule().put("ip", JSONArray().put("2000::/3")).put("outboundTag", "pharm-block"))
+        }
+        if (ruDirect && proxy != null) {
+            ensureOutbound(obs, "pharm-direct", "freedom")
+            yandexDns(cfg)
+            if (!hasOutboundProtocol(obs, "dns")) {
+                // DNS-запросы приложений обрабатывает ядро: только так работает раздельный DNS (Яндекс для .ru, выбранный — для остального)
+                ensureOutbound(obs, "pharm-dns", "dns")
+                add.add(rule().put("inboundTag", JSONArray().put("tun-in")).put("port", "53").put("outboundTag", "pharm-dns"))
+            }
+            add.add(rule().put("ip", JSONArray(VpnDns.YANDEX)).put("outboundTag", "pharm-direct"))
+            add.add(rule().put("domain", JSONArray().put("geosite:ru-blocked")).put("outboundTag", proxy))
+            add.add(rule().put("ip", JSONArray().put("geoip:ru-blocked")).put("outboundTag", proxy))
+            add.add(rule().put("domain", JSONArray()
+                .put("regexp:\\.ru\$").put("regexp:\\.su\$").put("regexp:\\.xn--p1ai\$")
+                .put("geosite:ru-available-only-inside")).put("outboundTag", "pharm-direct"))
+            add.add(rule().put("ip", JSONArray().put("geoip:ru")).put("outboundTag", "pharm-direct"))
+            // правила по IP работают для доменов, только если ядро умеет их резолвить
+            if (routing.optString("domainStrategy", "AsIs") == "AsIs") routing.put("domainStrategy", "IPIfNonMatch")
+        }
+        val out = JSONArray()
+        add.forEach { out.put(it) }
+        for (i in 0 until rules.length()) out.put(rules.get(i))
+        routing.put("rules", out)
+    }
+
+    /**
+     * Конфиг Xray для выбранного сервера. Вход — TUN: файловый дескриптор интерфейса отдаёт VpnService.
+     * [probe] — локальный вход для проверки канала; [ads] — блокировка рекламы (вызывающий уже убедился, что в geosite.dat есть тег).
+     */
+    fun buildConfig(s: VpnServer, geo: Boolean = false, probe: VpnProbe.Cfg? = null, ads: Boolean = false): String {
         val cfg: JSONObject
         if (s.full != null) {
             cfg = JSONObject(s.full.toString())   // копия: подписку не портим
@@ -436,15 +605,29 @@ object VpnSub {
                 JSONObject().put("type", "field").put("ip", JSONArray(PRIVATE)).put("outboundTag", "direct")
             )))
         }
-        stripGeo(cfg)
+        if (!geo) stripGeo(cfg)   // с geo-файлами правила подписки работают как есть
+        if (!cfg.has("dns")) cfg.put("dns", ownDns())
+        if (Store.vpnFragment) applyFragment(cfg)
+        applyPolicies(cfg, geo, probe, ads && geo)
         cfg.put("log", JSONObject().put("loglevel", "warning"))
-        if (!cfg.has("dns")) cfg.put("dns", JSONObject().put("servers", JSONArray().put("1.1.1.1").put("8.8.8.8")))
-        cfg.put("inbounds", JSONArray().put(JSONObject()
+        val inbounds = JSONArray().put(JSONObject()
             .put("tag", "tun-in")
             .put("protocol", "tun")
             .put("settings", JSONObject().put("name", "xray0").put("MTU", 1500))
             .put("sniffing", JSONObject().put("enabled", true).put("routeOnly", true)
-                .put("destOverride", JSONArray().put("http").put("tls").put("quic")))))
+                .put("destOverride", JSONArray().put("http").put("tls").put("quic"))))
+        if (probe != null) {
+            inbounds.put(JSONObject()
+                .put("tag", VpnProbe.INBOUND_TAG)
+                .put("listen", "127.0.0.1")
+                .put("port", probe.port)
+                .put("protocol", "socks")
+                .put("settings", JSONObject()
+                    .put("auth", "password")
+                    .put("accounts", JSONArray().put(JSONObject().put("user", probe.user).put("pass", probe.pass)))
+                    .put("udp", false)))
+        }
+        cfg.put("inbounds", inbounds)
         return cfg.toString()
     }
 }

@@ -176,6 +176,15 @@ class ReminderReceiver : BroadcastReceiver() {
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
-        if (intent?.action == Intent.ACTION_BOOT_COMPLETED) Reminders.ensureScheduled(context)
+        if (intent?.action == Intent.ACTION_BOOT_COMPLETED) {
+            Reminders.ensureScheduled(context)
+            // автоподключение VPN: хранилище в «холодном» процессе нужно поднять самим
+            try {
+                val app = context.applicationContext
+                Store.init(app)
+                AppLog.init(app)
+                VpnAutostart.onBoot(app)
+            } catch (e: Exception) { }
+        }
     }
 }

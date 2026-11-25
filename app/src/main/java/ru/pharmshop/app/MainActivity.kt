@@ -11,7 +11,17 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.hcaptcha.sdk.HCaptcha
 import org.json.JSONObject
-import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+
+/**
+ * Пул потоков, у которого простаивающие потоки завершаются сами. Раньше пулы создавались через Executors.newFixedThreadPool
+ * и никогда не закрывались: с каждым пересозданием Activity (смена темы, поворот) оставалось ещё 7 вечных потоков.
+ */
+private fun idlePool(n: Int): ExecutorService =
+    ThreadPoolExecutor(n, n, 20L, TimeUnit.SECONDS, LinkedBlockingQueue<Runnable>()).apply { allowCoreThreadTimeOut(true) }
 
 /** Весь экранный код живёт здесь. В манифесте зарегистрирован наследник LauncherActivity (значок приложения выбирается через activity-alias). */
 open class MainActivity : AppCompatActivity() {
@@ -42,14 +52,14 @@ open class MainActivity : AppCompatActivity() {
     /** Единая высота всех карточек главного меню */
     internal val CARD_H get() = dp(if (Store.cardSize == 1) 76 else 96)
 
-    internal val io = Executors.newFixedThreadPool(3)
+    internal val io = idlePool(3)
     internal val main = Handler(Looper.getMainLooper())
     internal var cfg: JSONObject? = null
     internal var busy = false
     internal var onHome = true
     internal var screenId = 0
     internal var backAction: (() -> Unit)? = null   // особое действие кнопки «назад» (чаты)
-    internal val net = Executors.newFixedThreadPool(4)   // параллельные запросы статусов
+    internal val net = idlePool(4)   // параллельные запросы статусов
     internal var refreshing = false
     internal var lastRefreshError = ""
     internal var returnFromPay = false
@@ -165,6 +175,7 @@ open class MainActivity : AppCompatActivity() {
             "stars" -> { showStars(); true }
             "premium" -> { showPremium(); true }
             "vpn" -> { showVpn(); true }
+            "vpn_connect" -> { showVpn(); vpnQuickConnect(); true }   // ярлык на иконке и плитка быстрых настроек
             "profile" -> { showProfile(); true }
             "support" -> { showSupport(); true }
             "admin" -> { showAdminEntry(); true }
@@ -202,6 +213,7 @@ open class MainActivity : AppCompatActivity() {
             if (lockEnabled()) { AppState.unlocked = false; showLock() }
         }
         main.postDelayed({ maybeShowWhatsNew() }, 900)   // после обновления один раз покажет «Что нового»
+        if (VpnState.state == VpnState.S.ON) PharmVpnService.recheckLockdown()   // могли включить kill switch в системных настройках
         if (vpnReturn) {
             vpnReturn = false
             showVpn()

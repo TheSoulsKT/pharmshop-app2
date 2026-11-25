@@ -43,8 +43,11 @@ private fun MainActivity.circle(v: View) {
  * которую человек сам поставил в профиле). Пока картинка грузится или её нет — кружок с первой буквой ника.
  * [av] — версия аватарки с сервера (0 — аватарки нет).
  */
-internal fun MainActivity.chatAvatar(uid: Long, nick: String, av: Long, sizeDp: Int): View {
+internal fun MainActivity.chatAvatar(uid: Long, nick: String, av: Long, sizeDp: Int, frame: Int = -1): View {
     val box = FrameLayout(this).apply { layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp)) }
+    // frame = -1 — взять рамку из своих данных, если это мой аватар; иначе рамка, пришедшая с сервера (0 — нет)
+    val fr = if (frame < 0) (if (uid == CommunityState.myUid && uid != 0L) Store.chatFrame else 0) else frame
+    if (fr in 1..10) addFrameRing(box, sizeDp, Frames.color(fr))
     box.addView(TextView(this).apply {
         text = nick.firstOrNull()?.uppercaseChar()?.toString() ?: "?"
         textSize = sizeDp * 0.42f
@@ -140,13 +143,14 @@ internal fun MainActivity.bubbleMax(withAvatar: Boolean): Int {
  * [head] — необязательная строка сверху (ник или «Поддержка»). Возвращает пузырь и поле времени (под отметки «прочитано»).
  */
 internal fun MainActivity.messageBubble(
-    body: String, own: Boolean, timeText: String, head: View?, maxW: Int
+    body: String, own: Boolean, timeText: String, head: View?, maxW: Int,
+    myNick: String = "", onMention: ((String) -> Unit)? = null, hit: Boolean = false
 ): Pair<LinearLayout, TextView> {
     val r = corner(16)
     val t = dp(4).toFloat()
     val bg = GradientDrawable().apply {
         setColor(if (own) BLUE else CARD)
-        if (!own) setStroke(dp(1), LINE)
+        if (!own) setStroke(dp(if (hit) 2 else 1), if (hit) BLUE else LINE)   // hit — сообщение упоминает меня или отвечает мне
         cornerRadii = if (own) floatArrayOf(r, r, r, r, t, t, r, r) else floatArrayOf(r, r, r, r, r, r, t, t)
     }
     val time = txt(timeText, 10f, if (own) ColorUtils.setAlphaComponent(Color.BLACK, 150) else MUTE).apply {
@@ -160,19 +164,27 @@ internal fun MainActivity.messageBubble(
         setPadding(dp(11), dp(6), dp(11), dp(5))
         if (head != null) addView(head)
         if (body.isNotEmpty()) {
+            val host = this
+            val shown: CharSequence = if (onMention != null) mentionText(body, own, myNick, onMention) else body
             val tv = TextView(this@messageBubble).apply {
-                text = body
+                text = shown
                 textSize = 14.5f * Theme.textScale
                 setTextColor(if (own) Color.BLACK else TEXT)
+                if (onMention != null) {
+                    movementMethod = android.text.method.LinkMovementMethod.getInstance()
+                    highlightColor = Color.TRANSPARENT
+                    // со ссылочным методом TextView забирает долгое нажатие себе: передаём его пузырю (меню реакций и ответа)
+                    setOnLongClickListener { host.performLongClick() }
+                }
             }
             // Ширину считаем сами: раскладываем текст по максимальной ширине и берём самую длинную строку.
             // Так пузырь точно облегает сообщение и не зависит от того, как родитель его измеряет.
             val avail = (maxW - dp(22)).coerceAtLeast(dp(60))
             val widest = try {
-                val lay = android.text.StaticLayout.Builder.obtain(body, 0, body.length, android.text.TextPaint(tv.paint), avail).build()
+                val lay = android.text.StaticLayout.Builder.obtain(shown, 0, shown.length, android.text.TextPaint(tv.paint), avail).build()
                 var w = 0f
                 for (i in 0 until lay.lineCount) w = maxOf(w, lay.getLineWidth(i))
-                Math.ceil(w.toDouble()).toInt() + dp(2)
+                Math.ceil(w.toDouble()).toInt() + dp(if (onMention != null) 5 else 2)
             } catch (e: Exception) { avail }
             tv.layoutParams = LinearLayout.LayoutParams(minOf(widest, avail), ViewGroup.LayoutParams.WRAP_CONTENT)
             addView(tv)

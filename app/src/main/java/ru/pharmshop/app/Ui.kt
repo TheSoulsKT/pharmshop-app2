@@ -31,8 +31,6 @@ import androidx.core.graphics.ColorUtils
 /** Раздел главного меню с учётом удалённых настроек. */
 internal class SecView(val title: String, val sub: String, val enabled: Boolean, val url: String, val message: String)
 
-internal class MethodRow(val id: String, val name: String, val row: LinearLayout, val dot: View, val tint: Int = 0)
-
 /** ScrollView, который умеет «потянуть вниз, чтобы обновить»: в самом верху тянется содержимое, отпустили далеко — вызывается onPull. */
 internal class PullScrollView(ctx: Context) : ScrollView(ctx) {
     var onPull: (() -> Unit)? = null
@@ -141,17 +139,6 @@ internal fun MainActivity.popText(t: TextView, s: String) {
     t.scaleX = 0.94f; t.scaleY = 0.94f; t.alpha = 0.4f
     t.animate().scaleX(1f).scaleY(1f).alpha(1f)
         .setStartDelay(0).setDuration(280).setInterpolator(OvershootInterpolator(2f)).start()
-}
-
-/** Радио-точка «выскакивает» в момент выбора. */
-internal fun MainActivity.dotState(dot: View, selected: Boolean) {
-    val was = dot.tag == "on"
-    dot.tag = if (selected) "on" else null
-    if (selected && !was) {
-        dot.scaleX = 0.5f; dot.scaleY = 0.5f
-        dot.animate().scaleX(1f).scaleY(1f)
-            .setStartDelay(0).setDuration(320).setInterpolator(OvershootInterpolator(3f)).start()
-    }
 }
 
 // ---------- helpers ----------
@@ -334,7 +321,7 @@ internal fun MainActivity.openTab(tab: Int) {
         0 -> showHome()
         1 -> showSupport()
         2 -> showProfile()
-        3 -> showSettings()
+        3 -> openSettingsMain()
         5 -> showCommunity()
         4 -> {
             // раздел можно выключить удалённо (админ-панель → «Разделы»)

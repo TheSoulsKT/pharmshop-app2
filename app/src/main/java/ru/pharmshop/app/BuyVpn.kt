@@ -196,12 +196,6 @@ private fun MainActivity.pollVpnLogin(sid: Int, pollId: String, until: Long, inf
 /** Вкладка раздела «VPN»: 0 — «Моя подписка», 1 — «Купить подписку»; -1 — выбрать по наличию подписок. */
 private var vpnTab = -1
 
-/** Строка уровня подписки в меню: название, устройства, цена. */
-private fun vpnPlanLabel(p: JSONObject): String {
-    val tag = if (p.optBoolean("is_special")) " · особый" else if (p.optBoolean("is_popular")) " · популярный" else ""
-    return "${vpnPlanName(p.optString("name"))} · ${vpnDevices(p.optInt("devices"))} — ${vpnRub(p.optLong("total_price_display"))}$tag"
-}
-
 /**
  * Шапка раздела с котом. Нет подписки / заморожена — статичная карточка. Подписка активна — кот следит за встроенным VPN:
  * выключен (дремлет) → подключается (ёрзает) → включён (бодрый, расходятся кольца); при ошибке мотает головой.
@@ -221,7 +215,7 @@ private fun MainActivity.vpnStateHero(best: JSONObject?, frozen: JSONObject?): V
 
     fun build(s: VpnState.S, msg: String, react: Int): LinearLayout = when (s) {
         VpnState.S.ON -> vpnHero(0, "Защита включена", if (msg.isNotEmpty()) "$plan · $msg" else plan, stats, 0, react, 0)
-        VpnState.S.CONNECTING -> vpnHero(0, "Подключаемся…", "Кот просыпается, секунду", stats, 4, react, 0)
+        VpnState.S.CONNECTING -> vpnHero(0, "Подключаемся…", msg.ifEmpty { "Кот просыпается, секунду" }.take(90), stats, 4, react, 0)
         VpnState.S.ERROR -> vpnHero(0, "Не удалось подключиться", msg.ifEmpty { "Попробуйте ещё раз" }.take(90), stats, 3, react, 0)
         VpnState.S.OFF -> vpnHero(0, "VPN выключен", "Нажмите «Подключить» — и кот проснётся", stats, 3, react, 0)
     }
@@ -251,7 +245,7 @@ private fun MainActivity.vpnStateHero(best: JSONObject?, frozen: JSONObject?): V
     show(last, lastMsg, 0, false)
 
     val onVpn: (VpnState.S, String) -> Unit = { s, msg ->
-        if (s != last || (s == VpnState.S.ON && msg != lastMsg)) {
+        if (s != last || ((s == VpnState.S.ON || s == VpnState.S.CONNECTING) && msg != lastMsg)) {
             val react = if (s == last) 0 else when (s) {
                 VpnState.S.ON -> 1          // проснулся
                 VpnState.S.CONNECTING -> 4  // начал просыпаться

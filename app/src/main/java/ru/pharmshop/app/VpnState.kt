@@ -23,6 +23,12 @@ object VpnState {
     fun listen(l: (S, String) -> Unit) { listeners.addIfAbsent(l) }
     fun unlisten(l: (S, String) -> Unit) { listeners.remove(l) }
 
+    /** Перерисовать подписчиков без смены состояния (таймер подключения не сбрасывается). */
+    fun refresh() {
+        val s = state; val m = message
+        ui.post { for (l in listeners) l(s, m) }
+    }
+
     fun set(s: S, msg: String = "") {
         state = s
         message = msg

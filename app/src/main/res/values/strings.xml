@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="widget_vpn_desc">Сколько дней и трафика осталось по подписке VPN</string>
+    <string name="tile_vpn">VPN</string>
+    <string name="shortcut_vpn_short">Подключить VPN</string>
+    <string name="shortcut_vpn_long">Подключить VPN</string>
 </resources>

@@ -222,12 +222,32 @@ object Store {
         get() = sp.getString("chat_nick", "") ?: ""
         set(v) { sp.edit().putString("chat_nick", v).apply() }
 
+    /** Пользователь принял правила чата (окно с галочкой при регистрации в чате). */
+    var chatRulesOk: Boolean
+        get() = sp.getBoolean("chat_rules_ok", false)
+        set(v) { sp.edit().putBoolean("chat_rules_ok", v).apply() }
+
+    /** Выбранный канал общего чата (general, help, vpn, flood, news) и номер последнего просмотренного сообщения в каждом. */
+    var chatChannel: String
+        get() = sp.getString("chat_channel", "general") ?: "general"
+        set(v) { sp.edit().putString("chat_channel", v).apply() }
+    fun chatSeen(ch: String): Long = sp.getLong("chat_seen_$ch", 0L)
+    fun setChatSeen(ch: String, id: Long) { sp.edit().putLong("chat_seen_$ch", id).apply() }
+
     /** Сколько сообщений написано в чате (число приходит с сервера и только растёт): для достижений «за общение». */
     var chatMsgs: Int
         get() = sp.getInt("chat_msgs", 0)
         set(v) { sp.edit().putInt("chat_msgs", v).apply() }
 
     fun noteChatMsgs(n: Int) { if (n > chatMsgs) chatMsgs = n }
+
+    /** Рамка аватара в чате (0 — нет, 1..10) и время регистрации в чате (мс): приходят с сервера в chatMe. */
+    var chatFrame: Int
+        get() = sp.getInt("chat_frame", 0)
+        set(v) { sp.edit().putInt("chat_frame", v).apply() }
+    var chatCreated: Long
+        get() = sp.getLong("chat_created", 0L)
+        set(v) { sp.edit().putLong("chat_created", v).apply() }
 
     /** Администратор выдал все достижения: в профиле они все открыты (флаг приходит с сервера). */
     var allBadgesGranted: Boolean
@@ -405,7 +425,10 @@ object Store {
     /** Ссылка подписки, по которой сервис качает серверы. Это личный ключ, поэтому хранится зашифрованной. */
     var vpnSubUrl: String
         get() = sp.getString("vpn_sub_url", "")?.takeIf { it.isNotEmpty() }?.let { unseal(it) } ?: ""
-        set(v) { sp.edit().putString("vpn_sub_url", if (v.isEmpty()) "" else try { seal(v) } catch (e: Exception) { "" }).apply() }
+        set(v) {
+            if (v != vpnSubUrl) vpnSubAt = 0L   // сохранённый список серверов принадлежал другой ссылке
+            sp.edit().putString("vpn_sub_url", if (v.isEmpty()) "" else try { seal(v) } catch (e: Exception) { "" }).apply()
+        }
 
     /** Последний скачанный ответ подписки: чтобы подключаться без сети до панели. Тоже зашифрован. */
     var vpnSubRaw: String
@@ -416,6 +439,101 @@ object Store {
     var vpnServer: String
         get() = sp.getString("vpn_server", "") ?: ""
         set(v) { sp.edit().putString("vpn_server", v).apply() }
+
+    /** Последний сервер, выбранный режимом «Автоматически» (чтобы не прыгать между серверами с близким пингом). */
+    var vpnLastAuto: String
+        get() = sp.getString("vpn_last_auto", "") ?: ""
+        set(v) { sp.edit().putString("vpn_last_auto", v).apply() }
+
+    /** Российские сайты и IP — напрямую, мимо VPN (нужны geo-файлы). */
+    var vpnBypassRu: Boolean
+        get() = sp.getBoolean("vpn_bypass_ru", false)
+        set(v) { sp.edit().putBoolean("vpn_bypass_ru", v).apply() }
+
+    /** IPv6 через VPN. Выключено (по умолчанию): IPv6 блокируется в ядре, приложения сразу уходят на IPv4. */
+    var vpnIpv6: Boolean
+        get() = sp.getBoolean("vpn_ipv6", false)
+        set(v) { sp.edit().putBoolean("vpn_ipv6", v).apply() }
+
+    /** DNS-провайдер: 0 — Cloudflare, 1 — Google, 2 — Quad9, 3 — AdGuard (см. VpnDns). */
+    var vpnDns: Int
+        get() = sp.getInt("vpn_dns", 0).coerceIn(0, VpnDns.PRESETS.size - 1)
+        set(v) { sp.edit().putInt("vpn_dns", v).apply() }
+
+    /** Блокировать рекламу: geosite:category-ads-all уходит в blackhole (нужны geo-файлы). */
+    var vpnBlockAds: Boolean
+        get() = sp.getBoolean("vpn_block_ads", false)
+        set(v) { sp.edit().putBoolean("vpn_block_ads", v).apply() }
+
+    /** Последнее известное состояние «Блокировать соединения без VPN»: 0 — неизвестно, 1 — выключено, 2 — включено. */
+    var vpnLockdown: Int
+        get() = sp.getInt("vpn_lockdown", 0)
+        set(v) { sp.edit().putInt("vpn_lockdown", v).apply() }
+
+    /** Серверы, которые недавно не прошли проверку канала: «имя\tвремя» построчно (см. VpnAuto). */
+    var vpnBad: String
+        get() = sp.getString("vpn_bad", "") ?: ""
+        set(v) { sp.edit().putString("vpn_bad", v).apply() }
+
+    /** Какие приложения идут через VPN: 0 — все; 1 — только выбранные; 2 — все, кроме выбранных. */
+    var vpnSplitMode: Int
+        get() = sp.getInt("vpn_split_mode", 0).coerceIn(0, 2)
+        set(v) { sp.edit().putInt("vpn_split_mode", v).apply() }
+
+    /** Автоподключение: 0 — выключено, 1 — при включении телефона, 2 — в мобильной сети. */
+    var vpnAuto: Int
+        get() = sp.getInt("vpn_auto", 0).coerceIn(0, 2)
+        set(v) { sp.edit().putInt("vpn_auto", v).apply() }
+
+    /** Пользователь сам выключил VPN в мобильной сети: до смены сети автоподключение его не включает. */
+    var vpnManualOff: Boolean
+        get() = sp.getBoolean("vpn_manual_off", false)
+        set(v) { sp.edit().putBoolean("vpn_manual_off", v).apply() }
+
+    /** Обход DPI (экспериментально): фрагментация TLS-handshake на соединении до сервера. */
+    var vpnFragment: Boolean
+        get() = sp.getBoolean("vpn_fragment", false)
+        set(v) { sp.edit().putBoolean("vpn_fragment", v).apply() }
+
+    /** Последняя ошибка подключения: понятный текст, исходный текст ядра и время (для «Проверить VPN»). */
+    var vpnLastError: String
+        get() = sp.getString("vpn_last_error", "") ?: ""
+        set(v) { sp.edit().putString("vpn_last_error", v).apply() }
+    var vpnLastErrorRaw: String
+        get() = sp.getString("vpn_last_error_raw", "") ?: ""
+        set(v) { sp.edit().putString("vpn_last_error_raw", v).apply() }
+    var vpnLastErrorAt: Long
+        get() = sp.getLong("vpn_last_error_at", 0L)
+        set(v) { sp.edit().putLong("vpn_last_error_at", v).apply() }
+
+    /** Результат последней проверки канала (generate_204 через туннель): когда и прошла ли. */
+    var vpnProbeAt: Long
+        get() = sp.getLong("vpn_probe_at", 0L)
+        set(v) { sp.edit().putLong("vpn_probe_at", v).apply() }
+    var vpnProbeOk: Boolean
+        get() = sp.getBoolean("vpn_probe_ok", false)
+        set(v) { sp.edit().putBoolean("vpn_probe_ok", v).apply() }
+
+    /** Когда последний раз скачан список серверов (VpnSub.load). 0 — неизвестно или ссылка сменилась. */
+    var vpnSubAt: Long
+        get() = sp.getLong("vpn_sub_at", 0L)
+        set(v) { sp.edit().putLong("vpn_sub_at", v).apply() }
+
+    /** Пинги, измеренные в фоне: строки «имя<TAB>мс», время замера и тип сети (1 Wi‑Fi, 2 мобильная, 3 другая). */
+    var vpnWarm: String
+        get() = sp.getString("vpn_warm", "") ?: ""
+        set(v) { sp.edit().putString("vpn_warm", v).apply() }
+    var vpnWarmAt: Long
+        get() = sp.getLong("vpn_warm_at", 0L)
+        set(v) { sp.edit().putLong("vpn_warm_at", v).apply() }
+    var vpnWarmNet: Int
+        get() = sp.getInt("vpn_warm_net", 0)
+        set(v) { sp.edit().putInt("vpn_warm_net", v).apply() }
+
+    /** Пакеты выбранных приложений для vpnSplitMode. */
+    var vpnSplitApps: Set<String>
+        get() = sp.getStringSet("vpn_split_apps", emptySet())?.toSet() ?: emptySet()
+        set(v) { sp.edit().putStringSet("vpn_split_apps", HashSet(v)).apply() }
 
     /** Постоянный идентификатор устройства для панели (по нему считается лимит устройств). */
     val vpnHwid: String

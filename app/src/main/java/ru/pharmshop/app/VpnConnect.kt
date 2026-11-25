@@ -41,6 +41,18 @@ internal fun MainActivity.vpnToggle(url: String, live: Boolean) {
     }
 }
 
+/** Подключение с ярлыка и плитки: ссылка подписки уже сохранена, нажимать «Подключить» на экране не нужно. */
+internal fun MainActivity.vpnQuickConnect() {
+    if (VpnState.state == VpnState.S.ON || VpnState.state == VpnState.S.CONNECTING) return
+    val url = Store.vpnSubUrl
+    if (url.isEmpty()) { toast("Сначала откройте раздел VPN и нажмите «Подключить»"); return }
+    val subs = VpnWatch.cached()
+    val live = subs.length() == 0 || (0 until subs.length()).any { i ->
+        subs.optJSONObject(i)?.let { it.optBoolean("active") && !it.optBoolean("frozen") } == true
+    }
+    vpnToggle(url, live)
+}
+
 private const val C_WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
 // ---------- пинг серверов ----------
@@ -229,6 +241,16 @@ internal fun MainActivity.vpnConnectBlock(url: String, live: Boolean, onExternal
         layoutParams = lp(6)
     }
 
+    // Подсказка про kill switch: показывается только при включённом VPN, если «Блокировать соединения без VPN» выключено (API 29+)
+    val killHint = txt("⚠ Kill switch выключен: при обрыве VPN трафик пойдёт напрямую. Включить ›", 12f, GOLD).apply {
+        gravity = Gravity.CENTER
+        visibility = View.GONE
+        isClickable = true
+        setPadding(dp(8), dp(4), dp(8), dp(4))
+        layoutParams = lp(6)
+        setOnClickListener { openSystemVpnSettings() }
+    }
+
     // карточка сервера: флаг, название, пинг; нажатие открывает список
     val flagTv = txt("🌐", 22f, TEXT).apply {
         gravity = Gravity.CENTER
@@ -243,7 +265,7 @@ internal fun MainActivity.vpnConnectBlock(url: String, live: Boolean, onExternal
 
     fun refreshServer(list: List<VpnServer>?) {
         val auto = Store.vpnServer.isEmpty()
-        val real = if (auto) list?.let { VpnSub.pick(it).name } else Store.vpnServer
+        val real = if (auto) list?.let { VpnAuto.label(it).name } else Store.vpnServer
         if (real == null) {
             flagTv.text = "🌐"; nameTv.text = "Автоматически"; pingTv.text = ""
         } else {
@@ -302,11 +324,12 @@ internal fun MainActivity.vpnConnectBlock(url: String, live: Boolean, onExternal
     }
 
     val paint: (VpnState.S, String) -> Unit = { s, msg ->
+        killHint.visibility = if (s == VpnState.S.ON && Build.VERSION.SDK_INT >= 29 && Store.vpnLockdown == 1) View.VISIBLE else View.GONE
         when (s) {
             VpnState.S.OFF -> { label.text = "Подключить"; status.visibility = View.GONE }
             VpnState.S.CONNECTING -> {
                 label.text = "Подключение…"
-                status.text = "Поднимаю туннель"
+                status.text = msg.ifEmpty { "Поднимаю туннель" }   // при повторе после сбоя здесь причина и пауза
                 status.setTextColor(MUTE); status.visibility = View.VISIBLE
             }
             VpnState.S.ON -> {
@@ -334,6 +357,7 @@ internal fun MainActivity.vpnConnectBlock(url: String, live: Boolean, onExternal
         layoutParams = lp(0)
         addView(btn)
         addView(status)
+        addView(killHint)
         addView(serverCard)
         addView(external)
     }

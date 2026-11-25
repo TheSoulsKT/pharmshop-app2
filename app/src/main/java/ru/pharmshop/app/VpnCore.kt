@@ -15,7 +15,7 @@ internal object VpnCore {
     private const val LIB = "libv2ray.Libv2ray"
     private const val HANDLER = "libv2ray.CoreCallbackHandler"
 
-    @Volatile private var ctl: Any? = null
+    private var ctl: Any? = null
     private var inited = false
 
     /** Ключ XUDP: ядро требует ровно 32 байта в base64 (URL-вариант, без «=»). Берём SHA-256 от постоянного id устройства. */
@@ -64,22 +64,6 @@ internal object VpnCore {
         val c = ctl ?: return
         try { c.javaClass.getMethod("stopLoop").invoke(c) } catch (e: Throwable) { }
         ctl = null
-    }
-
-    /**
-     * Задержка до url ЧЕРЕЗ туннель в мс (замер делает само ядро). -1 — не ответило.
-     * null — в этой сборке .aar метода measureDelay нет, проверить нельзя (тогда считаем, что всё в порядке).
-     * Вызывать не в потоке интерфейса.
-     */
-    fun measureDelay(url: String): Long? {
-        val c = ctl ?: return -1L
-        return try {
-            (c.javaClass.getMethod("measureDelay", String::class.java).invoke(c, url) as? Long) ?: -1L
-        } catch (e: NoSuchMethodException) {
-            null
-        } catch (e: Throwable) {
-            -1L
-        }
     }
 
     val running: Boolean

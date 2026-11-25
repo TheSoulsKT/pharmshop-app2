@@ -42,12 +42,12 @@ internal val PROFILE_COVERS = listOf(
 )
 
 /** Пара цветов выбранной обложки (по умолчанию — акцент темы, уходящий в цвет фона). */
-private fun MainActivity.coverColors(): Pair<Int, Int> {
+internal fun MainActivity.coverColors(): Pair<Int, Int> {
     val c = PROFILE_COVERS.firstOrNull { it.id == Store.profileCover }
     return if (c != null) c.c1 to c.c2 else BLUE to ColorUtils.blendARGB(BLUE, BG, 0.5f)
 }
 
-private fun MainActivity.coverDrawable(radius: Int = 0): GradientDrawable {
+internal fun MainActivity.coverDrawable(radius: Int = 0): GradientDrawable {
     val (a, b) = coverColors()
     return GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(a, b)).apply { cornerRadius = dp(radius).toFloat() }
 }
@@ -195,6 +195,11 @@ internal fun MainActivity.profileHero(body: LinearLayout, sid: Int, user: String
         }
     })
     floatBadges(cover)
+    cover.addView(roundBtn("🖼️", 36, ColorUtils.setAlphaComponent(Color.BLACK, 110), Color.TRANSPARENT, "Рамка аватара") {
+        frameSheet(body, sid, user)
+    }.apply {
+        layoutParams = FrameLayout.LayoutParams(dp(36), dp(36), Gravity.START or Gravity.TOP).apply { topMargin = dp(12); leftMargin = dp(12) }
+    })
     cover.addView(roundBtn("🎨", 36, ColorUtils.setAlphaComponent(Color.BLACK, 110), Color.TRANSPARENT, "Сменить обложку") {
         coverSheet(body, sid)
     }.apply {
@@ -214,11 +219,24 @@ internal fun MainActivity.profileHero(body: LinearLayout, sid: Int, user: String
     ring.addView(avatarView(88, user, 34f).apply {
         layoutParams = FrameLayout.LayoutParams(dp(88), dp(88))
     })
+    // рамка как в PWA: кольцо цвета выбранной рамки (без рамки — золотое) и мягкое свечение; между кольцом и фото — полоска цвета карточки
+    val fc = Frames.color(Store.chatFrame)
+    val frameGlow = View(this).apply {
+        background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(ColorUtils.setAlphaComponent(fc, if (Store.chatFrame > 0) 0x55 else 0x3C)) }
+        layoutParams = FrameLayout.LayoutParams(dp(110), dp(110), Gravity.CENTER)
+    }
+    val frameRing = View(this).apply {
+        background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(fc) }
+        layoutParams = FrameLayout.LayoutParams(dp(102), dp(102), Gravity.CENTER)
+    }
+    ring.layoutParams = FrameLayout.LayoutParams(dp(96), dp(96), Gravity.CENTER)
     val photoWrap = FrameLayout(this).apply {
-        layoutParams = LinearLayout.LayoutParams(dp(112), dp(96)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = -dp(48) }
+        layoutParams = LinearLayout.LayoutParams(dp(112), dp(110)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = -dp(55) }
+        addView(frameGlow)
+        addView(frameRing)
         addView(ring)
         addView(roundBtn("📷", 32, BLUE, CARD, "Изменить фото") { photoSheet(body, sid, user) }.apply {
-            layoutParams = FrameLayout.LayoutParams(dp(32), dp(32), Gravity.END or Gravity.BOTTOM).apply { bottomMargin = dp(2) }
+            layoutParams = FrameLayout.LayoutParams(dp(32), dp(32), Gravity.END or Gravity.BOTTOM).apply { bottomMargin = dp(9) }
         })
     }
     card.addView(photoWrap)

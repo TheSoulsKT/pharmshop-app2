@@ -1,6 +1,5 @@
 package ru.pharmshop.app
 
-import android.app.Activity
 import android.content.res.Configuration
 import android.graphics.Color
 import androidx.appcompat.app.AppCompatDelegate

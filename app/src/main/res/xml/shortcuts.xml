@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Статический ярлык на иконке приложения (долгое нажатие): подключить VPN. Обрабатывается в MainActivity.openFromIntent. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="vpn_connect"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_vpn"
+        android:shortcutShortLabel="@string/shortcut_vpn_short"
+        android:shortcutLongLabel="@string/shortcut_vpn_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="@string/shortcut_pkg"
+            android:targetClass="ru.pharmshop.app.LauncherActivity">
+            <extra android:name="open" android:value="vpn_connect" />
+        </intent>
+    </shortcut>
+</shortcuts>

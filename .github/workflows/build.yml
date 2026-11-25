@@ -48,10 +48,24 @@ jobs:
               "https://github.com/2dust/AndroidLibXrayLite/releases/download/${XRAY_LIB_TAG}/libv2ray.aar"
           fi
           ls -l app/libs/libv2ray.aar
+      # geoip.dat / geosite.dat (маршрутизация «российское напрямую», правила подписки с geoip:/geosite:).
+      # Приложение копирует их из assets/geo в filesDir и раз в неделю обновляет само (GeoFiles.kt).
+      - name: Download geo files
+        run: |
+          mkdir -p app/src/main/assets/geo
+          for f in geoip.dat geosite.dat; do
+            curl -fL --retry 3 -o "app/src/main/assets/geo/$f" \
+              "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/$f"
+          done
+          ls -l app/src/main/assets/geo
+          # «Блокировать рекламу» отправляет geosite:category-ads-all в blackhole: тег должен быть в geosite.dat.
+          # Без него приложение само отключит этот переключатель (GeoFiles.hasSite), но лучше узнать об этом на сборке.
+          if grep -aqi 'category-ads-all' app/src/main/assets/geo/geosite.dat; then
+            echo "geosite:category-ads-all найден"
+          else
+            echo "::warning::В geosite.dat нет category-ads-all — блокировка рекламы в приложении будет недоступна"
+          fi
       - run: gradle assembleRelease --no-daemon --stacktrace
-        env:
-          SUPPORT_BOT_TOKEN: ${{ secrets.SUPPORT_BOT_TOKEN }}
-          SUPPORT_CHAT_ID: ${{ secrets.SUPPORT_CHAT_ID }}
       - name: Check APK signature
         run: |
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)

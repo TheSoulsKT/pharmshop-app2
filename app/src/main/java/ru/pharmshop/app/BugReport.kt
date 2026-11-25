@@ -21,6 +21,7 @@ object BugReport {
             append("Телефон: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, Android ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})\n")
             append("Язык: ${java.util.Locale.getDefault().language} · тема: $theme, ${Theme.skin.title}\n")
             append("VPN: ${if (VpnApi.loggedIn()) "вход выполнен" else "не входили"} · уведомления: ${onOff(Notifier.enabled(c))} · защита: $lock")
+            VpnDiag.brief()?.let { append("\n").append(it) }
         }
     }
 
