@@ -424,7 +424,11 @@ object VpnApi {
         JSONObject(authed("GET", "/api/client/payments/$id/status"))
 
     /** Подписки аккаунта; subscription_url — ссылка-ключ для VPN-клиента. */
-    fun subscriptions(): JSONArray = JSONArray(authed("GET", "/api/client/me/subscriptions"))
+    fun subscriptions(): JSONArray {
+        val subs = JSONArray(authed("GET", "/api/client/me/subscriptions"))
+        try { VpnSub.syncUrl(subs) } catch (e: Exception) { AppLog.e("vpn-sync-url", e) }
+        return subs
+    }
 
     // ---------- продление и устройства ----------
 

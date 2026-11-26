@@ -23,7 +23,10 @@ object VpnSub {
     /** Панель выбирает формат ответа по User-Agent; браузерный даёт веб-страницу, поэтому у нас свой. */
     const val UA = "PharmShopVPN/1.0 (Android; Xray-core)"
 
-    class SubException(msg: String) : Exception(msg)
+    open class SubException(msg: String) : Exception(msg)
+
+    /** Панель ответила 401/403: не пустила это устройство. Не всегда это настоящий лимит: ссылку могли перевыпустить или панель дала временный отказ. */
+    class DeviceRejected(val code: Int) : SubException("Сервер не пустил это устройство (HTTP $code). Проверьте лимит устройств")
 
     private fun ascii(s: String?) = (s ?: "").filter { it.code in 32..126 }.take(64)
 
@@ -43,8 +46,8 @@ object VpnSub {
             val code = c.responseCode
             val body = (if (code in 200..299) c.inputStream else c.errorStream)
                 ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+            if (code == 401 || code == 403) throw DeviceRejected(code)
             if (code !in 200..299) throw SubException(when (code) {
-                401, 403 -> "Сервер не пустил это устройство (HTTP $code). Проверьте лимит устройств"
                 404 -> "Подписка не найдена. Возможно, ссылка была перевыпущена"
                 429 -> "Слишком много запросов, попробуйте через минуту"
                 else -> "Ошибка сервера подписки (HTTP $code)"
@@ -68,6 +71,37 @@ object VpnSub {
 
     /** Забывает список (при выходе из аккаунта). */
     fun clearMem() { mem = null }
+
+    /** Список по сохранённой копии (без сети), с пометкой «из хранилища». null — копии нет или она повреждена. */
+    fun storedList(): List<VpnServer>? {
+        val raw = Store.vpnSubRaw
+        if (raw.isEmpty()) return null
+        return try { parse(raw).also { fromStore = true } } catch (e: Exception) { null }
+    }
+
+    /**
+     * Сверяет сохранённую ссылку подписки с тем, что отдаёт кабинет. Ссылка записывается в Store только при нажатии
+     * «Подключить», поэтому после перевыпуска ссылки плитка, автоподключение и фоновая предзагрузка продолжали ходить
+     * по старой и получали отказ (его приложение выдавало за «лимит устройств»). Если сохранённой ссылки в кабинете
+     * больше нет, берём ссылку действующей подписки и сбрасываем копию списка серверов от старой ссылки.
+     */
+    fun syncUrl(subs: JSONArray) {
+        val cur = Store.vpnSubUrl
+        if (cur.isEmpty()) return
+        var fresh: String? = null
+        for (i in 0 until subs.length()) {
+            val s = subs.optJSONObject(i) ?: continue
+            val u = s.optString("subscription_url")
+            if (u.isEmpty() || u == "null") continue
+            if (u == cur) return   // ссылка актуальна
+            if (fresh == null && s.optBoolean("is_active") && !s.optBoolean("is_frozen")) fresh = u
+        }
+        val f = fresh ?: return
+        Store.vpnSubUrl = f
+        Store.vpnSubRaw = ""
+        Store.vpnSubAt = 0L
+        mem = null
+    }
 
     /** Свежий список серверов; без сети — последний сохранённый. */
     fun load(url: String): List<VpnServer> {

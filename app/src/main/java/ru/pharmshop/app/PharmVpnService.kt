@@ -133,7 +133,7 @@ class PharmVpnService : VpnService() {
             teardown()   // переподключение (смена сервера, смена сети)
             val url = Store.vpnSubUrl
             if (url.isEmpty()) throw VpnSub.SubException("Нет ссылки подписки. Откройте раздел VPN и нажмите «Подключить»")
-            var list = VpnSub.loadForConnect(url)
+            var list = loadList(url, true)
             var geo = GeoFiles.prepare(this)
 
             var err: Throwable? = null
@@ -167,12 +167,41 @@ class PharmVpnService : VpnService() {
                     }
                 }
                 // подключались по сохранённой копии списка, а она могла устареть (ключи сменили): берём свежий и пробуем ещё раз
-                if (pass == 0 && VpnSub.fromStore) { pass = 1; list = VpnSub.load(url); continue }
+                if (pass == 0 && VpnSub.fromStore) { pass = 1; list = loadList(Store.vpnSubUrl.ifEmpty { url }, false); continue }
                 break
             }
             throw err ?: IllegalStateException("Нет доступных серверов")
         } catch (e: Throwable) {   // Throwable: ошибки загрузки нативной библиотеки — не Exception
             fail(e)
+        }
+    }
+
+    /**
+     * Список серверов с защитой от ложного «лимита устройств». Отказ панели (401/403) бывает не только из-за лимита:
+     * ссылку могли перевыпустить (старая в Store), панель могла ответить временным отказом. Поэтому при отказе
+     * 1) сверяем ссылку с кабинетом, 2) повторяем запрос, 3) если отказ остался, а сохранённая копия списка есть,
+     * подключаемся по ней, и только без копии показываем ошибку.
+     */
+    private fun loadList(url0: String, fast: Boolean): List<VpnServer> {
+        try {
+            return if (fast) VpnSub.loadForConnect(url0) else VpnSub.load(url0)
+        } catch (e: VpnSub.DeviceRejected) {
+            AppLog.e("vpn-sub-rejected", e)
+            var url = url0
+            if (VpnApi.loggedIn()) {
+                try {
+                    VpnWatch.refresh(this)   // заодно синхронизирует ссылку (VpnSub.syncUrl)
+                    val fresh = Store.vpnSubUrl
+                    if (fresh.isNotEmpty()) url = fresh
+                } catch (x: Exception) { AppLog.e("vpn-sync-url", x) }
+            }
+            try { Thread.sleep(1500) } catch (x: InterruptedException) { }
+            try {
+                return VpnSub.load(url)
+            } catch (e2: VpnSub.DeviceRejected) {
+                VpnSub.storedList()?.let { return it }
+                throw e2
+            }
         }
     }
 
