@@ -65,6 +65,16 @@ const SCHEMA = [
      device TEXT NOT NULL, round INTEGER NOT NULL, stars INTEGER NOT NULL, comment TEXT NOT NULL DEFAULT '', ts INTEGER NOT NULL,
      PRIMARY KEY (device, round))`,
   `CREATE INDEX IF NOT EXISTS idx_ratings_ts ON support_ratings (ts)`,
+  // «Мой питомец»: кот пользователя (uid — номер в users). food/food_ts — еда в миске на момент food_ts; fed_sec — всего секунд VPN-кормления;
+  // hb_ts — время последнего сигнала кормления; day/day_sec — суточный лимит; paid_days — оплаченные дни подписок; level — 1..10
+  `CREATE TABLE IF NOT EXISTS pets (
+     uid INTEGER PRIMARY KEY, name TEXT NOT NULL DEFAULT 'Котик', food REAL NOT NULL DEFAULT 0, food_ts INTEGER NOT NULL DEFAULT 0,
+     fed_sec INTEGER NOT NULL DEFAULT 0, hb_ts INTEGER NOT NULL DEFAULT 0, day INTEGER NOT NULL DEFAULT 0, day_sec INTEGER NOT NULL DEFAULT 0,
+     paid_days INTEGER NOT NULL DEFAULT 0, level INTEGER NOT NULL DEFAULT 1, created INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_pets_top ON pets (level DESC, paid_days DESC, fed_sec DESC)`,
+  // купленные подписки, засчитанные коту: ref — номер подписки в кабинете VPN, один и тот же номер засчитывается один раз
+  `CREATE TABLE IF NOT EXISTS pet_buys (ref TEXT PRIMARY KEY, uid INTEGER NOT NULL, days INTEGER NOT NULL, ts INTEGER NOT NULL)`,
+  `CREATE INDEX IF NOT EXISTS idx_pet_buys_uid ON pet_buys (uid, ts)`,
 ];
 // Новые колонки для уже существующей базы (ошибка «колонка уже есть» игнорируется).
 const MIGRATIONS = [
@@ -90,6 +100,7 @@ const MIGRATIONS = [
   `ALTER TABLE room_messages ADD COLUMN reply_to INTEGER DEFAULT 0`,  // номер сообщения, на которое это — ответ (0 — не ответ)
   `ALTER TABLE room_messages ADD COLUMN ch TEXT DEFAULT 'general'`,   // канал общего чата
   `ALTER TABLE users ADD COLUMN frame INTEGER DEFAULT 0`,             // рамка аватара (0 — нет, 1..10 — по уровням)
+  `ALTER TABLE users ADD COLUMN nick_color INTEGER DEFAULT 0`,        // цвет ника (0 — авто, 1..10 — по уровням, как рамки)
   `CREATE INDEX IF NOT EXISTS idx_room_ch ON room_messages (ch, id)`,
 ];
 const CH_IDS = ['general', 'help', 'vpn', 'flood', 'news'];   // каналы; в 'news' пишут только модераторы
@@ -938,7 +949,7 @@ const RESERVED_WORDS = ['admin', 'administrator', 'moderator', 'moder', 'support
 const RESERVED_KEYS = RESERVED_WORDS.map(nickKey);
 const isReservedNick = (key) => RESERVED_KEYS.some((r) => key === r || key.startsWith(r));
 
-const CHAT_USER_SQL = `SELECT id, device, secret_hash, nick, badge, muted_until, nick_changed, last_seen, avatar_v, crown, all_badges, created, frame FROM users WHERE device = ?`;
+const CHAT_USER_SQL = `SELECT id, device, secret_hash, nick, badge, muted_until, nick_changed, last_seen, avatar_v, crown, all_badges, created, frame, nick_color FROM users WHERE device = ?`;
 
 // Проверка пользователя чата. Возвращает { u, ip, now } или { e: Response }.
 async function chatUser(body, env, request) {
@@ -981,7 +992,7 @@ async function chatUserFast(body, env, request) {
   return a;
 }
 
-const meOf = (u, now) => ({ registered: true, uid: u.id, nick: u.nick, badge: u.badge ? 1 : 0, crown: u.crown ? 1 : 0, all_badges: u.all_badges ? 1 : 0, av: u.avatar_v || 0, frame: u.frame || 0, created: u.created || 0, muted_until: u.muted_until > now ? u.muted_until : 0 });
+const meOf = (u, now) => ({ registered: true, uid: u.id, nick: u.nick, badge: u.badge ? 1 : 0, crown: u.crown ? 1 : 0, all_badges: u.all_badges ? 1 : 0, av: u.avatar_v || 0, frame: u.frame || 0, nc: u.nick_color || 0, created: u.created || 0, muted_until: u.muted_until > now ? u.muted_until : 0 });
 // Сколько сообщений человек написал (общий чат + личные): для достижения «за общение».
 async function countMsgs(env, uid) {
   const r = await env.DB.prepare(
@@ -1163,6 +1174,17 @@ async function frameSet(body, env, request) {
   return json({ ok: true, frame: f });
 }
 
+// Цвет ника: открывается по тем же «уровням» (дням с регистрации), что и рамки. 0 — автоматический цвет.
+async function nickColorSet(body, env, request) {
+  const a = await chatUser(body, env, request);
+  if (a.e) return a.e;
+  const c = Math.floor(Number(body.color));
+  if (!(c >= 0 && c <= FRAME_DAYS.length)) return err('Некорректный цвет');
+  if (c > 0 && Math.floor((a.now - (a.u.created || a.now)) / 864e5) < FRAME_DAYS[c - 1]) return err('Этот цвет ещё не открыт');
+  if ((a.u.nick_color || 0) !== c) { await env.DB.prepare('UPDATE users SET nick_color = ? WHERE id = ?').bind(c, a.u.id).run(); authDirty(); await bumpRoomRev(env); }   // лента перечитается у всех: цвет сменится и у старых сообщений
+  return json({ ok: true, color: c });
+}
+
 // Непрочитанные по каналам: клиент присылает seen — последний виденный номер сообщения в каждом канале.
 async function roomUnread(body, env, request) {
   const a = await chatUserFast(body, env, request);
@@ -1177,7 +1199,7 @@ async function roomUnread(body, env, request) {
 
 // ----- общий чат (одна комната) -----
 // reply_to > 0 и q_id = null — оригинал, на который отвечали, уже удалён
-const ROOM_SQL = `SELECT r.id, r.uid, COALESCE(u.nick, 'удалён') AS nick, COALESCE(u.badge, 0) AS badge, COALESCE(u.crown, 0) AS crown, COALESCE(u.avatar_v, 0) AS av, COALESCE(u.frame, 0) AS fr, r.text, r.ts,
+const ROOM_SQL = `SELECT r.id, r.uid, COALESCE(u.nick, 'удалён') AS nick, COALESCE(u.badge, 0) AS badge, COALESCE(u.crown, 0) AS crown, COALESCE(u.avatar_v, 0) AS av, COALESCE(u.frame, 0) AS fr, COALESCE(u.nick_color, 0) AS nc, r.text, r.ts,
                          COALESCE(r.reply_to, 0) AS reply_to, q.id AS q_id, COALESCE(qu.nick, 'удалён') AS q_nick, substr(q.text, 1, 140) AS q_text
                     FROM room_messages r LEFT JOIN users u ON u.id = r.uid
                     LEFT JOIN room_messages q ON q.id = r.reply_to AND r.reply_to > 0
@@ -1351,7 +1373,7 @@ async function roomMute(body, env, request) {
 
 // ----- личные сообщения -----
 const pairOf = (x, y) => (x < y ? [x, y] : [y, x]);
-const DM_SQL = `SELECT d.id, d.sender AS uid, COALESCE(u.nick, 'удалён') AS nick, COALESCE(u.badge, 0) AS badge, COALESCE(u.crown, 0) AS crown, COALESCE(u.avatar_v, 0) AS av, d.text, d.ts
+const DM_SQL = `SELECT d.id, d.sender AS uid, COALESCE(u.nick, 'удалён') AS nick, COALESCE(u.badge, 0) AS badge, COALESCE(u.crown, 0) AS crown, COALESCE(u.avatar_v, 0) AS av, COALESCE(u.nick_color, 0) AS nc, d.text, d.ts
                   FROM dm_messages d LEFT JOIN users u ON u.id = d.sender WHERE d.a = ? AND d.b = ?`;
 // Номер последнего личного сообщения (по всем перепискам), в памяти воркера на DM_TTL.
 async function dmState(env) {
@@ -1523,6 +1545,8 @@ async function adminUserReset(body, env) {
     env.DB.prepare('DELETE FROM room_reactions WHERE uid = ? OR msg IN (SELECT id FROM room_messages WHERE uid = ?)').bind(uid, uid),
     env.DB.prepare('DELETE FROM room_messages WHERE uid = ?').bind(uid),
     env.DB.prepare('DELETE FROM dm_reads WHERE uid = ? OR peer = ?').bind(uid, uid),
+    env.DB.prepare('DELETE FROM pets WHERE uid = ?').bind(uid),
+    env.DB.prepare('DELETE FROM pet_buys WHERE uid = ?').bind(uid),
     env.DB.prepare('DELETE FROM users WHERE id = ?').bind(uid),
   ]);
   authDirty();
@@ -1661,6 +1685,207 @@ async function vpnCall(body, env, request) {
   return json({ code: res.status, text, refresh: mm ? mm[1] : '' });
 }
 
+// ---------- «Мой питомец»: кот, которого кормят VPN, а уровень растёт от купленных подписок ----------
+// Кот привязан к пользователю чата (ник нужен для «Топа»). Кормление: приложение, пока VPN включён, раз в ~минуту шлёт
+// /api/pet/feed с числом секунд работы VPN с прошлого раза. Сервер не верит на слово: засчитывается не больше, чем реально
+// прошло времени с прошлого сигнала (+ запас), не чаще раза в PET_MIN_GAP и не больше PET_DAY_SEC в сутки.
+// Уровень (1–10) зависит от суммы «оплаченных дней» (приложение сообщает о покупке через /api/pet/buy, повтор одного и того же
+// номера подписки не засчитывается). Уровень не падает, когда подписка заканчивается. Админ может выдать дни: /api/admin/pet_grant.
+// Одежду, домик и миску выбирает уровень: приложение рисует их по id из таблицы PET_LEVELS.
+const PET_LEVELS = [
+  // days — сколько оплаченных дней нужно для уровня; cap — вместимость миски (в «минутах VPN»)
+  { days: 0,   outfit: ['none', 'Без одежды'],            house: ['box', 'Картонная коробка'],      bowl: ['plastic', 'Пластиковая миска'] },
+  { days: 7,   outfit: ['bandana', 'Бандана'],           house: ['box_soft', 'Коробка с подушкой'], bowl: ['tin', 'Жестяная миска'] },
+  { days: 30,  outfit: ['scarf', 'Тёплый шарф'],         house: ['basket', 'Плетёная корзинка'],    bowl: ['ceramic', 'Керамическая миска'] },
+  { days: 60,  outfit: ['hoodie', 'Худи'],               house: ['bed', 'Мягкая лежанка'],          bowl: ['ceramic_fish', 'Миска с рыбкой'] },
+  { days: 120, outfit: ['vest', 'Жилетка'],              house: ['tent', 'Домик-палатка'],          bowl: ['blue', 'Голубая миска'] },
+  { days: 180, outfit: ['cape', 'Плащ'],                 house: ['wood', 'Деревянный домик'],       bowl: ['silver', 'Серебряная миска'] },
+  { days: 270, outfit: ['bowtie', 'Бабочка и цилиндр'],  house: ['cottage', 'Уютный коттедж'],      bowl: ['silver_gems', 'Миска с камушками'] },
+  { days: 365, outfit: ['jacket', 'Куртка с мехом'],     house: ['villa', 'Вилла'],                 bowl: ['gold', 'Золотая миска'] },
+  { days: 545, outfit: ['royal', 'Королевская мантия'],  house: ['tower', 'Башня'],                 bowl: ['gold_gems', 'Золотая миска с рубинами'] },
+  { days: 730, outfit: ['crown', 'Корона и мантия'],     house: ['castle', 'Замок'],                bowl: ['diamond', 'Алмазная миска'] },
+].map((l, i) => ({
+  n: i + 1, days: l.days, cap: 60 + 20 * (i + 1),
+  outfit: { id: l.outfit[0], name: l.outfit[1] }, house: { id: l.house[0], name: l.house[1] }, bowl: { id: l.bowl[0], name: l.bowl[1] },
+}));
+const PET_MAX_LEVEL = PET_LEVELS.length;
+const PET_DECAY_PER_H = 3;          // сколько «минут VPN» в час кот съедает из миски
+const PET_MIN_GAP = 60_000;         // сигналы кормления не чаще, мс (приложение шлёт раз в ~5 минут)
+const PET_MAX_SEC = 360;            // максимум секунд, которые можно засчитать за один сигнал
+const PET_FULL_WRITE_MS = 15 * 60_000;   // пока миска полная, в базу пишем не чаще, чем раз в это время (бесплатный лимит записей D1)
+const PET_FULL_MAX_SEC = 900;       // сколько секунд засчитать за такую редкую запись
+const PET_DAY_SEC = 12 * 3600;      // максимум засчитанных секунд кормления за сутки (UTC)
+const PET_START_FOOD = 40;          // новый кот приходит с едой в миске
+const PET_BUYS_PER_DAY = 5;         // сколько покупок можно засчитать одному человеку за сутки
+const PET_MAX_PAID_DAYS = 3650;
+const PET_TOP_N = 20;
+const PET_TOP_TTL = 15_000;
+const PET_TOP_MEM = { at: 0, rows: [] };
+const PET_REF = /^[A-Za-z0-9_\-.:]{3,80}$/;
+const PET_NAME = /^[\p{L}\p{N} _\-]{2,16}$/u;
+
+const petLevelOf = (days) => { let l = 1; for (const x of PET_LEVELS) if (days >= x.days) l = x.n; return l; };
+const petLook = (level) => { const l = PET_LEVELS[Math.min(Math.max(level, 1), PET_MAX_LEVEL) - 1]; return { outfit: l.outfit, house: l.house, bowl: l.bowl }; };
+// сколько еды осталось в миске сейчас (с учётом того, что кот ест, пока приложение не открыто)
+const petFoodNow = (p, now) => {
+  const cap = PET_LEVELS[p.level - 1].cap;
+  return Math.min(cap, Math.max(0, p.food - Math.max(0, now - p.food_ts) / 3600_000 * PET_DECAY_PER_H));
+};
+async function petEnsure(env, uid, now) {
+  let p = await env.DB.prepare('SELECT * FROM pets WHERE uid = ?').bind(uid).first();
+  if (!p) {
+    await env.DB.prepare('INSERT OR IGNORE INTO pets (uid, food, food_ts, created) VALUES (?, ?, ?, ?)').bind(uid, PET_START_FOOD, now, now).run();
+    p = await env.DB.prepare('SELECT * FROM pets WHERE uid = ?').bind(uid).first();
+  }
+  return p;
+}
+async function petRank(env, p) {
+  if (!(p.fed_sec > 0 || p.paid_days > 0)) return 0;   // в Топе только те, кто хоть раз кормил кота или покупал подписку
+  const r = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM pets WHERE (fed_sec > 0 OR paid_days > 0) AND
+       (level > ?1 OR (level = ?1 AND (paid_days > ?2 OR (paid_days = ?2 AND (fed_sec > ?3 OR (fed_sec = ?3 AND uid < ?4))))))`
+  ).bind(p.level, p.paid_days, p.fed_sec, p.uid).first();
+  return (r ? r.n : 0) + 1;
+}
+function petView(p, now) {
+  const L = PET_LEVELS[p.level - 1], next = PET_LEVELS[p.level] || null;
+  const food = petFoodNow(p, now), ratio = food / L.cap;
+  return {
+    name: p.name, level: p.level, max_level: PET_MAX_LEVEL, paid_days: p.paid_days,
+    next_days: next ? Math.max(0, next.days - p.paid_days) : 0,        // сколько оплаченных дней осталось до следующего уровня
+    food: Math.round(food * 10) / 10, cap: L.cap,
+    mood: food <= 0 ? 'starving' : ratio < 0.25 ? 'hungry' : ratio < 0.6 ? 'ok' : 'full',
+    empty_in_min: Math.floor(food / PET_DECAY_PER_H * 60),              // через сколько минут миска опустеет
+    fed_min: Math.floor(p.fed_sec / 60),                                // всего минут VPN, которыми кормили кота
+    look: petLook(p.level), next_look: next ? petLook(p.level + 1) : null,
+  };
+}
+async function petUser(body, env, request, fast, noRate) {
+  const a = fast ? await chatUserFast(body, env, request) : await chatUser(body, env, request);
+  if (a.e) return a;
+  if (!noRate && (await rateHit(env, 'pet:dev:' + a.u.device, 60_000)) > 20) return { e: err('Слишком много запросов', 429) };
+  return a;
+}
+
+// Состояние кота (создаётся при первом открытии) + таблица уровней и место в Топе.
+async function petMe(body, env, request) {
+  const a = await petUser(body, env, request, true);
+  if (a.e) return a.e;
+  const p = await petEnsure(env, a.u.id, a.now);
+  return json({ ok: true, pet: petView(p, a.now), rank: await petRank(env, p), levels: PET_LEVELS, now: a.now });
+}
+
+// Сигнал «VPN работает»: sec — сколько секунд он работал с прошлого сигнала (приложение шлёт примерно раз в 5 минут).
+// Счётчик частоты (rateHit) здесь не нужен — от частых сигналов защищает PET_MIN_GAP, а он не требует записи в базу.
+async function petFeed(body, env, request) {
+  const a = await petUser(body, env, request, true, true);
+  if (a.e) return a.e;
+  const { now } = a;
+  let p = await petEnsure(env, a.u.id, now);
+  const claimed = Math.min(Math.max(Math.floor(Number(body.sec) || 0), 0), PET_MAX_SEC);
+  const gap = p.hb_ts ? now - p.hb_ts : 0;
+  let credit = 0;
+  const cap0 = PET_LEVELS[p.level - 1].cap;
+  const full = petFoodNow(p, now) >= cap0 - 0.5;
+  // миска полная: запись в базу не нужна — пропускаем, а раз в PET_FULL_WRITE_MS записываем накопленное время одним разом
+  if (claimed > 0 && full && p.hb_ts && gap < PET_FULL_WRITE_MS) return json({ ok: true, fed_sec: 0, pet: petView(p, now), now });
+  if (claimed > 0 && (!p.hb_ts || gap >= PET_MIN_GAP)) {
+    if (full && p.hb_ts) credit = Math.min(Math.floor(gap / 1000), PET_FULL_MAX_SEC);
+    else credit = p.hb_ts ? Math.min(claimed, Math.floor(gap / 1000) + 5) : Math.min(claimed, 120);   // быстрее реального времени не засчитываем
+    const day = Math.floor(now / DAY), used = p.day === day ? p.day_sec : 0;
+    credit = Math.max(0, Math.min(credit, PET_DAY_SEC - used));
+    const cap = PET_LEVELS[p.level - 1].cap;
+    const food = Math.min(cap, petFoodNow(p, now) + credit / 60);
+    await env.DB.prepare('UPDATE pets SET food = ?, food_ts = ?, fed_sec = fed_sec + ?, hb_ts = ?, day = ?, day_sec = ? WHERE uid = ?')
+      .bind(food, now, credit, now, day, used + credit, p.uid).run();
+    p = { ...p, food, food_ts: now, fed_sec: p.fed_sec + credit, hb_ts: now };
+  }
+  return json({ ok: true, fed_sec: credit, pet: petView(p, now), now });
+}
+
+// Покупка подписки: ref — номер подписки/заказа в кабинете VPN (повтор не засчитывается), days — сколько дней она даёт.
+async function petBuy(body, env, request) {
+  const a = await petUser(body, env, request, false);
+  if (a.e) return a.e;
+  const { now } = a;
+  const ref = String(body.ref || '');
+  const days = Math.floor(Number(body.days));
+  if (!PET_REF.test(ref) || !(days >= 1 && days <= 400)) return err('Некорректный запрос');
+  const p = await petEnsure(env, a.u.id, now);
+  const old = await env.DB.prepare('SELECT uid FROM pet_buys WHERE ref = ?').bind(ref).first();
+  if (old) {
+    if (old.uid !== p.uid) return err('Эта подписка уже засчитана другому пользователю', 409);
+    return json({ ok: true, already: true, pet: petView(p, now), rank: await petRank(env, p) });
+  }
+  const today = await env.DB.prepare('SELECT COUNT(*) AS n FROM pet_buys WHERE uid = ? AND ts > ?').bind(p.uid, now - DAY).first();
+  if (today && today.n >= PET_BUYS_PER_DAY) return err('Слишком много покупок за сутки', 429);
+  const ins = await env.DB.prepare('INSERT OR IGNORE INTO pet_buys (ref, uid, days, ts) VALUES (?, ?, ?, ?)').bind(ref, p.uid, days, now).run();
+  if (!ins.meta || !ins.meta.changes) return err('Эта подписка уже засчитана', 409);
+  const paid = Math.min(PET_MAX_PAID_DAYS, p.paid_days + days), level = petLevelOf(paid);
+  // у кота стала больше миска: еду пересчитываем по прежнему уровню, чтобы не потерять накопленное
+  const food = petFoodNow(p, now);
+  await env.DB.prepare('UPDATE pets SET paid_days = ?, level = ?, food = ?, food_ts = ? WHERE uid = ?').bind(paid, level, food, now, p.uid).run();
+  PET_TOP_MEM.at = 0;
+  const np = { ...p, paid_days: paid, level, food, food_ts: now };
+  return json({ ok: true, level_up: level > p.level, pet: petView(np, now), rank: await petRank(env, np) });
+}
+
+async function petRename(body, env, request) {
+  const a = await petUser(body, env, request, false);
+  if (a.e) return a.e;
+  const name = String(body.name || '').replace(/\s+/g, ' ').trim();
+  if (!PET_NAME.test(name)) return err('Имя: 2–16 символов, буквы, цифры, пробел, «_» и «-»');
+  if (!a.u.badge && chatTextProblem(name)) return err('Такое имя нельзя');
+  const p = await petEnsure(env, a.u.id, a.now);
+  await env.DB.prepare('UPDATE pets SET name = ? WHERE uid = ?').bind(name, p.uid).run();
+  PET_TOP_MEM.at = 0;
+  return json({ ok: true, pet: petView({ ...p, name }, a.now) });
+}
+
+// Топ: сначала уровень, затем оплаченные дни, затем минуты VPN, которыми кормили кота.
+async function petTop(body, env, request) {
+  const a = await petUser(body, env, request, true);
+  if (a.e) return a.e;
+  const now = Date.now();
+  if (now - PET_TOP_MEM.at > PET_TOP_TTL) {
+    const { results } = await env.DB.prepare(
+      `SELECT p.uid, p.name, p.level, p.paid_days, p.fed_sec, u.nick, u.avatar_v, u.frame, u.nick_color, u.badge, u.crown
+         FROM pets p JOIN users u ON u.id = p.uid WHERE p.fed_sec > 0 OR p.paid_days > 0
+        ORDER BY p.level DESC, p.paid_days DESC, p.fed_sec DESC, p.uid ASC LIMIT ?`
+    ).bind(PET_TOP_N).all();
+    PET_TOP_MEM.rows = results.map((r, i) => ({
+      rank: i + 1, uid: r.uid, nick: r.nick, pet: r.name, level: r.level, paid_days: r.paid_days, fed_min: Math.floor(r.fed_sec / 60),
+      av: r.avatar_v || 0, frame: r.frame || 0, nc: r.nick_color || 0, badge: r.badge ? 1 : 0, crown: r.crown ? 1 : 0, look: petLook(r.level),
+    }));
+    PET_TOP_MEM.at = now;
+  }
+  const mine = await petEnsure(env, a.u.id, now);
+  return json({ ok: true, top: PET_TOP_MEM.rows.map((r) => ({ ...r, me: r.uid === a.u.id })), me: { rank: await petRank(env, mine), level: mine.level, paid_days: mine.paid_days } });
+}
+
+// Админка: выдать оплаченные дни (days, можно отрицательные) или поставить уровень (level 1–10) человеку uid.
+async function adminPetGrant(body, env) {
+  const uid = Number(body.uid) || 0;
+  const u = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(uid).first();
+  if (!u) return err('Пользователь не найден', 404);
+  const now = Date.now();
+  const p = await petEnsure(env, uid, now);
+  let paid = p.paid_days;
+  if (body.level != null) {
+    const lv = Math.floor(Number(body.level));
+    if (!(lv >= 1 && lv <= PET_MAX_LEVEL)) return err('Некорректный уровень');
+    paid = PET_LEVELS[lv - 1].days;
+  } else {
+    const d = Math.floor(Number(body.days));
+    if (!Number.isFinite(d) || d < -PET_MAX_PAID_DAYS || d > PET_MAX_PAID_DAYS) return err('Некорректный запрос');
+    paid = Math.min(PET_MAX_PAID_DAYS, Math.max(0, paid + d));
+  }
+  const level = petLevelOf(paid), food = petFoodNow(p, now);
+  await env.DB.prepare('UPDATE pets SET paid_days = ?, level = ?, food = ?, food_ts = ? WHERE uid = ?').bind(paid, level, food, now, uid).run();
+  PET_TOP_MEM.at = 0;
+  return json({ ok: true, level, paid_days: paid });
+}
+
 // ----- CORS: PWA открывается с другого адреса и ходит на воркер из браузера -----
 const CORS = {
   'access-control-allow-origin': '*',
@@ -1697,6 +1922,7 @@ const app = {
     if (path === '/api/chat/avatar_get') return avatarGet(body, env, request);
     if (path === '/api/chat/crown') return crownSet(body, env, request);
     if (path === '/api/chat/frame_set') return frameSet(body, env, request);
+    if (path === '/api/chat/nickcolor_set') return nickColorSet(body, env, request);
     if (path === '/api/room/unread') return roomUnread(body, env, request);
     if (path === '/api/room/messages') return roomMessages(body, env, request);
     if (path === '/api/room/send') return roomSend(body, env, request);
@@ -1708,6 +1934,11 @@ const app = {
     if (path === '/api/dm/unread') return dmUnread(body, env, request);
     if (path === '/api/dm/messages') return dmMessages(body, env, request);
     if (path === '/api/dm/send') return dmSend(body, env, request);
+    if (path === '/api/pet/me') return petMe(body, env, request);
+    if (path === '/api/pet/feed') return petFeed(body, env, request);
+    if (path === '/api/pet/buy') return petBuy(body, env, request);
+    if (path === '/api/pet/rename') return petRename(body, env, request);
+    if (path === '/api/pet/top') return petTop(body, env, request);
 
     if (path.startsWith('/api/admin/')) {
       const a = await adminAuth(request, env, path);
@@ -1736,6 +1967,7 @@ const app = {
       if (path === '/api/admin/user_badge') return adminUserBadge(body, env);
       if (path === '/api/admin/user_all_badges') return adminUserAllBadges(body, env);
       if (path === '/api/admin/user_mute') return adminUserMute(body, env);
+      if (path === '/api/admin/pet_grant') return adminPetGrant(body, env);
       if (path === '/api/admin/user_reset') return adminUserReset(body, env);
       if (path === '/api/admin/room_messages') return adminRoomMessages(body, env);
       if (path === '/api/admin/room_delete') return adminRoomDelete(body, env);

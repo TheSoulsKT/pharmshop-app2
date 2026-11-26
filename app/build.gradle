@@ -23,7 +23,7 @@ android {
         // В GitHub Actions versionCode растёт сам (номер запуска + 100), локально — 2.
         def run = System.getenv('GITHUB_RUN_NUMBER')
         versionCode run ? run.toInteger() + 100 : 2
-        versionName project.findProperty('appVersion') ?: '1.1.0-stable'   // название версии задаётся в gradle.properties
+        versionName project.findProperty('appVersion') ?: '1.1.1-stable'   // название версии задаётся в gradle.properties
         // Репозиторий для проверки обновлений («владелец/имя»); GitHub подставляет его сам при сборке.
         buildConfigField 'String', 'GITHUB_REPO', "\"${isTest ? '' : (System.getenv('GITHUB_REPOSITORY') ?: '')}\""
         manifestPlaceholders = [appLabel: isTest ? 'PharmShop Test' : 'PharmShop']

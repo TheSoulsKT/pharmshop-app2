@@ -221,6 +221,17 @@ object Store {
 
     fun noteSupportSolved(n: Int) { if (n > supportSolved) supportSolved = n }
 
+    // ----- питомец -----
+    /** Последнее состояние кота (JSON поля pet), чтобы не показывать пустой экран. */
+    var petCache: String
+        get() = sp.getString("pet_cache", "") ?: ""
+        set(v) { sp.edit().putString("pet_cache", v).apply() }
+
+    /** Какие подписки уже засчитаны питомцу: строки «id=дней осталось». */
+    var petSubs: String
+        get() = sp.getString("pet_subs", "") ?: ""
+        set(v) { sp.edit().putString("pet_subs", v).apply() }
+
     // ----- чат -----
     /** Ник в чате (кэш: его показывает профиль). Пусто — ник ещё не выбран. */
     var chatNick: String

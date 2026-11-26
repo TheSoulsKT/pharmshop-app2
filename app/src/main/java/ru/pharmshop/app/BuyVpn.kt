@@ -105,6 +105,7 @@ internal fun MainActivity.showVpn() {
             val fProv = if (hit == null) net.submit(java.util.concurrent.Callable { VpnApi.providers() }) else null
             val subs = VpnApi.subscriptions()
             VpnWatch.store(applicationContext, subs)   // краткие данные для виджета и уведомлений
+            try { PetFeed.syncSubs(subs) } catch (e: Exception) { AppLog.e("pet-sync", e) }   // покупки → уровень питомца
             val plans = hit?.plans ?: fPlans!!.result()
             val prov = hit?.prov ?: fProv!!.result()
             if (hit == null) vpnCatalog = VpnCatalog(owner, System.currentTimeMillis(), plans, prov)

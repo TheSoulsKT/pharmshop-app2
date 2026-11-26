@@ -233,6 +233,21 @@ object ChatApi {
         return post("/api/chat/register", body).also { if (!check) Store.chatNick = it.optString("nick", nick) }
     }
 
+    // ----- «Мой питомец» -----
+    /** {pet, rank, levels}: состояние кота (создаётся при первом открытии). */
+    fun petMe(): JSONObject = post("/api/pet/me", dev())
+
+    /** Сообщить, сколько секунд работал VPN с прошлого сигнала. Ответ: {fed_sec, pet}. */
+    fun petFeed(sec: Int): JSONObject = post("/api/pet/feed", dev().put("sec", sec))
+
+    /** Засчитать купленную (или продлённую) подписку. ref — уникальный номер, days — срок тарифа. */
+    fun petBuy(ref: String, days: Int): JSONObject = post("/api/pet/buy", dev().put("ref", ref).put("days", days))
+
+    fun petRename(name: String): JSONObject = post("/api/pet/rename", dev().put("name", name))
+
+    /** {top, me}: лучшие питомцы. */
+    fun petTop(): JSONObject = post("/api/pet/top", dev())
+
     /** Сообщить серверу, собраны ли все достижения (зелёная корона рядом с ником в чате). */
     fun crownSet(all: Boolean) { post("/api/chat/crown", dev().put("crown", all)) }
 

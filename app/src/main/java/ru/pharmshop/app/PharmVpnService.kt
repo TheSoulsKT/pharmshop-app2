@@ -99,6 +99,7 @@ class PharmVpnService : VpnService() {
         Store.init(applicationContext)
         AppLog.init(applicationContext)
         VpnAuto.init(applicationContext)
+        PetFeed.init()
         instance = this
     }
 

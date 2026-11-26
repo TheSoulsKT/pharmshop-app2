@@ -92,6 +92,7 @@ open class MainActivity : AppCompatActivity() {
         AppLog.init(this)
         Diag.init(this)
         Diag.onLaunch()
+        PetFeed.init()
         Theme.update(this)
         androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(Theme.nightMode())
         super.onCreate(savedInstanceState)

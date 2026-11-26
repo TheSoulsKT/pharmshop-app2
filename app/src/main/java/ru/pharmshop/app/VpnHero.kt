@@ -665,9 +665,21 @@ internal fun MainActivity.vpnHero(
         background = bg
         setPadding(dp(16), dp(12), dp(16), dp(16))
         layoutParams = lp(bottom)
-        addView(CatHeroView(this@vpnHero, sc, cs, anim, badgeBg, entry.fg, cutout, react).apply {
+        addView(FrameLayout(this@vpnHero).apply {
             layoutParams = LinearLayout.LayoutParams(H_MATCH, dp(148))
-            contentDescription = title
+            addView(CatHeroView(this@vpnHero, sc, cs, anim, badgeBg, entry.fg, cutout, react).apply {
+                contentDescription = title
+            }, FrameLayout.LayoutParams(H_MATCH, H_MATCH))
+            // небольшая кнопка слева от кота: открывает экран «Мой питомец»
+            addView(txt("🐾\nМой\nпитомец", 11f, TEXT, true).apply {
+                gravity = Gravity.CENTER
+                background = ripple(ColorUtils.setAlphaComponent(BG, 170), 14, LINE)
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+                isClickable = true
+                contentDescription = "Мой питомец"
+                setOnClickListener { showPet() }
+                pressable(this)
+            }, FrameLayout.LayoutParams(dp(68), H_WRAP, Gravity.START or Gravity.CENTER_VERTICAL))
         })
         addView(txt(title, 20f, TEXT, true).apply { gravity = Gravity.CENTER })
         addView(txt(sub, 13f, MUTE).apply {
