@@ -28,6 +28,18 @@ object VpnSub {
     /** Панель ответила 401/403: не пустила это устройство. Не всегда это настоящий лимит: ссылку могли перевыпустить или панель дала временный отказ. */
     class DeviceRejected(val code: Int) : SubException("Сервер не пустил это устройство (HTTP $code). Проверьте лимит устройств")
 
+    /** Панель вернула заглушку «Превышен лимит устройств» вместо серверов: все слоты устройств заняты. */
+    class DeviceLimit : SubException("Превышен лимит устройств")
+
+    /** Имя сервера похоже на служебную заглушку панели о лимите устройств (а не на настоящий сервер). */
+    private fun isLimitStub(name: String): Boolean {
+        val n = name.lowercase()
+        return (n.contains("лимит") && n.contains("устройств")) ||
+            (n.contains("превышен") && n.contains("устройств")) ||
+            n.contains("device limit") || n.contains("devices limit") || n.contains("max devices") ||
+            (n.contains("hwid") && (n.contains("limit") || n.contains("лимит")))
+    }
+
     private fun ascii(s: String?) = (s ?: "").filter { it.code in 32..126 }.take(64)
 
     private fun download(url: String): String {
@@ -223,7 +235,10 @@ object VpnSub {
             throw SubException("Не удалось разобрать подписку")
         }
         if (list.isEmpty()) throw SubException("В подписке нет поддерживаемых серверов")
-        return list
+        // панель при превышении лимита отдаёт «сервер»-заглушку с таким названием: настоящие серверы оставляем, заглушку убираем
+        val real = list.filterNot { isLimitStub(it.name) }
+        if (real.isEmpty()) throw DeviceLimit()
+        return real
     }
 
     // ---------- Xray-JSON ----------
