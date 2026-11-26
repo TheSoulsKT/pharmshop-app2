@@ -27,7 +27,7 @@ object Api {
                 c.setRequestProperty("User-Agent", "PharmShopApp/1.0")
                 c.setRequestProperty("Origin", BASE)
                 c.setRequestProperty("Referer", "$BASE/")
-                for ((k, v) in headers) c.setRequestProperty(k, v)
+                if (url.host == URL(BASE).host) for ((k, v) in headers) c.setRequestProperty(k, v)   // токен заказа не уходит на чужой хост при редиректе
                 if (body != null) {
                     c.doOutput = true
                     c.setRequestProperty("Content-Type", "application/json")

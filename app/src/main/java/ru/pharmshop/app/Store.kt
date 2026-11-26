@@ -177,6 +177,11 @@ object Store {
         get() = sp.getLong("vpn_cache_at", 0L)
         set(v) { sp.edit().putLong("vpn_cache_at", v).apply() }
 
+    /** Когда в последний раз пытались обновить geo-файлы (успешно или нет): между попытками выдерживается пауза (GeoFiles). */
+    var geoTriedAt: Long
+        get() = sp.getLong("geo_tried_at", 0L)
+        set(v) { sp.edit().putLong("geo_tried_at", v).apply() }
+
     /** О чём уже предупредили (ключи «подписка|событие|дата окончания»), чтобы не повторять. */
     var vpnNotified: String
         get() = sp.getString("vpn_notified", "") ?: ""
@@ -347,7 +352,12 @@ object Store {
     }
 
     /** Полный сброс данных приложения (если забыли PIN). */
-    fun wipeAll() { sp.edit().clear().commit(); Avatar.remove(); CoverPhoto.remove(); Diag.reset() }
+    fun wipeAll() {
+        // сессия кабинета VPN (токен и ключ входа) живёт ещё и в памяти процесса: без выхода после «Забыли PIN → Сбросить»
+        // экран VPN остался бы открытым без входа
+        try { VpnApi.logout() } catch (e: Exception) { }
+        sp.edit().clear().commit(); Avatar.remove(); CoverPhoto.remove(); Diag.reset()
+    }
 
     // ----- обновления в фоне -----
     /** Скачивать новые версии в фоне, когда телефон на Wi-Fi. */
@@ -437,7 +447,7 @@ object Store {
     var vpnSubUrl: String
         get() = sp.getString("vpn_sub_url", "")?.takeIf { it.isNotEmpty() }?.let { unseal(it) } ?: ""
         set(v) {
-            if (v != vpnSubUrl) vpnSubAt = 0L   // сохранённый список серверов принадлежал другой ссылке
+            if (v != vpnSubUrl) { vpnSubAt = 0L; vpnSubRaw = "" }   // сохранённый список серверов принадлежал другой ссылке
             sp.edit().putString("vpn_sub_url", if (v.isEmpty()) "" else try { seal(v) } catch (e: Exception) { "" }).apply()
         }
 

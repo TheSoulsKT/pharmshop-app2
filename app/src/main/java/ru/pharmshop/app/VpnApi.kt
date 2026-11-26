@@ -109,12 +109,19 @@ object VpnApi {
         }
     }
 
-    /** Продлевает токен по ключу входа. Как сайт шлёт этот запрос (POST или GET) — из адресов не видно, пробуем по очереди. */
+    /**
+     * Продлевает токен по ключу входа. Как сайт шлёт этот запрос (POST или GET) — из адресов не видно, пробуем по очереди.
+     * Ключ стирается (logout) только когда панель сама ответила отказом на все варианты: 401, либо 403 с JSON в теле.
+     * Всё остальное — 403 с HTML (заглушка WAF/Cloudflare), 5xx, обрыв связи — временное: ключ остаётся, ошибка обычная.
+     * 404/405 на неподходящем методе отказом не считаются, но и не мешают: «все остальные варианты отказали» достаточно.
+     */
     @Synchronized
     private fun refresh() {
         val rc = Store.vpnRefresh
         if (rc.isEmpty()) throw AuthException("Нужно войти заново")
         var last = 0
+        var denied = 0
+        var other = 0
         val tries = listOf("POST" to null, "POST" to "{}", "GET" to null)
         for ((m, b) in tries) {
             val r = raw(m, "$AUTH/auth/refresh", b, null, rc)
@@ -123,12 +130,15 @@ object VpnApi {
                 return
             }
             last = r.code
-            if (r.code == 401 || r.code == 403) {
-                logout()
-                throw AuthException("Сессия истекла, войдите заново")
-            }
+            val panelDenied = r.code == 401 || (r.code == 403 && r.text.trimStart().startsWith("{"))
+            if (panelDenied) denied++
+            else if (r.code != 404 && r.code != 405) other++
         }
-        throw Exception("Не удалось продлить сессию (код $last)")
+        if (denied > 0 && other == 0) {
+            logout()
+            throw AuthException("Сессия истекла, войдите заново")
+        }
+        throw Exception(if (last == 403) "Доступ к серверу VPN временно закрыт (код 403). Попробуйте позже" else "Не удалось продлить сессию (код $last)")
     }
 
     @Synchronized

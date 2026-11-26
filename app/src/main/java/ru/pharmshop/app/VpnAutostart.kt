@@ -33,7 +33,7 @@ object VpnAutostart {
 
     private fun ready(ctx: Context): Boolean {
         if (Store.vpnSubUrl.isEmpty()) return false
-        if (VpnState.state != VpnState.S.OFF) return false
+        if (VpnState.state == VpnState.S.ON || VpnState.state == VpnState.S.CONNECTING) return false   // ERROR не мешает: после сбоя пробуем снова
         if (VpnService.prepare(ctx) != null) return false   // разрешение на VPN не выдано
         val subs = VpnWatch.cached()
         if (subs.length() > 0 && (0 until subs.length()).none { i ->

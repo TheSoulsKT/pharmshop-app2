@@ -1,9 +1,11 @@
 package ru.pharmshop.app
 
 import android.content.Context
+import android.net.ConnectivityManager
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 /**
  * geoip.dat / geosite.dat для Xray. Ядро ищет их в каталоге, который мы передаём в initCoreEnv (у нас это filesDir).
@@ -12,8 +14,13 @@ import java.net.URL
  *  1. prepare()  — быстро: если файлов нет, копирует их из assets/geo (их кладёт CI, см. build.yml). Зовётся из PharmVpnService.
  *  2. updateIfStale() — медленно (сеть), раз в неделю, из PollWorker/любого фонового потока. Новые файлы подхватятся при следующем подключении.
  *
- * Файлы проверяются по размеру и пишутся через .tmp + rename, чтобы оборванная загрузка не оставила битый .dat
- * (битый .dat = ядро не стартует, поэтому сервис при ошибке старта вызывает reset() и пробует без geo).
+ * Обновление качает ~20 МБ, поэтому: только по сети без лимита трафика (Wi-Fi), пока есть рабочие файлы; после любой попытки —
+ * пауза (RETRY_OK_MS / RETRY_NO_FILES_MS), а не повтор при каждом запуске PollWorker.
+ * Скачанный файл принимается, только если его SHA-256 совпал с `<имя>.sha256sum` из того же источника; нет суммы или она
+ * не совпала — файл выбрасывается, остаются прежние. Размер ограничен сверху (MAX_SIZE). Пишутся через .new + rename,
+ * чтобы оборванная загрузка не оставила битый .dat (битый .dat = ядро не стартует, поэтому сервис при ошибке старта
+ * вызывает reset() и пробует без geo).
+ * Сумма из того же места, что и файл, защищает от обрыва и порчи при загрузке; от подмены самого релиза она не спасает.
  */
 object GeoFiles {
     private val NAMES = arrayOf("geoip.dat", "geosite.dat")
@@ -25,7 +32,10 @@ object GeoFiles {
         "https://cdn.jsdelivr.net/gh/runetfreedom/russia-v2ray-rules-dat@release/"
     )
     private const val MIN_SIZE = 50_000L
+    private const val MAX_SIZE = 80L * 1024 * 1024
     private const val MAX_AGE_MS = 7L * 24 * 3600 * 1000
+    private const val RETRY_OK_MS = 6L * 3600 * 1000        // файлы есть, но обновить не вышло: повтор не раньше чем через 6 часов
+    private const val RETRY_NO_FILES_MS = 30L * 60 * 1000   // файлов нет совсем: пробуем чаще
 
     private fun f(ctx: Context, n: String) = File(ctx.filesDir, n)
     private fun ok(file: File) = file.isFile && file.length() >= MIN_SIZE
@@ -121,9 +131,22 @@ object GeoFiles {
         return NAMES.maxOf { now - f(ctx, it).lastModified() }
     }
 
-    /** Качает свежие файлы, если старым больше недели (или их нет). Вызывать не в потоке интерфейса. true — файлы обновлены. */
+    private fun metered(ctx: Context): Boolean = try {
+        (ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).isActiveNetworkMetered
+    } catch (e: Exception) { true }
+
+    /**
+     * Качает свежие файлы, если старым больше недели (или их нет). Вызывать не в потоке интерфейса. true — файлы обновлены.
+     * Пока есть рабочие файлы, качает только по сети без лимита трафика; без файлов VPN с маршрутами не заработает, поэтому
+     * тогда подойдёт любая сеть.
+     */
     fun updateIfStale(ctx: Context): Boolean {
         if (age(ctx) < MAX_AGE_MS) return false
+        val have = ready(ctx)
+        val now = System.currentTimeMillis()
+        if (now - Store.geoTriedAt < (if (have) RETRY_OK_MS else RETRY_NO_FILES_MS)) return false
+        if (have && metered(ctx)) return false     // не считается попыткой: дождёмся Wi-Fi
+        Store.geoTriedAt = now
         val staged = ArrayList<Pair<File, File>>()
         try {
             for (n in NAMES) {
@@ -131,7 +154,7 @@ object GeoFiles {
                 if (!download(n, tmp)) { tmp.delete(); staged.forEach { it.first.delete() }; return false }
                 staged.add(tmp to f(ctx, n))
             }
-            // оба скачались — только теперь подменяем (пара geoip+geosite должна быть из одной версии)
+            // оба скачались и сверены — только теперь подменяем (пара geoip+geosite должна быть из одной версии)
             staged.forEach { (tmp, dst) -> if (!tmp.renameTo(dst)) return false }
             return true
         } catch (e: Exception) {
@@ -140,8 +163,24 @@ object GeoFiles {
         }
     }
 
+    /** Ожидаемая сумма из файла `<имя>.sha256sum` (формат `sha256sum`: «<64 hex>  имя»); null, если файла нет или он не разобрался. */
+    private fun fetchSum(base: String, name: String): String? {
+        val c = URL("$base$name.sha256sum").openConnection() as HttpURLConnection
+        return try {
+            c.connectTimeout = 15000
+            c.readTimeout = 30000
+            c.instanceFollowRedirects = true
+            c.setRequestProperty("User-Agent", VpnSub.UA)
+            if (c.responseCode !in 200..299) return null
+            val text = c.inputStream.use { i -> val b = ByteArray(4096); val n = i.read(b); if (n > 0) String(b, 0, n, Charsets.UTF_8) else "" }
+            Regex("^[0-9a-fA-F]{64}").find(text.trim())?.value?.lowercase()
+        } catch (e: Exception) { null } finally { c.disconnect() }
+    }
+
     private fun download(name: String, to: File): Boolean {
         for (base in SOURCES) {
+            val want = fetchSum(base, name)
+            if (want == null) { AppLog.e("geo", Exception("нет контрольной суммы $name в $base")); continue }
             val c = URL(base + name).openConnection() as HttpURLConnection
             try {
                 c.connectTimeout = 15000
@@ -149,10 +188,26 @@ object GeoFiles {
                 c.instanceFollowRedirects = true
                 c.setRequestProperty("User-Agent", VpnSub.UA)
                 if (c.responseCode !in 200..299) continue
-                c.inputStream.use { i -> to.outputStream().use { i.copyTo(it) } }
-                if (to.length() >= MIN_SIZE) return true
+                if (c.contentLengthLong > MAX_SIZE) continue
+                val md = MessageDigest.getInstance("SHA-256")
+                var total = 0L
+                c.inputStream.use { i ->
+                    to.outputStream().use { o ->
+                        val buf = ByteArray(64 * 1024)
+                        while (true) {
+                            val n = i.read(buf); if (n < 0) break
+                            total += n
+                            if (total > MAX_SIZE) throw java.io.IOException("файл больше $MAX_SIZE байт")
+                            md.update(buf, 0, n); o.write(buf, 0, n)
+                        }
+                    }
+                }
+                val got = md.digest().joinToString("") { "%02x".format(it) }
+                if (total >= MIN_SIZE && got == want) return true
+                AppLog.e("geo", Exception("$name: сумма не совпала или файл мал ($total байт)"))
+                to.delete()
             } catch (e: Exception) {
-                // пробуем следующий источник
+                to.delete()   // пробуем следующий источник
             } finally {
                 c.disconnect()
             }

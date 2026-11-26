@@ -37,10 +37,14 @@ jobs:
           echo "KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
           echo "KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
       # Ядро Xray (VPN внутри приложения). Версия закреплена: новая версия может поменять API и сломать VpnCore.kt.
-      # Если положите libv2ray.aar в app/libs сами, этот шаг его не трогает.
+      # Если положите libv2ray.aar в app/libs сами, этот шаг его не скачивает, но сумму всё равно сверяет.
+      # XRAY_LIB_SHA256 — SHA-256 именно этого файла этой версии. Пока он пуст, сборка проходит и пишет сумму в лог
+      # (строка «libv2ray.aar sha256: …»): проверьте, что это тот файл, которому доверяете, и впишите её сюда.
+      # С заданной суммой несовпадение останавливает сборку. Меняя XRAY_LIB_TAG, меняйте и сумму.
       - name: Download Xray core
         env:
           XRAY_LIB_TAG: v26.8.20
+          XRAY_LIB_SHA256: ""
         run: |
           mkdir -p app/libs
           if [ ! -f app/libs/libv2ray.aar ]; then
@@ -48,6 +52,16 @@ jobs:
               "https://github.com/2dust/AndroidLibXrayLite/releases/download/${XRAY_LIB_TAG}/libv2ray.aar"
           fi
           ls -l app/libs/libv2ray.aar
+          actual=$(sha256sum app/libs/libv2ray.aar | cut -d' ' -f1)
+          echo "libv2ray.aar sha256: $actual"
+          if [ -n "$XRAY_LIB_SHA256" ]; then
+            if [ "$actual" != "$XRAY_LIB_SHA256" ]; then
+              echo "::error::libv2ray.aar: сумма $actual не совпала с XRAY_LIB_SHA256 ($XRAY_LIB_SHA256)"
+              exit 1
+            fi
+          else
+            echo "::warning::XRAY_LIB_SHA256 не задан: ядро Xray не проверяется. Впишите сумму из строки выше в build.yml"
+          fi
       # geoip.dat / geosite.dat (маршрутизация «российское напрямую», правила подписки с geoip:/geosite:).
       # Приложение копирует их из assets/geo в filesDir и раз в неделю обновляет само (GeoFiles.kt).
       - name: Download geo files
