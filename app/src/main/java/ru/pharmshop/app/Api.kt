@@ -5,13 +5,26 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
 
+/**
+ * Сайт ответил не JSON-ом (страница защиты, 5xx и т.п.). Заказ при этом мог успеть создаться:
+ * ответ потерян, а не отклонён.
+ */
+class NotJsonException(message: String) : Exception(message)
+
+/** Сайт ответил JSON-ом, но с кодом ошибки. По коду видно: это отказ по делу (4xx) или сбой сервера (5xx). */
+class ApiHttpException(val code: Int, message: String) : Exception(message)
+
+/** Результат проверки сайта: работает ли он и за сколько ответил. */
+class PingResult(val ok: Boolean, val ms: Long, val detail: String)
+
 /** Запросы к витрине pharmshop.tgstars.tg (те же, что делает сам сайт). */
 object Api {
     private const val BASE = "https://pharmshop.tgstars.tg"
 
     private fun call(
         method: String, path: String, body: JSONObject?,
-        headers: Map<String, String> = emptyMap()
+        headers: Map<String, String> = emptyMap(),
+        connectMs: Int = 15000, readMs: Int = 20000
     ): JSONObject {
         var url = URL(BASE + path)
         var redirects = 0
@@ -19,8 +32,8 @@ object Api {
             val c = url.openConnection() as HttpURLConnection
             try {
                 c.requestMethod = method
-                c.connectTimeout = 15000
-                c.readTimeout = 20000
+                c.connectTimeout = connectMs
+                c.readTimeout = readMs
                 // Сами обрабатываем редиректы: HttpURLConnection при 301/302 превращает POST в GET.
                 c.instanceFollowRedirects = false
                 c.setRequestProperty("Accept", "application/json")
@@ -45,16 +58,29 @@ object Api {
                 val stream = if (code in 200..299) c.inputStream else c.errorStream
                 val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
                 val where = "$method ${url.path}"
-                if (!text.trimStart().startsWith("{")) {
-                    AppLog.e("api", "$where → не JSON (код $code)")
-                    throw Exception("Сервер вернул не JSON (код $code, $where). Возможно, сайт не пустил приложение.")
+                // BOM и пробелы в начале не должны ломать разбор
+                val clean = text.removePrefix("\uFEFF").trim()
+                val json = try { JSONObject(clean) } catch (e: org.json.JSONException) { null }
+                if (json == null) {
+                    val ctype = c.contentType.orEmpty()
+                    val srv = c.getHeaderField("Server").orEmpty()
+                    val cf = c.getHeaderField("cf-mitigated").orEmpty()
+                    val snippet = clean.replace(Regex("\\s+"), " ").take(200)
+                    AppLog.e("api", "$where → не JSON (код $code, $ctype, server=$srv" +
+                        (if (cf.isNotEmpty()) ", cf-mitigated=$cf" else "") + "): $snippet")
+                    val hint = when {
+                        cf.isNotEmpty() || code == 403 || code == 429 || code == 503 ->
+                            "Сайт отклонил запрос — возможно, из-за VPN или защиты от ботов. Отключите VPN и повторите."
+                        code >= 500 -> "Сайт временно недоступен, повторите позже."
+                        else -> "Возможно, сайт не пустил приложение."
+                    }
+                    throw NotJsonException("Сервер вернул не JSON (код $code, $where). $hint")
                 }
-                val json = JSONObject(text)
                 if (code !in 200..299) {
                     // JSONObject сам декодирует \uXXXX, так что сообщение читается по-русски
                     val msg = json.optString("error").ifEmpty { text.take(300) }
                     AppLog.e("api", "$where → HTTP $code: ${msg.take(120)}")
-                    throw Exception("HTTP $code ($where): $msg")
+                    throw ApiHttpException(code, "HTTP $code ($where): $msg")
                 }
                 return json
             } finally {
@@ -64,6 +90,37 @@ object Api {
     }
 
     fun config(): JSONObject = call("GET", "/api/storefront/config", null)
+
+    /**
+     * Быстрая проверка, что сайт жив: тот же запрос конфигурации, но с короткими таймаутами.
+     * Сайт считается рабочим, только если ответил нормальным JSON-ом с кодом 2xx.
+     */
+    fun ping(): PingResult {
+        val t0 = System.currentTimeMillis()
+        return try {
+            call("GET", "/api/storefront/config", null, connectMs = 6000, readMs = 8000)
+            PingResult(true, System.currentTimeMillis() - t0, "")
+        } catch (e: Exception) {
+            PingResult(false, System.currentTimeMillis() - t0, downReason(e))
+        }
+    }
+
+    /** true, если ошибка означает «сайт не работает» (нет сети, не JSON, 5xx, защита/лимиты), а не «неверные данные заказа». */
+    fun isServerDown(e: Exception): Boolean = when (e) {
+        is NotJsonException, is java.io.IOException -> true
+        is ApiHttpException -> e.code >= 500 || e.code == 403 || e.code == 429
+        else -> false
+    }
+
+    /** Короткая причина для плашки статуса. */
+    fun downReason(e: Exception): String = when {
+        e is java.net.UnknownHostException -> "нет соединения с интернетом"
+        e is java.net.SocketTimeoutException -> "сайт не отвечает"
+        e is java.io.IOException -> "нет связи с сайтом"
+        e is NotJsonException -> "сайт отклонил запрос или на техработах"
+        e is ApiHttpException -> "сайт вернул ошибку ${e.code}"
+        else -> e.message.orEmpty().take(60)
+    }
 
     /** Текущий статус заказа (так же делает сам сайт). */
     @Volatile private var tokenMode = 0
@@ -117,9 +174,16 @@ object Api {
         return call("POST", "/api/storefront/quote", body)
     }
 
-    fun createOrder(username: String, quantity: Int, methodId: String, captchaToken: String, product: String = ""): JSONObject {
-        // один и тот же ключ при повторе — сервер не создаст дубль заказа
-        val key = UUID.randomUUID().toString()
+    /** Новый ключ идемпотентности. Хранить его нужно на уровне формы, чтобы повтор после сбоя не создал дубль заказа. */
+    fun newIdempotencyKey(): String = UUID.randomUUID().toString()
+
+    fun createOrder(
+        username: String, quantity: Int, methodId: String, captchaToken: String, product: String = "",
+        key: String = newIdempotencyKey()
+    ): JSONObject {
+        // без пройденной капчи заказ не создаём ни при каких условиях
+        if (captchaToken.isBlank()) throw Exception("Проверка (капча) не пройдена — заказ не создан")
+        // один и тот же ключ при повторе (и внутри функции, и между нажатиями «Оплатить») — сервер не создаст дубль заказа
         val body = JSONObject().put("username", username).put("quantity", quantity)
             .put("method_id", methodId).put("captcha_token", captchaToken)
         if (product.isNotEmpty()) body.put("product", product)   // "premium"; для звёзд поле не шлём

@@ -22,7 +22,7 @@ internal fun MainActivity.showStars() {
             val c = cfg ?: Api.config().also { cfg = it }
             ui { if (sid == screenId) { status.visibility = View.GONE; buildForm(col, c) } }
         } catch (e: Exception) {
-            ui { if (sid == screenId) status.text = "Не удалось загрузить данные: ${e.message}" }
+            ui { if (sid == screenId) loadFailed(col, status, sid, e) { showStars() } }
         }
     }
 }
@@ -73,9 +73,14 @@ internal fun MainActivity.buildForm(col: LinearLayout, c: JSONObject) {
     var methodName = shown.firstOrNull()?.second ?: ""
 
     // закреплённая панель: сумма и кнопка
+    var watch: ServerWatch? = null
     val bar = payBar { info ->
-        pay(user.text.toString(), qty.text.toString().toIntOrNull() ?: 0, method, methodName, c, info)
+        pay(user.text.toString(), qty.text.toString().toIntOrNull() ?: 0, method, methodName, c, info, "", watch)
     }
+    // плашка «Статус сервера» — над формой
+    val w = ServerWatch(this, screenId, { st -> bar.setBlocked(st == SrvState.OFFLINE) })
+    watch = w
+    col.addView(w.root, firstNew)
     var token = 0
 
     fun setPrice(s: String) {
@@ -94,11 +99,19 @@ internal fun MainActivity.buildForm(col: LinearLayout, c: JSONObject) {
         main.postDelayed({
             if (my != token) return@postDelayed
             io.execute {
+                val t0 = System.currentTimeMillis()
                 try {
                     val r = Api.quote(q, method)
-                    ui { if (my == token) setPrice(fmtMoney(r)) }
+                    val ms = System.currentTimeMillis() - t0
+                    ui { if (my == token) { setPrice(fmtMoney(r)); watch?.reportOk(ms) } }
                 } catch (e: Exception) {
-                    ui { if (my == token) { popText(bar.total, "—"); popText(cb.price, "Не удалось рассчитать цену") } }
+                    ui {
+                        if (my == token) {
+                            popText(bar.total, "—")
+                            popText(cb.price, if (Api.isServerDown(e)) "Сайт не работает" else "Не удалось рассчитать цену")
+                            watch?.reportError(e)
+                        }
+                    }
                 }
             }
         }, 400L)

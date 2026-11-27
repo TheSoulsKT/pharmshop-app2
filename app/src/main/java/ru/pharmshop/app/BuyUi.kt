@@ -354,7 +354,7 @@ internal fun MainActivity.planRows(
 
 // ---------- закреплённая панель оплаты ----------
 
-internal class PayBar(val root: LinearLayout, val cap: TextView, val total: TextView, val info: TextView)
+internal class PayBar(val root: LinearLayout, val cap: TextView, val total: TextView, val info: TextView, val button: Button)
 
 /** Панель «К оплате · сумма · Оплатить». Строка статуса («Создаём заказ…») появляется над ней, только когда есть текст. */
 internal fun MainActivity.payBar(onPay: (TextView) -> Unit): PayBar {
@@ -411,5 +411,5 @@ internal fun MainActivity.payBar(onPay: (TextView) -> Unit): PayBar {
         addView(info)
         addView(row)
     }
-    return PayBar(root, cap, total, info)
+    return PayBar(root, cap, total, info, pay)
 }

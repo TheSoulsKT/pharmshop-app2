@@ -24,6 +24,7 @@ internal fun MainActivity.statusLabel(s: String): String = when (statusKind(s)) 
     1 -> "Оплачен · выдаём"
     2 -> "Выполнен"
     3 -> "Отменён"
+    5 -> "На проверке"
     else -> if (s.isEmpty()) "—" else s
 }
 
@@ -32,6 +33,7 @@ internal fun MainActivity.statusColor(s: String): Int = when (statusKind(s)) {
     1 -> BLUE
     2 -> GREEN
     3 -> RED
+    5 -> AMBER
     else -> MUTE
 }
 
@@ -160,7 +162,7 @@ internal fun MainActivity.renderProfile(body: LinearLayout, sid: Int, animate: B
             renderProfile(body, sid)
         })
         val shown = when (profileFilter) {
-            1 -> orders.filter { statusKind(effStatus(it)) in 0..1 }
+            1 -> orders.filter { val k = statusKind(effStatus(it)); k in 0..1 || k == 5 }
             2 -> orders.filter { statusKind(effStatus(it)) in 2..3 }
             else -> orders
         }
@@ -220,7 +222,7 @@ internal fun MainActivity.orderCard(o: JSONObject, body: LinearLayout, sid: Int)
         background = shape((color and 0x00FFFFFF) or 0x33000000, 10)
         setPadding(dp(10), dp(4), dp(10), dp(4))
     }
-    if (statusKind(status) == 0 || statusKind(status) == 1) pulse(badge)
+    if (statusKind(status) in listOf(0, 1, 5)) pulse(badge)
     val numView = txt("Заказ $num", 16f, TEXT, true).apply {
         layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
     }
@@ -291,6 +293,13 @@ internal fun MainActivity.orderCard(o: JSONObject, body: LinearLayout, sid: Int)
     card.addView(top)
     card.addView(line1)
     card.addView(line2)
+    // сайт взял заказ в проверку: показываем его пояснение (там же — «повторно не платите»)
+    if (kind == 5) {
+        val note = o.optString("message").ifEmpty {
+            "Заказ проверяется. Если вы уже оплатили, повторно не платите. Обратитесь в поддержку с номером заказа."
+        }
+        card.addView(tv(note, 13f, AMBER).apply { layoutParams = lp(6) })
+    }
     if (asBar) card.addView(stepsView(kind).apply { layoutParams = lp(4).apply { topMargin = dp(6) } })
     card.addView(HorizontalScrollView(this).apply {
         isHorizontalScrollBarEnabled = false
